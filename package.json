@@ -1,0 +1,110 @@
+{
+  "name": "gestionale-presenze-offline",
+  "version": "1.0.0",
+  "appVariant": "standard",
+  "private": true,
+  "main": "src/main/main.js",
+  "scripts": {
+    "postinstall": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3,@napi-rs/canvas",
+    "guard:win-host": "node tools/guard-windows-build.mjs",
+    "clean:build:artifacts": "node tools/clean-build-artifacts.mjs",
+    "clean:demo:output": "node tools/report-demo-build.mjs --clean",
+    "rebuild:native:electron": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3,@napi-rs/canvas",
+    "verify:win:native:standard": "node tools/verify-win-native-module.mjs standard",
+    "verify:win:native:demo": "node tools/verify-win-native-module.mjs demo",
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev:demo": "concurrently \"vite\" \"wait-on http://localhost:5173 && APP_VARIANT=demo electron .\"",
+    "build": "vite build",
+    "build:demo:info": "node tools/report-demo-build.mjs --stage=before",
+    "build:demo:result": "node tools/report-demo-build.mjs --stage=after",
+    "start": "electron .",
+    "start:demo": "APP_VARIANT=demo electron .",
+    "dist:win:dir": "npm run guard:win-host && npm run rebuild:native:electron && npm run build && electron-builder --config electron-builder.json --win dir && npm run verify:win:native:standard",
+    "dist:win:nsis": "npm run guard:win-host && npm run rebuild:native:electron && npm run build && electron-builder --config electron-builder.json --win nsis && npm run verify:win:native:standard",
+    "dist:win:inno": "npm run dist:win:dir && ISCC.exe build\\windows-installer.iss",
+    "dist:win:demo": "npm run guard:win-host && npm run rebuild:native:electron && npm run build && npm run build:demo:info && electron-builder --win && npm run verify:win:native:demo && npm run build:demo:result",
+    "dist:win:demo:clean": "npm run clean:demo:output && npm run dist:win:demo",
+    "dist:win:demo:dir": "npm run guard:win-host && npm run rebuild:native:electron && npm run build && npm run build:demo:info && electron-builder --win dir && npm run verify:win:native:demo && npm run build:demo:result",
+    "dist:win:demo:nsis": "npm run guard:win-host && npm run rebuild:native:electron && npm run build && npm run build:demo:info && electron-builder --win nsis && npm run verify:win:native:demo && npm run build:demo:result",
+    "dist:win:demo:nsis:clean": "npm run guard:win-host && npm run clean:build:artifacts && npm ci && npm run rebuild:native:electron && npm run build && npm run build:demo:info && electron-builder --win nsis --x64 && npm run verify:win:native:demo && npm run build:demo:result",
+    "dist:win:demo:inno": "npm run dist:win:demo:dir && ISCC.exe build\\windows-installer-demo.iss",
+    "dist:win": "npm run dist:win:nsis",
+    "dist:win:all": "npm run guard:win-host && npm run rebuild:native:electron && npm run build && electron-builder --config electron-builder.json --win nsis dir && npm run verify:win:native:standard"
+  },
+  "build": {
+    "appId": "com.company.gestionale.demo",
+    "productName": "GPA versione 1 demo",
+    "directories": {
+      "output": "release-demo",
+      "buildResources": "build/resources"
+    },
+    "files": [
+      "dist/**/*",
+      "src/main/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/**/*.node",
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "npmRebuild": false,
+    "extraMetadata": {
+      "name": "gestionale-demo",
+      "main": "src/main/main.js",
+      "appVariant": "demo"
+    },
+    "artifactName": "GPA-Demo-${version}-Setup.${ext}",
+    "win": {
+      "executableName": "GPA Demo",
+      "icon": "build/resources/icon-demo.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "publisherName": "Publisher modificabile",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "GPA versione 1 demo",
+      "uninstallDisplayName": "GPA versione 1 demo",
+      "deleteAppDataOnUninstall": false,
+      "displayLanguageSelector": false
+    }
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.99",
+    "better-sqlite3": "^11.7.0",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^3.11.174",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.1",
+    "tesseract.js": "^7.0.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.3",
+    "@vitejs/plugin-react": "^4.4.1",
+    "concurrently": "^9.1.2",
+    "electron": "^35.1.4",
+    "electron-builder": "^24.13.3",
+    "vite": "^6.3.5",
+    "wait-on": "^8.0.3"
+  }
+}
