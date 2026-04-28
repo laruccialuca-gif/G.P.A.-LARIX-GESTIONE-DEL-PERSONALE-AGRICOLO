@@ -162,3 +162,10 @@ win-unpacked/
 # sistema mac/windows
 .DS_Store
 Thumbs.db
+node_modules/
+release-demo/
+*.exe
+*.blockmap
+win-unpacked/
+dist/
+*.asar
