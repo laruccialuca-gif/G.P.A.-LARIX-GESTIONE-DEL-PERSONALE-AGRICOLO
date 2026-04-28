@@ -141,3 +141,24 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+# === DEMO BUILD (fondamentale) ===
+release-demo/
+release/
+*.exe
+*.blockmap
+*.yml
+
+# electron build
+dist-electron/
+win-unpacked/
+
+# logs app
+*.log
+
+# database locale (NON caricare dati utenti)
+*.sqlite
+*.db
+
+# sistema mac/windows
+.DS_Store
+Thumbs.db
