@@ -264,6 +264,11 @@ function shiftLocalDateString(value, dayOffset) {
   return formatLocalDate(parsed);
 }
 
+function formatIsoDateLabel(value) {
+  const parsed = parseDateValue(value);
+  return parsed ? parsed.toLocaleDateString('it-IT') : '—';
+}
+
 function getMarkerMeta(markerCode, markers = DEFAULT_DAY_MARKERS) {
   return (markers || []).find((item) => item.value === markerCode) || null;
 }
@@ -537,6 +542,12 @@ export default function AttendancePage() {
   const [pendingChanges, setPendingChanges] = useState({});
   const [inputDrafts, setInputDrafts] = useState({});
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
+  const [bulkHoursValue, setBulkHoursValue] = useState('');
+  const [bulkMarkerValue, setBulkMarkerValue] = useState('');
+  const [bulkOvertimeValue, setBulkOvertimeValue] = useState('');
+  const [bulkOverwrite, setBulkOverwrite] = useState(false);
+  const [bulkTargetDate, setBulkTargetDate] = useState(formatLocalDate(new Date()));
+  const [bulkApplyFeedback, setBulkApplyFeedback] = useState('');
   const [loading, setLoading] = useState(true);
   const [saveState, setSaveState] = useState('idle');
   const [showQuickEntry, setShowQuickEntry] = useState(false);
@@ -555,6 +566,7 @@ export default function AttendancePage() {
   const pendingChangesRef = useRef({});
   const isSavingRef = useRef(false);
   const statusTimeoutRef = useRef(null);
+  const bulkFeedbackTimeoutRef = useRef(null);
 
   async function loadData() {
     setLoading(true);
@@ -576,6 +588,7 @@ export default function AttendancePage() {
       setPendingChanges({});
       setInputDrafts({});
       setSelectedEmployeeIds([]);
+      setBulkApplyFeedback('');
       pendingChangesRef.current = {};
     } catch (err) {
       console.error(err);
@@ -625,6 +638,9 @@ export default function AttendancePage() {
   useEffect(() => () => {
     if (statusTimeoutRef.current) {
       clearTimeout(statusTimeoutRef.current);
+    }
+    if (bulkFeedbackTimeoutRef.current) {
+      clearTimeout(bulkFeedbackTimeoutRef.current);
     }
   }, []);
 
@@ -693,6 +709,14 @@ export default function AttendancePage() {
       current.filter((employeeId) => visibleEmployeeIds.includes(Number(employeeId)))
     );
   }, [visibleEmployeeIds]);
+
+  useEffect(() => {
+    const normalizedTargetDate = getDefaultQuickDateForMonth(currentMonth);
+    const isDateInCurrentMonth = daysInMonth.some((day) => formatDate(day) === bulkTargetDate);
+    if (!isDateInCurrentMonth) {
+      setBulkTargetDate(normalizedTargetDate);
+    }
+  }, [bulkTargetDate, currentMonth, daysInMonth]);
 
   const attendanceMap = useMemo(() => {
     const map = {};
@@ -847,6 +871,202 @@ export default function AttendancePage() {
 
   function toggleSelectAllVisible(checked) {
     setSelectedEmployeeIds(checked ? visibleEmployeeIds : []);
+  }
+
+  function getAttendanceForSnapshot(snapshot, employeeId, date) {
+    const key = `${employeeId}_${date}`;
+    return snapshot[key] !== undefined ? snapshot[key] : attendanceMap[key];
+  }
+
+  function hasMainValue(attendanceEntry) {
+    return getMainInputValue(attendanceEntry) !== '';
+  }
+
+  function hasMarkerValue(attendanceEntry) {
+    return !!attendanceEntry?.marker_code;
+  }
+
+  function hasOvertimeValue(attendanceEntry) {
+    return Number(attendanceEntry?.overtime_hours || 0) > 0;
+  }
+
+  function isAttendanceCellEmpty(attendanceEntry) {
+    return !attendanceEntry || isEffectivelyEmptyAttendanceEntry(attendanceEntry);
+  }
+
+  function handleAttendanceCellFocus(date) {
+    setBulkTargetDate(date);
+  }
+
+  function handleGridInputFocus(date, event) {
+    handleAttendanceCellFocus(date);
+    selectAllInputText(event);
+  }
+
+  function showBulkApplyFeedback(message) {
+    if (bulkFeedbackTimeoutRef.current) {
+      clearTimeout(bulkFeedbackTimeoutRef.current);
+    }
+    setBulkApplyFeedback(message);
+    bulkFeedbackTimeoutRef.current = setTimeout(() => {
+      setBulkApplyFeedback('');
+    }, 1800);
+  }
+
+  function handleBulkApply() {
+    const normalizedHours = String(bulkHoursValue || '').trim();
+    const normalizedMarker = String(bulkMarkerValue || '').trim();
+    const normalizedOvertime = String(bulkOvertimeValue || '').trim();
+
+    if (!normalizedHours && !normalizedMarker && !normalizedOvertime) {
+      return;
+    }
+
+    const parsedMain = normalizedHours ? parseMainInputValue(normalizedHours, attendanceSettings) : null;
+    const parsedOvertime = normalizedOvertime ? parseOvertimeInputValue(normalizedOvertime, attendanceSettings) : null;
+
+    if (parsedMain?.kind === 'invalid') {
+      alert('Valore ore ordinarie non valido');
+      return;
+    }
+
+    if (parsedOvertime?.kind === 'invalid') {
+      alert('Valore straordinario non valido');
+      return;
+    }
+
+    let appliedCount = 0;
+    const mainDraftKeysToClear = new Set();
+    const overtimeDraftKeysToClear = new Set();
+
+    // Update atomico: costruiamo tutti i cambi batch in un solo passaggio sullo
+    // snapshot corrente, cosi il batch non viene piu sovrascritto da setState ravvicinati.
+    setPendingChanges((current) => {
+      const next = { ...current };
+
+      for (const employeeId of selectedEmployeeIds) {
+        const key = `${employeeId}_${bulkTargetDate}`;
+        const existing = getAttendanceForSnapshot(current, employeeId, bulkTargetDate);
+        const baseEntry = normalizeAttendanceEntry({
+          employee_id: employeeId,
+          date: bulkTargetDate,
+          status: existing?.status || 'presente',
+          marker_code: existing?.marker_code || null,
+          entry_code: existing?.entry_code || null,
+          hours_worked: existing?.hours_worked ?? '',
+          overtime_hours: existing?.overtime_hours || 0,
+          notes: existing?.notes || null,
+        });
+
+        let nextEntry = { ...baseEntry };
+        let entryChanged = false;
+
+        if (parsedMain) {
+          const canApplyMain = bulkOverwrite || !hasMainValue(baseEntry);
+          if (canApplyMain) {
+            if (parsedMain.kind === 'type') {
+              nextEntry = {
+                ...nextEntry,
+                status: parsedMain.status,
+                entry_code: null,
+                hours_worked: 0,
+                overtime_hours: 0,
+              };
+            } else if (parsedMain.kind === 'symbol') {
+              nextEntry = {
+                ...nextEntry,
+                status: 'presente',
+                entry_code: parsedMain.symbol,
+                hours_worked: parsedMain.hours,
+              };
+            } else if (parsedMain.kind === 'hours') {
+              nextEntry = {
+                ...nextEntry,
+                status: parsedMain.hours === 0 ? 'assente' : 'presente',
+                entry_code: null,
+                hours_worked: parsedMain.hours,
+              };
+            }
+            entryChanged = true;
+            mainDraftKeysToClear.add(getInputDraftKey(employeeId, bulkTargetDate, 'main'));
+          }
+        }
+
+        if (normalizedMarker) {
+          const markerTargetEntry = entryChanged ? nextEntry : baseEntry;
+          const canApplyMarker =
+            (bulkOverwrite || !hasMarkerValue(baseEntry)) &&
+            !MAIN_DAY_TYPES.some((item) => item.value === markerTargetEntry.status);
+          if (canApplyMarker) {
+            nextEntry = {
+              ...nextEntry,
+              marker_code: normalizedMarker,
+            };
+            entryChanged = true;
+          }
+        }
+
+        if (parsedOvertime) {
+          const overtimeTargetEntry = entryChanged ? nextEntry : baseEntry;
+          const canApplyOvertime = bulkOverwrite || !hasOvertimeValue(baseEntry);
+          if (canApplyOvertime) {
+            nextEntry = {
+              ...overtimeTargetEntry,
+              overtime_hours: parsedOvertime.kind === 'empty' ? 0 : parsedOvertime.hours,
+            };
+            entryChanged = true;
+            overtimeDraftKeysToClear.add(getInputDraftKey(employeeId, bulkTargetDate, 'overtime'));
+          }
+        }
+
+        if (!entryChanged) {
+          continue;
+        }
+
+        const savedEntry = attendanceMap[key];
+        const normalizedNextEntry = normalizeAttendanceEntry(nextEntry);
+        appliedCount += 1;
+
+        if (savedEntry && areAttendanceEntriesEquivalent(normalizedNextEntry, savedEntry)) {
+          delete next[key];
+          continue;
+        }
+
+        if (!savedEntry && isEffectivelyEmptyAttendanceEntry(normalizedNextEntry)) {
+          delete next[key];
+          continue;
+        }
+
+        next[key] = normalizedNextEntry;
+      }
+
+      pendingChangesRef.current = next;
+      return next;
+    });
+
+    if (!appliedCount) {
+      showBulkApplyFeedback('Nessuna cella disponibile da aggiornare');
+      return;
+    }
+
+    setInputDrafts((current) => {
+      if (!Object.keys(current).length) {
+        return current;
+      }
+
+      const next = { ...current };
+      mainDraftKeysToClear.forEach((draftKey) => {
+        delete next[draftKey];
+      });
+      overtimeDraftKeysToClear.forEach((draftKey) => {
+        delete next[draftKey];
+      });
+      return next;
+    });
+
+    markDirtyState();
+
+    showBulkApplyFeedback(`Applicato a ${appliedCount} dipendenti`);
   }
 
   function scheduleSavedBadge() {
@@ -1450,6 +1670,10 @@ export default function AttendancePage() {
   const hasPendingChanges = Object.keys(pendingChanges).length > 0;
   const allVisibleSelected = visibleEmployeeIds.length > 0 && visibleEmployeeIds.every((employeeId) => selectedEmployeeIds.includes(employeeId));
   const todayKey = formatLocalDate(new Date());
+  const isBulkApplyDisabled =
+    !String(bulkHoursValue || '').trim() &&
+    !String(bulkMarkerValue || '').trim() &&
+    !String(bulkOvertimeValue || '').trim();
 
   return (
     <div className="attendance-page">
@@ -1599,6 +1823,82 @@ export default function AttendancePage() {
               {selectedTeam.notes}
             </div>
           ) : null}
+        </div>
+      ) : null}
+
+      {selectedEmployeeIds.length > 0 ? (
+        <div className="panel panel-section attendance-bulk-bar">
+          <div className="attendance-bulk-bar-head">
+            <div>
+              <div className="page-kicker" style={{ marginBottom: 6 }}>Inserimento multiplo</div>
+              <div className="attendance-bulk-bar-title">
+                {selectedEmployeeIds.length} dipendenti selezionati
+              </div>
+              <div className="attendance-bulk-bar-subtitle">
+                Giorno attivo: {formatIsoDateLabel(bulkTargetDate)}
+              </div>
+            </div>
+            {bulkApplyFeedback ? (
+              <span className="soft-chip" style={{ background: 'rgba(16, 185, 129, 0.14)', color: '#047857' }}>
+                {bulkApplyFeedback}
+              </span>
+            ) : null}
+          </div>
+
+          <div className="attendance-bulk-controls">
+            <label className="attendance-bulk-field">
+              <span className="communication-field-label">Ore</span>
+              <input
+                type="text"
+                value={bulkHoursValue}
+                onChange={(event) => setBulkHoursValue(event.target.value)}
+                placeholder={attendanceSettings.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : 'Ore'}
+              />
+            </label>
+
+            <label className="attendance-bulk-field">
+              <span className="communication-field-label">Marker</span>
+              <select
+                value={bulkMarkerValue}
+                onChange={(event) => setBulkMarkerValue(event.target.value)}
+              >
+                <option value="">Lascia invariato</option>
+                {activeMarkers.map((marker) => (
+                  <option key={marker.value} value={marker.value}>
+                    {marker.text}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="attendance-bulk-field">
+              <span className="communication-field-label">Straordinario</span>
+              <input
+                type="text"
+                value={bulkOvertimeValue}
+                onChange={(event) => setBulkOvertimeValue(event.target.value)}
+                placeholder="STR"
+              />
+            </label>
+
+            <label className="communication-checkbox attendance-bulk-checkbox">
+              <input
+                type="checkbox"
+                checked={bulkOverwrite}
+                onChange={(event) => setBulkOverwrite(event.target.checked)}
+              />
+              Sovrascrivi celle gia compilate
+            </label>
+
+            <button
+              className="button"
+              type="button"
+              onClick={handleBulkApply}
+              disabled={isBulkApplyDisabled}
+            >
+              Applica
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -1754,14 +2054,14 @@ export default function AttendancePage() {
                               <div style={{ display: 'grid', gap: 3, justifyItems: 'center' }}>
                                 <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                                   <input
-                                    className="attendance-hours-input"
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={hmValue.hours}
-                                    onChange={(event) => handleHoursMinutesValueChange(employee.id, dateStr, 'hours', event.target.value)}
-                                    onFocus={selectAllInputText}
-                                    onClick={selectAllInputText}
-                                    onKeyDown={handleGridKeyDown}
+                                  className="attendance-hours-input"
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={hmValue.hours}
+                                  onChange={(event) => handleHoursMinutesValueChange(employee.id, dateStr, 'hours', event.target.value)}
+                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
+                                  onClick={selectAllInputText}
+                                  onKeyDown={handleGridKeyDown}
                                     data-attendance-focus="true"
                                     placeholder={attendanceSettings.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : 'h'}
                                     style={{
@@ -1773,14 +2073,14 @@ export default function AttendancePage() {
                                     title={isSpecial ? specialOpt?.text : 'Ore intere oppure simbolo rapido / F / P / M'}
                                   />
                                   <input
-                                    className="attendance-hours-input"
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={hmValue.minutes}
-                                    onChange={(event) => handleHoursMinutesValueChange(employee.id, dateStr, 'minutes', event.target.value)}
-                                    onFocus={selectAllInputText}
-                                    onClick={selectAllInputText}
-                                    onKeyDown={handleGridKeyDown}
+                                  className="attendance-hours-input"
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={hmValue.minutes}
+                                  onChange={(event) => handleHoursMinutesValueChange(employee.id, dateStr, 'minutes', event.target.value)}
+                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
+                                  onClick={selectAllInputText}
+                                  onKeyDown={handleGridKeyDown}
                                     data-attendance-focus="true"
                                     placeholder="m"
                                     disabled={!!att?.entry_code || isSpecial}
@@ -1795,14 +2095,14 @@ export default function AttendancePage() {
                                 </div>
                                 <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                                   <input
-                                    className="attendance-hours-input"
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={overtimeHmValue.hours}
-                                    onChange={(event) => handleOvertimeHoursMinutesChange(employee.id, dateStr, 'hours', event.target.value)}
-                                    onFocus={selectAllInputText}
-                                    onClick={selectAllInputText}
-                                    onKeyDown={handleGridKeyDown}
+                                  className="attendance-hours-input"
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={overtimeHmValue.hours}
+                                  onChange={(event) => handleOvertimeHoursMinutesChange(employee.id, dateStr, 'hours', event.target.value)}
+                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
+                                  onClick={selectAllInputText}
+                                  onKeyDown={handleGridKeyDown}
                                     data-attendance-focus="true"
                                     placeholder={attendanceSettings.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : 'str'}
                                     disabled={isSpecial}
@@ -1815,14 +2115,14 @@ export default function AttendancePage() {
                                     title="Straordinario: ore intere oppure simbolo rapido"
                                   />
                                   <input
-                                    className="attendance-hours-input"
-                                    type="text"
-                                    inputMode="numeric"
-                                    value={overtimeHmValue.minutes}
-                                    onChange={(event) => handleOvertimeHoursMinutesChange(employee.id, dateStr, 'minutes', event.target.value)}
-                                    onFocus={selectAllInputText}
-                                    onClick={selectAllInputText}
-                                    onKeyDown={handleGridKeyDown}
+                                  className="attendance-hours-input"
+                                  type="text"
+                                  inputMode="numeric"
+                                  value={overtimeHmValue.minutes}
+                                  onChange={(event) => handleOvertimeHoursMinutesChange(employee.id, dateStr, 'minutes', event.target.value)}
+                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
+                                  onClick={selectAllInputText}
+                                  onKeyDown={handleGridKeyDown}
                                     data-attendance-focus="true"
                                     placeholder="str"
                                     disabled={isSpecial}
@@ -1845,7 +2145,7 @@ export default function AttendancePage() {
                                   value={getDisplayedInputValue(employee.id, dateStr, 'main', getMainInputValue(att))}
                                   onChange={(event) => handleMainValueChange(employee.id, dateStr, event.target.value)}
                                   onBlur={() => handleMainValueBlur(employee.id, dateStr)}
-                                  onFocus={selectAllInputText}
+                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
                                   onClick={selectAllInputText}
                                   onKeyDown={handleGridKeyDown}
                                   data-attendance-focus="true"
@@ -1867,7 +2167,7 @@ export default function AttendancePage() {
                                   )}
                                   onChange={(event) => handleOvertimeValueChange(employee.id, dateStr, event.target.value)}
                                   onBlur={() => handleOvertimeValueBlur(employee.id, dateStr)}
-                                  onFocus={selectAllInputText}
+                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
                                   onClick={selectAllInputText}
                                   onKeyDown={handleGridKeyDown}
                                   data-attendance-focus="true"
@@ -1888,7 +2188,10 @@ export default function AttendancePage() {
                             ) : markerMeta && !isEditingMarker ? (
                               <button
                                 type="button"
-                                onClick={() => setOpenMarkerMenuKey(markerMenuKey)}
+                                onClick={() => {
+                                  handleAttendanceCellFocus(dateStr);
+                                  setOpenMarkerMenuKey(markerMenuKey);
+                                }}
                                 title={`Marcatore ${markerMeta.text}. Clicca per modificare.`}
                                 className="attendance-marker-button"
                                 style={{ background: markerMeta.background, color: markerMeta.color }}
@@ -1904,6 +2207,7 @@ export default function AttendancePage() {
                                   handleMarkerChange(employee.id, dateStr, nextValue);
                                   setOpenMarkerMenuKey(nextValue ? null : markerMenuKey);
                                 }}
+                                onFocus={() => handleAttendanceCellFocus(dateStr)}
                                 onKeyDown={handleGridKeyDown}
                                 data-attendance-focus="true"
                                 onBlur={() => {

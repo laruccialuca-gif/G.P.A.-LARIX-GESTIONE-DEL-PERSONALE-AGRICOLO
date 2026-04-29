@@ -1014,6 +1014,47 @@ textarea {
   white-space: nowrap;
 }
 
+.attendance-bulk-bar {
+  display: grid;
+  gap: 16px;
+}
+
+.attendance-bulk-bar-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.attendance-bulk-bar-title {
+  font-size: 20px;
+  font-weight: 800;
+  color: #1f2937;
+}
+
+.attendance-bulk-bar-subtitle {
+  margin-top: 6px;
+  color: #667085;
+  font-size: 13px;
+}
+
+.attendance-bulk-controls {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 180px) minmax(0, 220px) minmax(0, 180px) auto auto;
+  align-items: end;
+}
+
+.attendance-bulk-field {
+  display: grid;
+  gap: 6px;
+}
+
+.attendance-bulk-checkbox {
+  align-self: end;
+}
+
 .attendance-left-head,
 .attendance-left-cell {
   display: flex;
@@ -1083,6 +1124,12 @@ textarea {
 
 .attendance-marker-placeholder {
   display: inline-block;
+}
+
+@media (max-width: 960px) {
+  .attendance-bulk-controls {
+    grid-template-columns: 1fr;
+  }
 }
 
 .table-shell {
