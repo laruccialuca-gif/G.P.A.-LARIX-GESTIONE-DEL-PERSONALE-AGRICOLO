@@ -1560,7 +1560,7 @@ export default function AttendancePage() {
                 return (
                   <tr key={employee.id}>
                     <td style={tdStyleLeft}>
-                      <div>{employee.first_name} {employee.last_name}</div>
+                      <div className="attendance-employee-name">{employee.first_name} {employee.last_name}</div>
                       <div style={{ fontSize: 10, color: '#6b7280' }}>
                         {employee.role || ''}
                         {teamMember?.manage_by_days ? ' · gestione a giornate' : ''}

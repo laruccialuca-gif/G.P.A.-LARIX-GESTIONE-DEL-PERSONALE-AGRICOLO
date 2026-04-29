@@ -218,6 +218,26 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(31, 41, 55, 0.18) transparent;
+}
+
+.sidebar-panel::-webkit-scrollbar {
+  width: 8px;
+}
+
+.sidebar-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-panel::-webkit-scrollbar-thumb {
+  background: rgba(31, 41, 55, 0.14);
+  border-radius: 999px;
+}
+
+.sidebar-panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(31, 41, 55, 0.22);
 }
 
 .sidebar-brand {
@@ -992,6 +1012,13 @@ textarea {
 .attendance-table td {
   overflow: hidden;
   white-space: nowrap;
+}
+
+.attendance-employee-name {
+  font-size: 13px;
+  line-height: 1.3;
+  font-weight: 700;
+  color: #1f2937;
 }
 
 .attendance-cell-stack {

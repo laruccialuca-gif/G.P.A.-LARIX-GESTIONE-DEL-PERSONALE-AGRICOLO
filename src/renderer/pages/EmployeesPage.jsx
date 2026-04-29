@@ -259,24 +259,35 @@ function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected,
         <MiniCheckBadge label="Form." required={!!employee.art37_required} done={!!employee.art37_done} />
       </div>
 
-      {employee.status !== 'attivo' && (
-        <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#fef3c7', color: '#92400e', flexShrink: 0 }}>
-          Inattivo
-        </span>
-      )}
+      <div style={{ width: 162, flexShrink: 0, display: 'flex', justifyContent: 'flex-end' }}>
+        {employee.status !== 'attivo' ? (
+          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#fef3c7', color: '#92400e', whiteSpace: 'nowrap' }}>
+            Inattivo
+          </span>
+        ) : null}
+      </div>
 
-      <button
-        type="button"
-        onClick={e => { e.stopPropagation(); onArchive(employee.id); }}
-        title="Archivia dipendente"
-        style={{
-          flexShrink: 0, padding: '3px 10px', fontSize: 11, fontWeight: 700,
-          borderRadius: 8, border: '1px solid rgba(239,68,68,0.25)',
-          background: 'rgba(239,68,68,0.07)', color: '#b91c1c', cursor: 'pointer',
-        }}
-      >
-        Archivia
-      </button>
+      <div style={{ width: 92, flexShrink: 0, display: 'flex', justifyContent: 'flex-end' }}>
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); onArchive(employee.id); }}
+          title="Archivia dipendente"
+          style={{
+            width: '100%',
+            flexShrink: 0,
+            padding: '3px 10px',
+            fontSize: 11,
+            fontWeight: 700,
+            borderRadius: 8,
+            border: '1px solid rgba(239,68,68,0.25)',
+            background: 'rgba(239,68,68,0.07)',
+            color: '#b91c1c',
+            cursor: 'pointer',
+          }}
+        >
+          Archivia
+        </button>
+      </div>
     </div>
   );
 }
