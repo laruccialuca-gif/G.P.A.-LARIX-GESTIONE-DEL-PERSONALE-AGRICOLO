@@ -658,6 +658,11 @@ export default function AttendancePage() {
     return pendingChanges[key] !== undefined ? pendingChanges[key] : attendanceMap[key];
   };
 
+  function getAttFromCurrent(currentPendingChanges, employeeId, date) {
+    const key = `${employeeId}_${date}`;
+    return currentPendingChanges[key] !== undefined ? currentPendingChanges[key] : attendanceMap[key];
+  }
+
   function getInputDraftKey(employeeId, date, field = 'main') {
     return `${employeeId}_${date}_${field}`;
   }
@@ -916,7 +921,6 @@ export default function AttendancePage() {
 
   function handleOvertimeValueChange(employeeId, date, value) {
     const key = `${employeeId}_${date}`;
-    const existing = getAtt(employeeId, date);
     setInputDraft(employeeId, date, 'overtime', value);
     const parsed = parseOvertimeInputValue(value, attendanceSettings);
 
@@ -924,9 +928,11 @@ export default function AttendancePage() {
       return;
     }
 
-    setPendingChanges((current) => ({
-      ...current,
-      [key]: normalizeAttendanceEntry({
+    setPendingChanges((current) => {
+      const existing = getAttFromCurrent(current, employeeId, date);
+      return {
+        ...current,
+        [key]: normalizeAttendanceEntry({
         employee_id: employeeId,
         date,
         status: existing?.status || 'presente',
@@ -938,8 +944,9 @@ export default function AttendancePage() {
             ? 0
             : parsed.hours,
         notes: existing?.notes || null,
-      }),
-    }));
+        }),
+      };
+    });
   }
 
   function handleOvertimeValueBlur(employeeId, date) {
@@ -971,36 +978,40 @@ export default function AttendancePage() {
     }
 
     const key = `${employeeId}_${date}`;
-    setPendingChanges((current) => ({
-      ...current,
-      [key]: normalizeAttendanceEntry({
+    setPendingChanges((current) => {
+      const mergedExisting = getAttFromCurrent(current, employeeId, date);
+      return {
+        ...current,
+        [key]: normalizeAttendanceEntry({
         employee_id: employeeId,
         date,
-        status: existing?.status || 'presente',
-        marker_code: existing?.marker_code || null,
-        entry_code: existing?.entry_code || null,
-        hours_worked: existing?.hours_worked ?? '',
+        status: mergedExisting?.status || 'presente',
+        marker_code: mergedExisting?.marker_code || null,
+        entry_code: mergedExisting?.entry_code || null,
+        hours_worked: mergedExisting?.hours_worked ?? '',
         overtime_hours:
           parsed.kind === 'empty'
             ? 0
             : parsed.hours,
-        notes: existing?.notes || null,
-      }),
-    }));
+        notes: mergedExisting?.notes || null,
+        }),
+      };
+    });
   }
 
   function handleMarkerChange(employeeId, date, markerCode) {
     const key = `${employeeId}_${date}`;
-    const existing = getAtt(employeeId, date);
-    const isMainType = MAIN_DAY_TYPES.some((item) => item.value === existing?.status);
+    setPendingChanges((current) => {
+      const existing = getAttFromCurrent(current, employeeId, date);
+      const isMainType = MAIN_DAY_TYPES.some((item) => item.value === existing?.status);
 
-    if (isMainType && markerCode) {
-      return;
-    }
+      if (isMainType && markerCode) {
+        return current;
+      }
 
-    setPendingChanges((current) => ({
-      ...current,
-      [key]: normalizeAttendanceEntry({
+      return {
+        ...current,
+        [key]: normalizeAttendanceEntry({
         employee_id: employeeId,
         date,
         status: existing?.status || 'presente',
@@ -1009,8 +1020,9 @@ export default function AttendancePage() {
         hours_worked: existing?.hours_worked ?? '',
         overtime_hours: existing?.overtime_hours || 0,
         notes: existing?.notes || null,
-      }),
-    }));
+        }),
+      };
+    });
   }
 
   function applyQuickHours(employeeIds, date, value, minutesValue = '') {
@@ -1085,7 +1097,6 @@ export default function AttendancePage() {
     }
 
     employeeIds.forEach((employeeId) => {
-      const existing = getAtt(employeeId, date);
       const parsed =
         attendanceSettings.hoursFormat === 'hours_minutes'
           ? parseOvertimeHoursMinutesValue(value, minutesValue, attendanceSettings)
@@ -1096,9 +1107,11 @@ export default function AttendancePage() {
       }
 
       const key = `${employeeId}_${date}`;
-      setPendingChanges((current) => ({
-        ...current,
-        [key]: normalizeAttendanceEntry({
+      setPendingChanges((current) => {
+        const existing = getAttFromCurrent(current, employeeId, date);
+        return {
+          ...current,
+          [key]: normalizeAttendanceEntry({
           employee_id: employeeId,
           date,
           status: existing?.status || 'presente',
@@ -1107,8 +1120,9 @@ export default function AttendancePage() {
           hours_worked: existing?.hours_worked ?? '',
           overtime_hours: parsed.kind === 'empty' ? 0 : parsed.hours,
           notes: existing?.notes || null,
-        }),
-      }));
+          }),
+        };
+      });
     });
   }
 
