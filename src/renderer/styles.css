@@ -461,6 +461,7 @@ textarea {
 
 .button,
 .button-secondary,
+.button-warning,
 .button-danger {
   display: inline-flex;
   align-items: center;
@@ -490,9 +491,19 @@ textarea {
   border: 1px solid rgba(239, 68, 68, 0.16);
 }
 
+.button-warning {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  border: 1px solid rgba(212, 160, 23, 0.28);
+}
+
 .button-secondary:hover {
   background: rgba(22, 101, 52, 0.06);
   color: var(--color-primary);
+}
+
+.button-warning:hover {
+  background: rgba(212, 160, 23, 0.24);
 }
 
 .toolbar {

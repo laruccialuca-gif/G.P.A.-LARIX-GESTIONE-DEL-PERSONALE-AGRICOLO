@@ -147,7 +147,7 @@ npm run dist:win:demo
 
 Output atteso:
 
-- `release-demo/Gestionale-Demo-1.0.0-Setup.exe`
+- `release-demo/GPA-Demo-1.0.0-Setup.exe`
 - verifica automatica `better_sqlite3.node` (header `MZ`) superata
 
 ### Procedura consigliata anti-bug (build pulita)
@@ -203,7 +203,7 @@ Lo script Inno Setup e configurato per:
 
 ### 4. Verifica finale post-build demo
 
-Eseguire su Windows dopo la generazione di `release-demo/Gestionale-Demo-1.0.0-Setup.exe`.
+Eseguire su Windows dopo la generazione di `release-demo/GPA-Demo-1.0.0-Setup.exe`.
 
 #### Test guidato 1. Aggiornamento sopra demo gia installata
 

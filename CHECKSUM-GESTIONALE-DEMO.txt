@@ -1,0 +1,11 @@
+File ufficiale:
+GPA-Demo-1.0.0-Setup.exe
+
+SHA-256:
+F931A25067F30FA8969219DF98312C758E98B4AEF3F8A421307A39A4A5E50217
+
+Modulo better-sqlite3 atteso dentro l'installer:
+Path: resources/app.asar.unpacked/node_modules/better-sqlite3/build/Release/better_sqlite3.node
+Tipo atteso: PE32+ executable (DLL) x86-64, for MS Windows
+SHA-256 atteso del modulo:
+7729639f31ccecdc88f6b0d42cd1014cdc44c087433269514633cafe48762fd3

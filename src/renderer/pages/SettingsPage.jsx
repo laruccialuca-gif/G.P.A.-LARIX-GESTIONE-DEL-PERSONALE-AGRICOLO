@@ -739,12 +739,15 @@ export default function SettingsPage() {
 
   async function handleResetDemo() {
     const confirmed = window.confirm(
-      'Confermi il ripristino completo dei dati demo? L\'app verra riavviata con il database demo iniziale.'
+      'Questa operazione cancellerà tutti i dati inseriti nella demo e ripristinerà i dati iniziali di esempio.\n\nL\'operazione è irreversibile e l\'app verrà riavviata al termine.\n\nVuoi continuare?'
     );
     if (!confirmed) return;
 
     try {
-      await window.api.demo.reset();
+      const result = await window.api.demo.reset();
+      if (result?.success) {
+        alert('Demo ripristinata correttamente');
+      }
     } catch (err) {
       console.error(err);
       alert(err?.message || 'Errore ripristino dati demo');
@@ -1399,7 +1402,7 @@ export default function SettingsPage() {
             <div className="muted-box" style={{ marginTop: 14 }}>
               Versione demo separata dai dati reali. Puoi ripristinare in qualsiasi momento il database di esempio iniziale.
               <div style={{ marginTop: 12 }}>
-                <button className="button-secondary" type="button" onClick={handleResetDemo}>
+                <button className="button-warning" type="button" onClick={handleResetDemo}>
                   Ripristina dati demo
                 </button>
               </div>

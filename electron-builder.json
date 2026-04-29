@@ -1,0 +1,57 @@
+{
+  "appId": "com.company.gestionaledipendentioffline",
+  "productName": "Gestionale",
+  "directories": {
+    "output": "release",
+    "buildResources": "build/resources"
+  },
+  "files": [
+    "dist/**/*",
+    "src/main/**/*",
+    "package.json"
+  ],
+  "asar": true,
+  "asarUnpack": [
+    "node_modules/**/*.node",
+    "node_modules/better-sqlite3/**/*",
+    "src/main/pdf-ocr"
+  ],
+  "npmRebuild": false,
+  "extraMetadata": {
+    "name": "gestionale",
+    "main": "src/main/main.js",
+    "appVariant": "standard"
+  },
+  "artifactName": "${productName}-${version}-${arch}.${ext}",
+  "win": {
+    "executableName": "Gestionale",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "dir",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "icon": "build/resources/icon.ico",
+    "publisherName": "Publisher modificabile",
+    "requestedExecutionLevel": "asInvoker"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Gestionale",
+    "uninstallDisplayName": "Gestionale",
+    "deleteAppDataOnUninstall": false,
+    "displayLanguageSelector": false
+  }
+}

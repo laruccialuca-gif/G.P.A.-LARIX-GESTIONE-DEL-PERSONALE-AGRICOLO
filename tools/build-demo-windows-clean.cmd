@@ -28,5 +28,5 @@ node tools\verify-win-native-module.mjs demo || exit /b 1
 npm run build:demo:result || exit /b 1
 
 echo OK: build completata
-echo Output: release-demo\Gestionale-Demo-1.0.0-Setup.exe
+echo Output: release-demo\GPA-Demo-1.0.0-Setup.exe
 endlocal

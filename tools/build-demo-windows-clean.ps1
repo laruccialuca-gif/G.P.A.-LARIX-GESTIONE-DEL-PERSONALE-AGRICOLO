@@ -26,4 +26,4 @@ node tools/verify-win-native-module.mjs demo
 npm run build:demo:result
 
 Write-Host "OK: build completata"
-Write-Host "Output: release-demo\\Gestionale-Demo-1.0.0-Setup.exe"
+Write-Host "Output: release-demo\\GPA-Demo-1.0.0-Setup.exe"

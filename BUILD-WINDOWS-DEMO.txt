@@ -1,0 +1,13 @@
+BUILD DEMO WINDOWS (CORRETTA)
+
+1) Copia questa cartella su un PC Windows 64-bit
+2) Apri terminale nella cartella progetto
+3) Esegui:
+   npm install
+   npm run dist:win:demo
+
+Output finale corretto:
+- release-demo\GPA-Demo-1.0.0-Setup.exe
+
+Nota:
+I controlli nel progetto bloccano automaticamente build errate su macOS/Linux.
