@@ -269,6 +269,20 @@ function formatIsoDateLabel(value) {
   return parsed ? parsed.toLocaleDateString('it-IT') : '—';
 }
 
+function formatBulkFieldSummary({ hours, markerLabel, overtime }) {
+  const parts = [];
+  if (hours) {
+    parts.push(`${hours} ore`);
+  }
+  if (markerLabel) {
+    parts.push(`marker ${markerLabel}`);
+  }
+  if (overtime) {
+    parts.push(`${overtime} straordinario`);
+  }
+  return parts.join(', ');
+}
+
 function getMarkerMeta(markerCode, markers = DEFAULT_DAY_MARKERS) {
   return (markers || []).find((item) => item.value === markerCode) || null;
 }
@@ -935,6 +949,37 @@ export default function AttendancePage() {
       return;
     }
 
+    if ((parsedMain?.kind === 'hours' || parsedMain?.kind === 'symbol') && Number(parsedMain.hours || 0) > 24) {
+      alert('Le ore ordinarie devono essere comprese tra 0 e 24.');
+      return;
+    }
+
+    if (parsedOvertime?.kind === 'hours' && Number(parsedOvertime.hours || 0) > 24) {
+      alert('Lo straordinario deve essere compreso tra 0 e 24.');
+      return;
+    }
+
+    const selectedCount = selectedEmployeeIds.length;
+    const markerLabel = normalizedMarker
+      ? activeMarkers.find((marker) => marker.value === normalizedMarker)?.text || normalizedMarker
+      : '';
+    const confirmationNeeded = selectedCount > 10 || bulkOverwrite;
+
+    if (confirmationNeeded) {
+      const summary = formatBulkFieldSummary({
+        hours: normalizedHours,
+        markerLabel,
+        overtime: normalizedOvertime,
+      });
+      const confirmMessage = bulkOverwrite
+        ? `Stai per sovrascrivere valori esistenti per ${selectedCount} dipendenti.\n\nApplicare: ${summary || 'modifiche batch'}?`
+        : `Stai per applicare ${summary || 'modifiche batch'} a ${selectedCount} dipendenti.\n\nConfermi?`;
+
+      if (!window.confirm(confirmMessage)) {
+        return;
+      }
+    }
+
     let appliedCount = 0;
     const mainDraftKeysToClear = new Set();
     const overtimeDraftKeysToClear = new Set();
@@ -1066,7 +1111,21 @@ export default function AttendancePage() {
 
     markDirtyState();
 
-    showBulkApplyFeedback(`Applicato a ${appliedCount} dipendenti`);
+    setBulkHoursValue('');
+    setBulkMarkerValue('');
+    setBulkOvertimeValue('');
+    setBulkOverwrite(false);
+
+    const summary = formatBulkFieldSummary({
+      hours: normalizedHours,
+      markerLabel,
+      overtime: normalizedOvertime,
+    });
+    showBulkApplyFeedback(
+      summary
+        ? `${summary} applicate a ${appliedCount} dipendenti`
+        : `Applicato a ${appliedCount} dipendenti`
+    );
   }
 
   function scheduleSavedBadge() {
