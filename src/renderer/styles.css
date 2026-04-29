@@ -1014,6 +1014,21 @@ textarea {
   white-space: nowrap;
 }
 
+.attendance-left-head,
+.attendance-left-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.attendance-left-head input,
+.attendance-left-cell input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex-shrink: 0;
+}
+
 .attendance-employee-name {
   font-size: 13px;
   line-height: 1.3;

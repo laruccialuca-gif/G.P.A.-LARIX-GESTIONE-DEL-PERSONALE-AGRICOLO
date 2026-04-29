@@ -499,6 +499,33 @@ function parseOvertimeHoursMinutesValue(hoursRaw, minutesRaw, attendanceSettings
   return parsed;
 }
 
+function isEffectivelyEmptyAttendanceEntry(item) {
+  const normalized = normalizeAttendanceEntry(item || {});
+  return (
+    normalized.status === 'presente' &&
+    !normalized.marker_code &&
+    !normalized.entry_code &&
+    (normalized.hours_worked === '' || normalized.hours_worked === null || normalized.hours_worked === undefined) &&
+    Number(normalized.overtime_hours || 0) === 0 &&
+    !normalized.notes
+  );
+}
+
+function areAttendanceEntriesEquivalent(a, b) {
+  const left = normalizeAttendanceEntry(a || {});
+  const right = normalizeAttendanceEntry(b || {});
+  return (
+    left.employee_id === right.employee_id &&
+    left.date === right.date &&
+    left.status === right.status &&
+    (left.marker_code || null) === (right.marker_code || null) &&
+    (left.entry_code || null) === (right.entry_code || null) &&
+    (left.hours_worked === '' ? '' : Number(left.hours_worked || 0)) === (right.hours_worked === '' ? '' : Number(right.hours_worked || 0)) &&
+    Number(left.overtime_hours || 0) === Number(right.overtime_hours || 0) &&
+    (left.notes || null) === (right.notes || null)
+  );
+}
+
 export default function AttendancePage() {
   const { selectedYear, setSelectedYear } = useYearContext();
   const [currentMonth, setCurrentMonth] = useState(() => new Date(selectedYear, new Date().getMonth(), 1));
@@ -509,6 +536,7 @@ export default function AttendancePage() {
   const [selectedEntity, setSelectedEntity] = useState('all');
   const [pendingChanges, setPendingChanges] = useState({});
   const [inputDrafts, setInputDrafts] = useState({});
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saveState, setSaveState] = useState('idle');
   const [showQuickEntry, setShowQuickEntry] = useState(false);
@@ -516,6 +544,7 @@ export default function AttendancePage() {
   const [openMarkerMenuKey, setOpenMarkerMenuKey] = useState(null);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
   const printAreaRef = useRef(null);
+  const tableShellRef = useRef(null);
 
   const daysInMonth = useMemo(() => getMonthDays(currentMonth), [currentMonth]);
   const dayInfoMap = useMemo(
@@ -546,6 +575,7 @@ export default function AttendancePage() {
       setSettings(settingsData || null);
       setPendingChanges({});
       setInputDrafts({});
+      setSelectedEmployeeIds([]);
       pendingChangesRef.current = {};
     } catch (err) {
       console.error(err);
@@ -573,6 +603,14 @@ export default function AttendancePage() {
   }, [pendingChanges]);
 
   useEffect(() => {
+    if (!Object.keys(pendingChanges).length && saveState === 'dirty' && !isSavingRef.current) {
+      setSaveState('idle');
+    }
+  }, [pendingChanges, saveState]);
+
+  useEffect(() => {
+    // Debounce unico per il buffer locale: finche l'utente digita, aggiorniamo lo stato
+    // ma salviamo sul backend solo dopo una breve pausa.
     if (!Object.keys(pendingChanges).length) {
       return undefined;
     }
@@ -634,6 +672,11 @@ export default function AttendancePage() {
     }));
   }, [activeEmployees, selectedMeta, selectedTeam, selectedYear]);
 
+  const visibleEmployeeIds = useMemo(
+    () => displayRows.map(({ employee }) => Number(employee.id)).filter(Number.isFinite),
+    [displayRows]
+  );
+
   useEffect(() => {
     if (selectedMeta.type === 'employee' && !activeEmployees.some((employee) => Number(employee.id) === selectedMeta.id)) {
       setSelectedEntity('all');
@@ -644,6 +687,12 @@ export default function AttendancePage() {
       setSelectedEntity('all');
     }
   }, [selectedMeta.type, selectedMeta.id, activeEmployees, visibleTeams]);
+
+  useEffect(() => {
+    setSelectedEmployeeIds((current) =>
+      current.filter((employeeId) => visibleEmployeeIds.includes(Number(employeeId)))
+    );
+  }, [visibleEmployeeIds]);
 
   const attendanceMap = useMemo(() => {
     const map = {};
@@ -657,11 +706,6 @@ export default function AttendancePage() {
     const key = `${employeeId}_${date}`;
     return pendingChanges[key] !== undefined ? pendingChanges[key] : attendanceMap[key];
   };
-
-  function getAttFromCurrent(currentPendingChanges, employeeId, date) {
-    const key = `${employeeId}_${date}`;
-    return currentPendingChanges[key] !== undefined ? currentPendingChanges[key] : attendanceMap[key];
-  }
 
   function getInputDraftKey(employeeId, date, field = 'main') {
     return `${employeeId}_${date}_${field}`;
@@ -688,6 +732,55 @@ export default function AttendancePage() {
     return inputDrafts[draftKey] ?? fallbackValue;
   }
 
+  function markDirtyState() {
+    if (!isSavingRef.current) {
+      setSaveState('dirty');
+    }
+  }
+
+  function queuePendingEntry(employeeId, date, nextEntry) {
+    const key = `${employeeId}_${date}`;
+    const normalizedEntry = normalizeAttendanceEntry(nextEntry);
+    const savedEntry = attendanceMap[key];
+
+    setPendingChanges((current) => {
+      const currentEntry = current[key];
+
+      if (savedEntry && areAttendanceEntriesEquivalent(normalizedEntry, savedEntry)) {
+        if (currentEntry === undefined) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[key];
+        pendingChangesRef.current = next;
+        return next;
+      }
+
+      if (!savedEntry && isEffectivelyEmptyAttendanceEntry(normalizedEntry)) {
+        if (currentEntry === undefined) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[key];
+        pendingChangesRef.current = next;
+        return next;
+      }
+
+      if (currentEntry && areAttendanceEntriesEquivalent(currentEntry, normalizedEntry)) {
+        return current;
+      }
+
+      const next = {
+        ...current,
+        [key]: normalizedEntry,
+      };
+      pendingChangesRef.current = next;
+      return next;
+    });
+
+    markDirtyState();
+  }
+
   function clearPendingChange(employeeId, date) {
     const key = `${employeeId}_${date}`;
     setPendingChanges((current) => {
@@ -697,6 +790,63 @@ export default function AttendancePage() {
       pendingChangesRef.current = next;
       return next;
     });
+  }
+
+  function handleCancelChanges() {
+    if (isSavingRef.current) {
+      return;
+    }
+
+    setPendingChanges({});
+    pendingChangesRef.current = {};
+    setInputDrafts({});
+    if (statusTimeoutRef.current) {
+      clearTimeout(statusTimeoutRef.current);
+    }
+    setSaveState('idle');
+  }
+
+  function moveAttendanceFocus(currentTarget, direction = 1) {
+    const focusableNodes = [...(tableShellRef.current?.querySelectorAll('[data-attendance-focus="true"]') || [])]
+      .filter((node) => !node.disabled);
+
+    const currentIndex = focusableNodes.indexOf(currentTarget);
+    if (currentIndex === -1) {
+      return;
+    }
+
+    const nextIndex = currentIndex + direction;
+    const nextTarget = focusableNodes[nextIndex];
+    if (!nextTarget) {
+      return;
+    }
+
+    nextTarget.focus();
+    if (typeof nextTarget.select === 'function') {
+      nextTarget.select();
+    }
+  }
+
+  function handleGridKeyDown(event) {
+    if (event.key !== 'Enter' && event.key !== 'Tab') {
+      return;
+    }
+
+    event.preventDefault();
+    moveAttendanceFocus(event.currentTarget, event.shiftKey ? -1 : 1);
+  }
+
+  function toggleEmployeeSelection(employeeId, checked) {
+    setSelectedEmployeeIds((current) => {
+      if (checked) {
+        return current.includes(employeeId) ? current : [...current, employeeId];
+      }
+      return current.filter((id) => id !== employeeId);
+    });
+  }
+
+  function toggleSelectAllVisible(checked) {
+    setSelectedEmployeeIds(checked ? visibleEmployeeIds : []);
   }
 
   function scheduleSavedBadge() {
@@ -794,7 +944,6 @@ export default function AttendancePage() {
   }
 
   function handleMainValueChange(employeeId, date, value) {
-    const key = `${employeeId}_${date}`;
     const existing = getAtt(employeeId, date);
     setInputDraft(employeeId, date, 'main', value);
     const parsed = parseMainInputValue(value, attendanceSettings);
@@ -845,10 +994,7 @@ export default function AttendancePage() {
             notes: existing?.notes || null,
           };
 
-    setPendingChanges((current) => ({
-      ...current,
-      [key]: normalizeAttendanceEntry(nextEntry),
-    }));
+    queuePendingEntry(employeeId, date, nextEntry);
   }
 
   function handleMainValueBlur(employeeId, date) {
@@ -878,7 +1024,6 @@ export default function AttendancePage() {
       return;
     }
 
-    const key = `${employeeId}_${date}`;
     const nextEntry =
       parsed.kind === 'type'
         ? {
@@ -913,14 +1058,10 @@ export default function AttendancePage() {
             notes: existing?.notes || null,
           };
 
-    setPendingChanges((current) => ({
-      ...current,
-      [key]: normalizeAttendanceEntry(nextEntry),
-    }));
+    queuePendingEntry(employeeId, date, nextEntry);
   }
 
   function handleOvertimeValueChange(employeeId, date, value) {
-    const key = `${employeeId}_${date}`;
     setInputDraft(employeeId, date, 'overtime', value);
     const parsed = parseOvertimeInputValue(value, attendanceSettings);
 
@@ -928,11 +1069,8 @@ export default function AttendancePage() {
       return;
     }
 
-    setPendingChanges((current) => {
-      const existing = getAttFromCurrent(current, employeeId, date);
-      return {
-        ...current,
-        [key]: normalizeAttendanceEntry({
+    const existing = getAtt(employeeId, date);
+    queuePendingEntry(employeeId, date, {
         employee_id: employeeId,
         date,
         status: existing?.status || 'presente',
@@ -944,8 +1082,6 @@ export default function AttendancePage() {
             ? 0
             : parsed.hours,
         notes: existing?.notes || null,
-        }),
-      };
     });
   }
 
@@ -977,12 +1113,8 @@ export default function AttendancePage() {
       return;
     }
 
-    const key = `${employeeId}_${date}`;
-    setPendingChanges((current) => {
-      const mergedExisting = getAttFromCurrent(current, employeeId, date);
-      return {
-        ...current,
-        [key]: normalizeAttendanceEntry({
+    const mergedExisting = getAtt(employeeId, date);
+    queuePendingEntry(employeeId, date, {
         employee_id: employeeId,
         date,
         status: mergedExisting?.status || 'presente',
@@ -994,24 +1126,18 @@ export default function AttendancePage() {
             ? 0
             : parsed.hours,
         notes: mergedExisting?.notes || null,
-        }),
-      };
     });
   }
 
   function handleMarkerChange(employeeId, date, markerCode) {
-    const key = `${employeeId}_${date}`;
-    setPendingChanges((current) => {
-      const existing = getAttFromCurrent(current, employeeId, date);
-      const isMainType = MAIN_DAY_TYPES.some((item) => item.value === existing?.status);
+    const existing = getAtt(employeeId, date);
+    const isMainType = MAIN_DAY_TYPES.some((item) => item.value === existing?.status);
 
-      if (isMainType && markerCode) {
-        return current;
-      }
+    if (isMainType && markerCode) {
+      return;
+    }
 
-      return {
-        ...current,
-        [key]: normalizeAttendanceEntry({
+    queuePendingEntry(employeeId, date, {
         employee_id: employeeId,
         date,
         status: existing?.status || 'presente',
@@ -1020,8 +1146,6 @@ export default function AttendancePage() {
         hours_worked: existing?.hours_worked ?? '',
         overtime_hours: existing?.overtime_hours || 0,
         notes: existing?.notes || null,
-        }),
-      };
     });
   }
 
@@ -1046,7 +1170,6 @@ export default function AttendancePage() {
           return;
         }
 
-        const key = `${employeeId}_${date}`;
         const nextEntry =
           parsed.kind === 'type'
             ? {
@@ -1081,10 +1204,7 @@ export default function AttendancePage() {
                 notes: existing?.notes || null,
               };
 
-        setPendingChanges((current) => ({
-          ...current,
-          [key]: normalizeAttendanceEntry(nextEntry),
-        }));
+        queuePendingEntry(employeeId, date, nextEntry);
       } else {
         handleMainValueChange(employeeId, date, value);
       }
@@ -1106,12 +1226,8 @@ export default function AttendancePage() {
         return;
       }
 
-      const key = `${employeeId}_${date}`;
-      setPendingChanges((current) => {
-        const existing = getAttFromCurrent(current, employeeId, date);
-        return {
-          ...current,
-          [key]: normalizeAttendanceEntry({
+      const existing = getAtt(employeeId, date);
+      queuePendingEntry(employeeId, date, {
           employee_id: employeeId,
           date,
           status: existing?.status || 'presente',
@@ -1120,8 +1236,6 @@ export default function AttendancePage() {
           hours_worked: existing?.hours_worked ?? '',
           overtime_hours: parsed.kind === 'empty' ? 0 : parsed.hours,
           notes: existing?.notes || null,
-          }),
-        };
       });
     });
   }
@@ -1179,6 +1293,7 @@ export default function AttendancePage() {
       pendingChangesRef.current = next;
       return next;
     });
+    markDirtyState();
 
     setInputDrafts((current) => {
       if (!copiedEntries.length || !Object.keys(current).length) {
@@ -1324,11 +1439,17 @@ export default function AttendancePage() {
   const saveStatusLabel =
     saveState === 'saving'
       ? 'Salvataggio automatico...'
+      : saveState === 'dirty'
+      ? 'Modifiche in corso'
       : saveState === 'saved'
       ? 'Salvato'
       : saveState === 'error'
       ? 'Errore salvataggio'
       : 'Autosave attivo';
+
+  const hasPendingChanges = Object.keys(pendingChanges).length > 0;
+  const allVisibleSelected = visibleEmployeeIds.length > 0 && visibleEmployeeIds.every((employeeId) => selectedEmployeeIds.includes(employeeId));
+  const todayKey = formatLocalDate(new Date());
 
   return (
     <div className="attendance-page">
@@ -1349,10 +1470,19 @@ export default function AttendancePage() {
                 ? { background: 'rgba(239, 68, 68, 0.12)', color: '#b91c1c', borderColor: 'rgba(20, 33, 61, 0.08)' }
                 : saveState === 'saved'
                 ? { background: 'rgba(16, 185, 129, 0.14)', color: '#047857', borderColor: 'rgba(20, 33, 61, 0.08)' }
+                : saveState === 'dirty'
+                ? { background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', borderColor: 'rgba(20, 33, 61, 0.08)' }
                 : { background: 'rgba(20, 33, 61, 0.06)', color: '#314762', borderColor: 'rgba(20, 33, 61, 0.08)' }}
             >
               {saveStatusLabel}
             </span>
+            <button
+              className="button-secondary"
+              onClick={handleCancelChanges}
+              disabled={!hasPendingChanges || saveState === 'saving'}
+            >
+              Annulla
+            </button>
             <button
               className="button-secondary"
               onClick={() => {
@@ -1474,8 +1604,18 @@ export default function AttendancePage() {
 
       <div className="panel panel-section" style={{ padding: 18 }}>
         <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#115e59' }}>
-            Legenda principale
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#115e59' }}>
+              Legenda principale
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.1)', color: '#1d4ed8' }}>
+                {selectedEmployeeIds.length} selezionati
+              </span>
+              <span className="soft-chip" style={{ background: 'rgba(20, 33, 61, 0.06)', color: '#314762' }}>
+                Selezione multipla pronta per azioni batch
+              </span>
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {MAIN_DAY_TYPES.map((item) => (
@@ -1519,12 +1659,20 @@ export default function AttendancePage() {
       {loading ? (
         <div>Caricamento...</div>
       ) : (
-        <div className="attendance-table-shell">
+        <div className="attendance-table-shell" ref={tableShellRef}>
           <table className="attendance-table">
             <thead>
               <tr style={{ background: '#f9fafb' }}>
                 <th style={thStyleLeft}>
-                  {selectedMeta.type === 'team' ? 'Componente squadra' : 'Dipendente'}
+                  <div className="attendance-left-head">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={(event) => toggleSelectAllVisible(event.target.checked)}
+                      aria-label="Seleziona tutti i dipendenti visibili"
+                    />
+                    <span>{selectedMeta.type === 'team' ? 'Componente squadra' : 'Dipendente'}</span>
+                  </div>
                 </th>
                 {daysInMonth.map((day) => (
                   <th
@@ -1532,6 +1680,7 @@ export default function AttendancePage() {
                     style={{
                       ...thStyleCenter,
                       ...getCalendarHeaderStyle(dayInfoMap[formatDate(day)]),
+                      ...(formatDate(day) === todayKey ? todayHeaderStyle : {}),
                     }}
                     title={dayInfoMap[formatDate(day)]?.holidayLabel || undefined}
                   >
@@ -1560,10 +1709,20 @@ export default function AttendancePage() {
                 return (
                   <tr key={employee.id}>
                     <td style={tdStyleLeft}>
-                      <div className="attendance-employee-name">{employee.first_name} {employee.last_name}</div>
-                      <div style={{ fontSize: 10, color: '#6b7280' }}>
-                        {employee.role || ''}
-                        {teamMember?.manage_by_days ? ' · gestione a giornate' : ''}
+                      <div className="attendance-left-cell">
+                        <input
+                          type="checkbox"
+                          checked={selectedEmployeeIds.includes(employee.id)}
+                          onChange={(event) => toggleEmployeeSelection(employee.id, event.target.checked)}
+                          aria-label={`Seleziona ${employee.first_name} ${employee.last_name}`}
+                        />
+                        <div>
+                          <div className="attendance-employee-name">{employee.first_name} {employee.last_name}</div>
+                          <div style={{ fontSize: 10, color: '#6b7280' }}>
+                            {employee.role || ''}
+                            {teamMember?.manage_by_days ? ' · gestione a giornate' : ''}
+                          </div>
+                        </div>
                       </div>
                     </td>
 
@@ -1586,6 +1745,7 @@ export default function AttendancePage() {
                           style={{
                             ...tdStyleCenter,
                             ...getCalendarCellStyle(dayInfo),
+                            ...(dateStr === todayKey ? todayCellStyle : {}),
                           }}
                           title={dayInfo?.holidayLabel || undefined}
                         >
@@ -1601,6 +1761,8 @@ export default function AttendancePage() {
                                     onChange={(event) => handleHoursMinutesValueChange(employee.id, dateStr, 'hours', event.target.value)}
                                     onFocus={selectAllInputText}
                                     onClick={selectAllInputText}
+                                    onKeyDown={handleGridKeyDown}
+                                    data-attendance-focus="true"
                                     placeholder={attendanceSettings.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : 'h'}
                                     style={{
                                       width: 34,
@@ -1618,6 +1780,8 @@ export default function AttendancePage() {
                                     onChange={(event) => handleHoursMinutesValueChange(employee.id, dateStr, 'minutes', event.target.value)}
                                     onFocus={selectAllInputText}
                                     onClick={selectAllInputText}
+                                    onKeyDown={handleGridKeyDown}
+                                    data-attendance-focus="true"
                                     placeholder="m"
                                     disabled={!!att?.entry_code || isSpecial}
                                     style={{
@@ -1638,6 +1802,8 @@ export default function AttendancePage() {
                                     onChange={(event) => handleOvertimeHoursMinutesChange(employee.id, dateStr, 'hours', event.target.value)}
                                     onFocus={selectAllInputText}
                                     onClick={selectAllInputText}
+                                    onKeyDown={handleGridKeyDown}
+                                    data-attendance-focus="true"
                                     placeholder={attendanceSettings.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : 'str'}
                                     disabled={isSpecial}
                                     style={{
@@ -1656,6 +1822,8 @@ export default function AttendancePage() {
                                     onChange={(event) => handleOvertimeHoursMinutesChange(employee.id, dateStr, 'minutes', event.target.value)}
                                     onFocus={selectAllInputText}
                                     onClick={selectAllInputText}
+                                    onKeyDown={handleGridKeyDown}
+                                    data-attendance-focus="true"
                                     placeholder="str"
                                     disabled={isSpecial}
                                     style={{
@@ -1679,6 +1847,8 @@ export default function AttendancePage() {
                                   onBlur={() => handleMainValueBlur(employee.id, dateStr)}
                                   onFocus={selectAllInputText}
                                   onClick={selectAllInputText}
+                                  onKeyDown={handleGridKeyDown}
+                                  data-attendance-focus="true"
                                   placeholder=""
                                   style={isSpecial
                                     ? { border: '1px solid #f59e0b', background: 'rgba(245, 158, 11, 0.08)', fontWeight: 800 }
@@ -1699,6 +1869,8 @@ export default function AttendancePage() {
                                   onBlur={() => handleOvertimeValueBlur(employee.id, dateStr)}
                                   onFocus={selectAllInputText}
                                   onClick={selectAllInputText}
+                                  onKeyDown={handleGridKeyDown}
+                                  data-attendance-focus="true"
                                   placeholder="str"
                                   disabled={isSpecial}
                                   style={{
@@ -1732,6 +1904,8 @@ export default function AttendancePage() {
                                   handleMarkerChange(employee.id, dateStr, nextValue);
                                   setOpenMarkerMenuKey(nextValue ? null : markerMenuKey);
                                 }}
+                                onKeyDown={handleGridKeyDown}
+                                data-attendance-focus="true"
                                 onBlur={() => {
                                   if (att?.marker_code) {
                                     setOpenMarkerMenuKey(null);
@@ -2073,6 +2247,16 @@ const tdStyleCenter = {
   borderBottom: '1px solid #f1f5f9',
   textAlign: 'center',
   verticalAlign: 'top',
+};
+
+const todayHeaderStyle = {
+  background: 'linear-gradient(180deg, rgba(219, 234, 254, 0.9), rgba(239, 246, 255, 0.95))',
+  boxShadow: 'inset 0 -2px 0 rgba(37, 99, 235, 0.25)',
+};
+
+const todayCellStyle = {
+  background: 'rgba(239, 246, 255, 0.86)',
+  boxShadow: 'inset 1px 0 0 rgba(37, 99, 235, 0.12), inset -1px 0 0 rgba(37, 99, 235, 0.12)',
 };
 
 const attendancePrintCardStyle = {
