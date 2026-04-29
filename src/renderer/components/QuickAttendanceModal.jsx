@@ -133,6 +133,27 @@ function formatMarkerOptionLabel(marker) {
   return [marker?.symbol, marker?.text || marker?.value].filter(Boolean).join(' ');
 }
 
+function formatSelectedWorkersCount(count) {
+  return `${count} ${count === 1 ? 'operaio selezionato' : 'operai selezionati'}`;
+}
+
+function formatHoursSummary(hours, minutes, attendanceSettings) {
+  const hasHours = hours !== '' && hours !== null && hours !== undefined;
+  const hasMinutes = minutes !== '' && minutes !== null && minutes !== undefined;
+
+  if (!hasHours && !hasMinutes) {
+    return 'nessuna modifica';
+  }
+
+  if (attendanceSettings?.hoursFormat === 'hours_minutes') {
+    const hourText = hasHours ? `${hours} h` : '0 h';
+    const minuteText = hasMinutes ? `${minutes} min` : '0 min';
+    return `${hourText} ${minuteText}`;
+  }
+
+  return String(hours || '0').trim();
+}
+
 const quickPanelStyle = {
   padding: 12,
 };
@@ -174,6 +195,7 @@ const quickSmallButtonStyle = {
 export default function QuickAttendanceModal({
   open,
   quickDate,
+  previousDate,
   onDateChange,
   onClose,
   rows,
@@ -183,6 +205,7 @@ export default function QuickAttendanceModal({
   onApplyHours,
   onApplyOvertime,
   onApplyMarker,
+  onCopyPreviousDay,
   onClearHours,
   onUseToday,
   onMovePreviousDay,
@@ -191,6 +214,7 @@ export default function QuickAttendanceModal({
   markers = [],
 }) {
   const wasOpenRef = useRef(false);
+  const lastQuickDateRef = useRef(quickDate);
   const [selectionState, setSelectionState] = useState({});
   const [presencePreset, setPresencePreset] = useState('default');
   const [commonHours, setCommonHours] = useState('');
@@ -200,6 +224,9 @@ export default function QuickAttendanceModal({
   const [commonOvertimeMinutes, setCommonOvertimeMinutes] = useState('');
   const [markerSelection, setMarkerSelection] = useState('keep');
   const [dateInput, setDateInput] = useState(formatDateForDisplay(quickDate));
+  const [pendingSaveSummary, setPendingSaveSummary] = useState(null);
+  const [lastSaveMessage, setLastSaveMessage] = useState('');
+  const [keepSelectionAcrossDays, setKeepSelectionAcrossDays] = useState(true);
 
   useEffect(() => {
     setDateInput(formatDateForDisplay(quickDate));
@@ -240,7 +267,50 @@ export default function QuickAttendanceModal({
     setCommonOvertimeHours('');
     setCommonOvertimeMinutes('');
     setMarkerSelection('keep');
+    setPendingSaveSummary(null);
+    setLastSaveMessage('');
+    setKeepSelectionAcrossDays(true);
+    lastQuickDateRef.current = quickDate;
   }, [open, rows, attendanceSettings]);
+
+  useEffect(() => {
+    if (saveState !== 'saved' || !pendingSaveSummary) {
+      return;
+    }
+
+    if (pendingSaveSummary.type === 'copyPreviousDay') {
+      setLastSaveMessage(
+        `Copiati dati per ${pendingSaveSummary.count} ${pendingSaveSummary.count === 1 ? 'operaio' : 'operai'} dal giorno ${formatDateForDisplay(pendingSaveSummary.previousDate)}.`
+      );
+    } else {
+      setLastSaveMessage(
+        `Aggiornati ${pendingSaveSummary.count} ${pendingSaveSummary.count === 1 ? 'operaio' : 'operai'} per il giorno ${formatDateForDisplay(pendingSaveSummary.date)}.`
+      );
+    }
+    setPendingSaveSummary(null);
+  }, [saveState, pendingSaveSummary]);
+
+  useEffect(() => {
+    if (!open) {
+      lastQuickDateRef.current = quickDate;
+      return;
+    }
+
+    if (lastQuickDateRef.current === quickDate) {
+      return;
+    }
+
+    lastQuickDateRef.current = quickDate;
+    if (keepSelectionAcrossDays) {
+      return;
+    }
+
+    const next = {};
+    for (const row of rows) {
+      next[row.employee.id] = { selected: false };
+    }
+    setSelectionState(next);
+  }, [quickDate, open, keepSelectionAcrossDays, rows]);
 
   const selectedIds = useMemo(
     () =>
@@ -250,11 +320,43 @@ export default function QuickAttendanceModal({
     [selectionState]
   );
   const allVisibleSelected = rows.length > 0 && selectedIds.length === rows.length;
+  const selectedRows = useMemo(
+    () => rows.filter((row) => selectedIds.includes(row.employee.id)),
+    [rows, selectedIds]
+  );
+  const selectedRowsWithExistingAttendance = selectedRows.filter(
+    (row) => row.hasExistingHours || row.existingSpecialLabel || row.markerLabel
+  );
+  const selectedRowsWithPreviousData = selectedRows.filter((row) => row.previousDayHasData);
+  const ordinaryHoursSummary = formatHoursSummary(commonHours, commonMinutes, attendanceSettings);
+  const overtimeSummary =
+    overtimePreset === 'none' && commonOvertimeHours === '' && commonOvertimeMinutes === ''
+      ? 'nessuno'
+      : formatHoursSummary(commonOvertimeHours, commonOvertimeMinutes, attendanceSettings);
+  const selectedMarkerLabel =
+    markerSelection === 'keep'
+      ? 'non modificare'
+      : markerSelection === ''
+      ? 'nessun indicatore'
+      : formatMarkerOptionLabel(markers.find((marker) => marker.value === markerSelection)) || markerSelection;
+
+  function notePendingUpdate(employeeIds) {
+    if (!Array.isArray(employeeIds) || !employeeIds.length) {
+      return;
+    }
+
+    setPendingSaveSummary({
+      count: employeeIds.length,
+      date: quickDate,
+    });
+  }
 
   function applyActiveValues(employeeIds) {
     if (!Array.isArray(employeeIds) || !employeeIds.length) {
       return;
     }
+
+    notePendingUpdate(employeeIds);
 
     if (commonHours !== '' || commonMinutes !== '') {
       onApplyHours(employeeIds, quickDate, commonHours, commonMinutes);
@@ -278,6 +380,7 @@ export default function QuickAttendanceModal({
     }));
 
     if (!checked) {
+      notePendingUpdate([employeeId]);
       onClearHours(employeeId, quickDate);
       return;
     }
@@ -296,6 +399,7 @@ export default function QuickAttendanceModal({
     setCommonMinutes(next.minutes);
 
     if (selectedIds.length) {
+      notePendingUpdate(selectedIds);
       onApplyHours(selectedIds, quickDate, next.hours, next.minutes);
     }
   }
@@ -309,10 +413,12 @@ export default function QuickAttendanceModal({
     }
 
     if (value === '' && commonMinutes === '') {
+      notePendingUpdate(selectedIds);
       selectedIds.forEach((employeeId) => onClearHours(employeeId, quickDate));
       return;
     }
 
+    notePendingUpdate(selectedIds);
     onApplyHours(selectedIds, quickDate, value, commonMinutes);
   }
 
@@ -325,10 +431,12 @@ export default function QuickAttendanceModal({
     }
 
     if (commonHours === '' && value === '') {
+      notePendingUpdate(selectedIds);
       selectedIds.forEach((employeeId) => onClearHours(employeeId, quickDate));
       return;
     }
 
+    notePendingUpdate(selectedIds);
     onApplyHours(selectedIds, quickDate, commonHours, value);
   }
 
@@ -343,6 +451,7 @@ export default function QuickAttendanceModal({
     setCommonOvertimeMinutes(next.minutes);
 
     if (selectedIds.length) {
+      notePendingUpdate(selectedIds);
       onApplyOvertime?.(selectedIds, quickDate, next.hours, next.minutes);
     }
   }
@@ -352,6 +461,7 @@ export default function QuickAttendanceModal({
     setCommonOvertimeHours(value);
 
     if (selectedIds.length) {
+      notePendingUpdate(selectedIds);
       onApplyOvertime?.(selectedIds, quickDate, value, commonOvertimeMinutes);
     }
   }
@@ -361,6 +471,7 @@ export default function QuickAttendanceModal({
     setCommonOvertimeMinutes(value);
 
     if (selectedIds.length) {
+      notePendingUpdate(selectedIds);
       onApplyOvertime?.(selectedIds, quickDate, commonOvertimeHours, value);
     }
   }
@@ -368,6 +479,7 @@ export default function QuickAttendanceModal({
   function handleMarkerSelectionChange(value) {
     setMarkerSelection(value);
     if (value !== 'keep' && selectedIds.length) {
+      notePendingUpdate(selectedIds);
       onApplyMarker?.(selectedIds, quickDate, value);
     }
   }
@@ -387,6 +499,7 @@ export default function QuickAttendanceModal({
 
   function handleDeselectAll() {
     const next = {};
+    notePendingUpdate(selectedIds);
     for (const row of rows) {
       next[row.employee.id] = { selected: false };
       onClearHours(row.employee.id, quickDate);
@@ -405,6 +518,28 @@ export default function QuickAttendanceModal({
   function handleDateInputBlur() {
     const parsed = parseDisplayDate(dateInput);
     setDateInput(formatDateForDisplay(parsed || quickDate));
+  }
+
+  function handleCopyPreviousDay() {
+    if (!selectedIds.length) {
+      setLastSaveMessage('Nessun operaio selezionato.');
+      return;
+    }
+
+    const result = onCopyPreviousDay?.(selectedIds) || { copiedCount: 0, previousDate };
+    const sourceDate = result.previousDate || previousDate;
+
+    if (!result.copiedCount) {
+      setLastSaveMessage('Nessun dato disponibile nel giorno precedente.');
+      return;
+    }
+
+    setPendingSaveSummary({
+      type: 'copyPreviousDay',
+      count: result.copiedCount,
+      date: quickDate,
+      previousDate: sourceDate,
+    });
   }
 
   if (!open) return null;
@@ -428,6 +563,46 @@ export default function QuickAttendanceModal({
         </div>
 
         <div className="form-grid" style={{ gap: 10 }}>
+          <div
+            className="muted-box"
+            style={{
+              display: 'grid',
+              gap: 8,
+              borderColor: 'rgba(15, 118, 110, 0.22)',
+              background: 'rgba(15, 118, 110, 0.08)',
+            }}
+          >
+            <div style={{ fontWeight: 800, color: '#115e59' }}>
+              Stai compilando il giorno {formatDateForDisplay(quickDate)} per {formatSelectedWorkersCount(selectedIds.length)}.
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <span className="soft-chip">Data: {formatDateForDisplay(quickDate)}</span>
+              <span className="soft-chip">{formatSelectedWorkersCount(selectedIds.length)}</span>
+              <span className="soft-chip">Ore ordinarie: {ordinaryHoursSummary}</span>
+              <span className="soft-chip">Straordinari: {overtimeSummary}</span>
+              <span className="soft-chip">Indicatore: {selectedMarkerLabel}</span>
+            </div>
+            {selectedRowsWithExistingAttendance.length ? (
+              <div style={{ color: '#92400e', fontWeight: 700 }}>
+                Attenzione: alcuni operai hanno già una presenza inserita per questa data.
+              </div>
+            ) : null}
+            {lastSaveMessage ? (
+              <div style={{ color: '#047857', fontWeight: 800 }}>
+                {lastSaveMessage}
+              </div>
+            ) : null}
+            {selectedRowsWithPreviousData.length ? (
+              <div style={{ color: '#314762', fontWeight: 700 }}>
+                Verranno copiati i dati del giorno {formatDateForDisplay(previousDate)} per {selectedRowsWithPreviousData.length} {selectedRowsWithPreviousData.length === 1 ? 'operaio' : 'operai'}.
+              </div>
+            ) : selectedIds.length ? (
+              <div style={{ color: '#667085', fontWeight: 700 }}>
+                Nessun dato disponibile nel giorno precedente.
+              </div>
+            ) : null}
+          </div>
+
           <div className="panel panel-section" style={quickPanelStyle}>
             <div style={quickControlsGridStyle}>
               <div style={quickControlColumnStyle}>
@@ -629,8 +804,26 @@ export default function QuickAttendanceModal({
               onClick={handleDeselectAll}
               disabled={!selectedIds.length}
             >
-              Deseleziona tutto
+              Svuota selezione
             </button>
+            <button
+              type="button"
+              className="button-secondary"
+              style={quickSmallButtonStyle}
+              onClick={handleCopyPreviousDay}
+              disabled={!selectedIds.length}
+            >
+              Copia giorno precedente
+            </button>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: '#314762', fontSize: 13, fontWeight: 600 }}>
+              <input
+                type="checkbox"
+                checked={keepSelectionAcrossDays}
+                onChange={(event) => setKeepSelectionAcrossDays(event.target.checked)}
+                style={{ width: 16, height: 16 }}
+              />
+              Mantieni selezione tra i giorni
+            </label>
           </div>
 
           <div style={{ display: 'grid', gap: 6, maxHeight: 'calc(94vh - 265px)', overflowY: 'auto', paddingRight: 4 }}>

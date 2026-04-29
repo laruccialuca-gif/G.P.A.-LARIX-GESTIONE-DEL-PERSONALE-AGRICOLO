@@ -1122,6 +1122,66 @@ export default function AttendancePage() {
     });
   }
 
+  function applyCopyPreviousDay(employeeIds) {
+    if (!Array.isArray(employeeIds) || !employeeIds.length) {
+      return { copiedCount: 0, previousDate: shiftLocalDateString(quickEntryDate, -1) };
+    }
+
+    const previousDate = shiftLocalDateString(quickEntryDate, -1);
+    const copiedEntries = [];
+
+    for (const employeeId of employeeIds) {
+      const previousAtt = getAtt(employeeId, previousDate);
+      if (!previousAtt) {
+        continue;
+      }
+
+      const currentAtt = getAtt(employeeId, quickEntryDate);
+      copiedEntries.push({
+        key: `${employeeId}_${quickEntryDate}`,
+        employeeId,
+        value: normalizeAttendanceEntry({
+          employee_id: employeeId,
+          date: quickEntryDate,
+          status: previousAtt.status || 'presente',
+          marker_code: previousAtt.marker_code || null,
+          entry_code: previousAtt.entry_code || null,
+          hours_worked: previousAtt.hours_worked ?? '',
+          overtime_hours: previousAtt.overtime_hours || 0,
+          notes: currentAtt?.notes || null,
+        }),
+      });
+    }
+
+    if (!copiedEntries.length) {
+      return { copiedCount: 0, previousDate };
+    }
+
+    setPendingChanges((current) => {
+      const next = { ...current };
+      for (const entry of copiedEntries) {
+        next[entry.key] = entry.value;
+      }
+      pendingChangesRef.current = next;
+      return next;
+    });
+
+    setInputDrafts((current) => {
+      if (!copiedEntries.length || !Object.keys(current).length) {
+        return current;
+      }
+
+      const next = { ...current };
+      for (const entry of copiedEntries) {
+        delete next[getInputDraftKey(entry.employeeId, quickEntryDate, 'main')];
+        delete next[getInputDraftKey(entry.employeeId, quickEntryDate, 'overtime')];
+      }
+      return next;
+    });
+
+    return { copiedCount: copiedEntries.length, previousDate };
+  }
+
   async function handleCloseQuickEntry() {
     await flushPendingChanges();
     setShowQuickEntry(false);
@@ -1146,8 +1206,11 @@ export default function AttendancePage() {
   }
 
   function getQuickEntryRows() {
+    const previousDate = shiftLocalDateString(quickEntryDate, -1);
+
     return displayRows.map(({ employee, teamMember }) => {
       const att = getAtt(employee.id, quickEntryDate);
+      const previousAtt = getAtt(employee.id, previousDate);
       const isSpecial = att?.status && att.status !== 'presente' && att.status !== 'assente';
       const markerMeta = getMarkerMeta(att?.marker_code, availableMarkers);
       return {
@@ -1161,6 +1224,7 @@ export default function AttendancePage() {
         initialParts: getHoursMinutesInputValue(att),
         existingSpecialLabel: isSpecial ? getSpecialTypeText(att.status) : null,
         markerLabel: markerMeta ? markerMeta.symbol : null,
+        previousDayHasData: !!previousAtt,
         manageByDays: !!teamMember?.manage_by_days,
       };
     });
@@ -1691,6 +1755,7 @@ export default function AttendancePage() {
       <QuickAttendanceModal
         open={showQuickEntry}
         quickDate={quickEntryDate}
+        previousDate={shiftLocalDateString(quickEntryDate, -1)}
         onDateChange={handleQuickEntryDateChange}
         onClose={handleCloseQuickEntry}
         rows={quickEntryRows}
@@ -1708,6 +1773,7 @@ export default function AttendancePage() {
         onApplyHours={applyQuickHours}
         onApplyOvertime={applyQuickOvertime}
         onApplyMarker={applyQuickMarker}
+        onCopyPreviousDay={applyCopyPreviousDay}
         onClearHours={clearPendingChange}
         onUseToday={() => handleQuickEntryDateChange(getDefaultQuickDateForMonth(currentMonth))}
         onMovePreviousDay={() => handleQuickEntryDateChange(shiftLocalDateString(quickEntryDate, -1))}
