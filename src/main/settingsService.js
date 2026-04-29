@@ -331,6 +331,9 @@ function requireAdmin() {
   if (!isDemoVariant()) {
     return settings;
   }
+  if (!settings.setup?.completed) {
+    return settings;
+  }
   if (settings.security.current_role !== 'admin') {
     const error = new Error('Operazione consentita solo all’amministratore.');
     error.code = 'ADMIN_REQUIRED';
