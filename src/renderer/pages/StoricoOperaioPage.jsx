@@ -24,6 +24,11 @@ function formatCurrency(value) {
   return `€ ${Number(value || 0).toFixed(2)}`;
 }
 
+function formatHours(value) {
+  const hours = Number(value || 0);
+  return Number.isInteger(hours) ? `${hours} h` : `${hours.toFixed(2).replace('.', ',')} h`;
+}
+
 function getRecordEffectiveBalance(record) {
   const snapshot =
     typeof record?.report_snapshot_json === 'string'
@@ -468,7 +473,7 @@ export default function StoricoOperaioPage() {
           ) : (
             <div className="panel panel-section" style={{ padding: 0 }}>
               <div style={{ padding: 16, borderBottom: '1px solid #f3f4f6', fontWeight: 700 }}>
-                Archivio storico — doppio clic su una voce per aprire il report collegato
+                Archivio storico — clic su una voce per aprire l'anteprima del report collegato
               </div>
 
               <div style={{ display: 'grid', gap: 0 }}>
@@ -507,7 +512,7 @@ export default function StoricoOperaioPage() {
                         return (
                           <div
                             key={record.id}
-                            onDoubleClick={() => handleOpenLinkedReport(record)}
+                            onClick={() => setPreviewRecord(record)}
                             style={{
                               display: 'grid',
                               gap: 14,
@@ -516,7 +521,7 @@ export default function StoricoOperaioPage() {
                               cursor: 'pointer',
                               background: record.archived_at ? '#fcfcfd' : '#fff',
                             }}
-                            title="Doppio clic per aprire il report collegato"
+                            title="Clic per aprire l'anteprima del report"
                           >
                             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'start' }}>
                               <div style={{ display: 'grid', gap: 6 }}>
@@ -559,22 +564,37 @@ export default function StoricoOperaioPage() {
 
                             <div style={{ display: 'grid', gap: 10 }}>
                               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                                <button type="button" className="button-secondary" onClick={() => setPreviewRecord(record)}>
+                                <button type="button" className="button-secondary" onClick={(event) => {
+                                  event.stopPropagation();
+                                  setPreviewRecord(record);
+                                }}>
                                   Anteprima
                                 </button>
-                                <button type="button" className="button-secondary" onClick={() => handlePrintSnapshot(record)}>
+                                <button type="button" className="button-secondary" onClick={(event) => {
+                                  event.stopPropagation();
+                                  handlePrintSnapshot(record);
+                                }}>
                                   Stampa
                                 </button>
                                 {!record.archived_at ? (
-                                  <button type="button" className="button-secondary" onClick={() => handleArchiveRecord(record)}>
+                                  <button type="button" className="button-secondary" onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleArchiveRecord(record);
+                                  }}>
                                     Archivia slot
                                   </button>
                                 ) : (
-                                  <button type="button" className="button-secondary" onClick={() => handleRestoreRecord(record)}>
+                                  <button type="button" className="button-secondary" onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleRestoreRecord(record);
+                                  }}>
                                     Ripristina slot
                                   </button>
                                 )}
-                                <button type="button" className="button-danger" onClick={() => handleDeleteRecord(record)}>
+                                <button type="button" className="button-danger" onClick={(event) => {
+                                  event.stopPropagation();
+                                  handleDeleteRecord(record);
+                                }}>
                                   Elimina slot
                                 </button>
                               </div>
@@ -603,7 +623,7 @@ export default function StoricoOperaioPage() {
 
       {previewRecord ? (
         <div className="modal-overlay" onClick={() => setPreviewRecord(null)}>
-          <div className="modal-dialog" style={{ maxWidth: 980 }} onClick={(event) => event.stopPropagation()}>
+          <div className="modal-dialog" style={{ maxWidth: 1240 }} onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
                 <span className="page-kicker">Report processato</span>
@@ -615,11 +635,62 @@ export default function StoricoOperaioPage() {
             </div>
 
             {previewRecord.report_html_snapshot ? (
-              <div style={{ maxHeight: '72vh', overflow: 'auto', padding: 8, background: '#f8fafc', borderRadius: 16 }}>
-                <div dangerouslySetInnerHTML={{ __html: previewRecord.report_html_snapshot }} />
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.8fr) minmax(280px, 0.8fr)', gap: 18, alignItems: 'start' }}>
+                <div style={{ maxHeight: '72vh', overflow: 'auto', padding: 8, background: '#f8fafc', borderRadius: 16 }}>
+                  <div dangerouslySetInnerHTML={{ __html: previewRecord.report_html_snapshot }} />
+                </div>
+
+                <div style={{ display: 'grid', gap: 14 }}>
+                  <div className="panel panel-section" style={{ padding: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#667085', marginBottom: 12 }}>
+                      Sintesi report
+                    </div>
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      <HistorySummaryRow label="Dipendente" value={`${previewRecord.employee?.first_name || ''} ${previewRecord.employee?.last_name || ''}`.trim() || '—'} />
+                      <HistorySummaryRow label="Mese" value={formatMonth(previewRecord.month)} />
+                      <HistorySummaryRow label="Giornate lavorate" value={String(Number(previewRecord.giornate_effettuate || 0))} />
+                      <HistorySummaryRow label="Totale ore" value={formatHours(previewRecord.ore_totali)} />
+                      <HistorySummaryRow label="Busta paga" value={formatCurrency(previewRecord.importo_busta_paga)} />
+                      <HistorySummaryRow label="Saldo finale" value={formatCurrency(Math.abs(getRecordEffectiveBalance(previewRecord)))} />
+                      <HistorySummaryRow label="Stato pagamento" value={previewRecord.is_pagato ? 'Pagato' : 'Non pagato'} />
+                      <HistorySummaryRow
+                        label="Credito / debito"
+                        value={
+                          getRecordEffectiveBalance(previewRecord) > 0
+                            ? 'Credito operaio'
+                            : getRecordEffectiveBalance(previewRecord) < 0
+                            ? 'Debito operaio'
+                            : 'Pareggio'
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <button type="button" className="button" onClick={() => handleOpenLinkedReport(previewRecord)}>
+                      Modifica report
+                    </button>
+                    <button type="button" className="button-secondary" onClick={() => handlePrintSnapshot(previewRecord)}>
+                      Stampa
+                    </button>
+                    <button type="button" className="button-secondary" onClick={() => setPreviewRecord(null)}>
+                      Esci
+                    </button>
+                  </div>
+                </div>
               </div>
             ) : (
-              <div className="panel empty-state">Nessuna anteprima salvata per questo report.</div>
+              <div style={{ display: 'grid', gap: 18 }}>
+                <div className="panel empty-state">Nessuna anteprima salvata per questo report.</div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <button type="button" className="button" onClick={() => handleOpenLinkedReport(previewRecord)}>
+                    Modifica report
+                  </button>
+                  <button type="button" className="button-secondary" onClick={() => setPreviewRecord(null)}>
+                    Esci
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </div>
@@ -633,6 +704,15 @@ function MiniInfo({ label, value, color = '#111827' }) {
     <div style={{ minWidth: 120, textAlign: 'right' }}>
       <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 3 }}>{label}</div>
       <div style={{ fontSize: 15, fontWeight: 800, color }}>{value}</div>
+    </div>
+  );
+}
+
+function HistorySummaryRow({ label, value }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
+      <span style={{ fontSize: 12, color: '#667085', fontWeight: 700 }}>{label}</span>
+      <span style={{ fontSize: 14, color: '#111827', fontWeight: 800, textAlign: 'right' }}>{value || '—'}</span>
     </div>
   );
 }

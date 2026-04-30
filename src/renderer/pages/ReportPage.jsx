@@ -236,6 +236,53 @@ function buildEditorAdvances(savedAdvances, currentAdvances = []) {
   ];
 }
 
+function isDebtInstallmentDraftEmpty(installment) {
+  return (
+    String(installment?.target_month ?? '').trim() === '' &&
+    String(installment?.amount ?? '').trim() === '' &&
+    String(installment?.note ?? '').trim() === ''
+  );
+}
+
+function isDebtPlanDraftEmpty(plan) {
+  const installments = Array.isArray(plan?.installments) ? plan.installments : [];
+  return (
+    String(plan?.label ?? '').trim() === '' &&
+    String(plan?.total_amount ?? '').trim() === '' &&
+    installments.every(isDebtInstallmentDraftEmpty)
+  );
+}
+
+function normalizeDebtPlansForEditor(plans = [], fallbackMonth = '') {
+  return (plans || []).map((plan) => ({
+    id: plan.id,
+    label: plan.label || '',
+    total_amount: String(plan.total_amount || ''),
+    status: plan.status || 'active',
+    created_from_month: plan.created_from_month || fallbackMonth,
+    installments: (plan.installments || []).length
+      ? plan.installments.map((installment) => ({
+          id: installment.id,
+          target_month: installment.target_month || '',
+          amount: String(installment.amount || ''),
+          note: installment.note || '',
+        }))
+      : [createEmptyDebtInstallment()],
+  }));
+}
+
+function buildEditorDebtPlans(savedPlans, currentPlans = [], fallbackMonth = '') {
+  const meaningfulSavedPlans = normalizeDebtPlansForEditor(savedPlans, fallbackMonth)
+    .filter((plan) => !isDebtPlanDraftEmpty(plan));
+  const emptyDraftPlans = (currentPlans || []).filter(isDebtPlanDraftEmpty).map((plan) => ({
+    ...plan,
+    installments: (plan.installments || []).length ? plan.installments : [createEmptyDebtInstallment()],
+    created_from_month: plan.created_from_month || fallbackMonth,
+  }));
+
+  return [...meaningfulSavedPlans, ...emptyDraftPlans];
+}
+
 function normalizeCurrency(value) {
   return Number(value || 0);
 }
@@ -563,24 +610,6 @@ export default function ReportPage() {
 
   useEffect(() => {
     async function loadPayrollContext() {
-      function normalizeDebtPlansForEditor(plans = []) {
-        return (plans || []).map((plan) => ({
-          id: plan.id,
-          label: plan.label || '',
-          total_amount: String(plan.total_amount || ''),
-          status: plan.status || 'active',
-          created_from_month: plan.created_from_month || currentMonthKey,
-          installments: (plan.installments || []).length
-            ? plan.installments.map((installment) => ({
-                id: installment.id,
-                target_month: installment.target_month || '',
-                amount: String(installment.amount || ''),
-                note: installment.note || '',
-              }))
-            : [createEmptyDebtInstallment()],
-        }));
-      }
-
       function splitDebtPlansByStatus(plans = []) {
         return plans.reduce(
           (acc, plan) => {
@@ -599,7 +628,7 @@ export default function ReportPage() {
         const savedNMacchine = Number(record.n_macchine_mese || 0);
         const savedPrezzo = Number(record.prezzo_per_macchina || 0);
         const savedTrasporto = Number(record.totale_trasporto || 0);
-        const normalizedPlans = normalizeDebtPlansForEditor(record.debt_plans || []);
+        const normalizedPlans = normalizeDebtPlansForEditor(record.debt_plans || [], currentMonthKey);
         const splitPlans = splitDebtPlansByStatus(normalizedPlans);
 
         return {
@@ -1063,22 +1092,9 @@ export default function ReportPage() {
         note: noteExtra,
       });
 
-      const normalizedSavedPlans = (saved?.debt_plans || []).map((plan) => ({
-        id: plan.id,
-        label: plan.label || '',
-        total_amount: String(plan.total_amount || ''),
-        status: plan.status || 'active',
-        created_from_month: plan.created_from_month || currentMonthKey,
-        installments: (plan.installments || []).length
-          ? plan.installments.map((installment) => ({
-              id: installment.id,
-              target_month: installment.target_month || '',
-              amount: String(installment.amount || ''),
-              note: installment.note || '',
-            }))
-          : [createEmptyDebtInstallment()],
-      }));
-      const nextActiveDebtPlans = normalizedSavedPlans.filter((plan) => (plan.status || 'active') === 'active');
+      const normalizedSavedPlans = normalizeDebtPlansForEditor(saved?.debt_plans || [], currentMonthKey);
+      const savedActiveDebtPlans = normalizedSavedPlans.filter((plan) => (plan.status || 'active') === 'active');
+      const nextActiveDebtPlans = buildEditorDebtPlans(savedActiveDebtPlans, debtPlans, currentMonthKey);
       const nextResolvedDebtPlans = normalizedSavedPlans.filter((plan) => (plan.status || 'active') !== 'active');
 
       setCurrentPayrollRecord(saved || null);

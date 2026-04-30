@@ -232,9 +232,7 @@ function normalizeSettings(input = {}) {
       attendance_entry_mode: merged.general?.attendance_entry_mode === 'hours_only'
         ? 'hours_only'
         : 'hours_and_symbol',
-      attendance_hours_format: merged.general?.attendance_hours_format === 'hours_minutes'
-        ? 'hours_minutes'
-        : 'decimal',
+      attendance_hours_format: 'decimal',
       overtime_enabled: !!merged.general?.overtime_enabled,
       overtime_hourly_rate: Number(merged.general?.overtime_hourly_rate || 0) || 0,
       overtime_display_mode: merged.general?.overtime_display_mode === 'separate'
@@ -543,9 +541,7 @@ function buildSettingsSummary(settings = readSettings()) {
       attendance_entry_mode: normalizedSettings.general?.attendance_entry_mode === 'hours_only'
         ? 'hours_only'
         : 'hours_and_symbol',
-      attendance_hours_format: normalizedSettings.general?.attendance_hours_format === 'hours_minutes'
-        ? 'hours_minutes'
-        : 'decimal',
+      attendance_hours_format: 'decimal',
       overtime_enabled: !!normalizedSettings.general?.overtime_enabled,
       overtime_hourly_rate: Number(normalizedSettings.general?.overtime_hourly_rate || 0) || 0,
       overtime_display_mode: normalizedSettings.general?.overtime_display_mode === 'separate'

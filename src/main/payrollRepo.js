@@ -9,6 +9,16 @@ const {
 
 const PAYROLL_DOCUMENT_CATEGORY = 'payroll_slip';
 
+function parseJsonValue(value, fallback = null) {
+  if (!value) return fallback;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
 function normalizeAdvances(advances = []) {
   return (Array.isArray(advances) ? advances : [])
     .map((advance, index) => ({
@@ -71,6 +81,7 @@ function attachAdvances(records) {
     resto_pagato: !!record.resto_pagato,
     is_processed: !!record.processed_at,
     is_archived: !!record.archived_at,
+    report_snapshot_json: parseJsonValue(record.report_snapshot_json, null),
     advances: advancesMap.get(record.id) || [],
     payroll_document: record.payroll_document_id
       ? describeStoredFile({
@@ -526,20 +537,23 @@ function getPayrollRecord(employeeId, month) {
 
 function getPreviousBalance(employeeId, month) {
   const db = getDb();
+  const effectiveBalanceSql = `
+    (
+      COALESCE(pr.retribuzione_calcolata, 0) +
+      COALESCE(pr.resto_precedente, 0) +
+      COALESCE(pr.totale_trasporto, 0) +
+      COALESCE(pr.regalo_importo, 0) -
+      COALESCE(pr.acconti, 0) -
+      COALESCE(pr.importo_busta_paga, 0) -
+      COALESCE(installments.current_installments_total, 0)
+    )
+  `;
 
-  const previous = db.prepare(`
+  const openPrevious = db.prepare(`
     SELECT
       pr.month,
       pr.resto_pagato,
-      (
-        COALESCE(pr.retribuzione_calcolata, 0) +
-        COALESCE(pr.resto_precedente, 0) +
-        COALESCE(pr.totale_trasporto, 0) +
-        COALESCE(pr.regalo_importo, 0) -
-        COALESCE(pr.acconti, 0) -
-        COALESCE(pr.importo_busta_paga, 0) -
-        COALESCE(installments.current_installments_total, 0)
-      ) AS effective_balance
+      ${effectiveBalanceSql} AS effective_balance
     FROM payroll_records pr
     LEFT JOIN (
       SELECT paid_record_id, SUM(amount) AS current_installments_total
@@ -552,29 +566,54 @@ function getPreviousBalance(employeeId, month) {
       AND pr.month < ?
       AND pr.archived_at IS NULL
       AND COALESCE(pr.resto_pagato, 0) = 0
-      AND (
-        COALESCE(pr.retribuzione_calcolata, 0) +
-        COALESCE(pr.resto_precedente, 0) +
-        COALESCE(pr.totale_trasporto, 0) +
-        COALESCE(pr.regalo_importo, 0) -
-        COALESCE(pr.acconti, 0) -
-        COALESCE(pr.importo_busta_paga, 0) -
-        COALESCE(installments.current_installments_total, 0)
-      ) > 0
+      AND ${effectiveBalanceSql} <> 0
     ORDER BY pr.month DESC
     LIMIT 1
   `).get(employeeId, month);
 
-  if (!previous) {
+  if (openPrevious) {
+    return {
+      previousMonth: openPrevious.month,
+      previousBalance: Number(openPrevious.effective_balance || 0),
+      alreadyPaid: false,
+    };
+  }
+
+  const latestPrevious = db.prepare(`
+    SELECT
+      pr.month,
+      pr.resto_pagato,
+      ${effectiveBalanceSql} AS effective_balance
+    FROM payroll_records pr
+    LEFT JOIN (
+      SELECT paid_record_id, SUM(amount) AS current_installments_total
+      FROM payroll_debt_installments
+      WHERE paid_record_id IS NOT NULL
+      GROUP BY paid_record_id
+    ) installments
+      ON installments.paid_record_id = pr.id
+    WHERE pr.employee_id = ?
+      AND pr.month < ?
+      AND pr.archived_at IS NULL
+      AND ${effectiveBalanceSql} <> 0
+    ORDER BY pr.month DESC
+    LIMIT 1
+  `).get(employeeId, month);
+
+  if (!latestPrevious) {
     return {
       previousMonth: null,
       previousBalance: 0,
+      alreadyPaid: false,
     };
   }
 
   return {
-    previousMonth: previous.month,
-    previousBalance: Number(previous.effective_balance || 0),
+    previousMonth: null,
+    previousBalance: 0,
+    alreadyPaid: !!latestPrevious.resto_pagato,
+    paidPreviousMonth: latestPrevious.month,
+    paidPreviousBalance: Number(latestPrevious.effective_balance || 0),
   };
 }
 

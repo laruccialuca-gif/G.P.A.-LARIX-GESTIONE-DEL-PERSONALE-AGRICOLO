@@ -76,10 +76,6 @@ function splitDefaultHours(value) {
 function getDefaultQuickValue(attendanceSettings) {
   const baseHours = attendanceSettings?.baseHours || 0;
 
-  if (attendanceSettings?.hoursFormat === 'hours_minutes') {
-    return splitDefaultHours(baseHours);
-  }
-
   if (attendanceSettings?.inputMode === 'hours_and_symbol') {
     return {
       hours: attendanceSettings?.quickSymbol || 'X',
@@ -103,10 +99,6 @@ function getPresencePresetValue(preset, attendanceSettings) {
     };
   }
 
-  if (attendanceSettings?.hoursFormat === 'hours_minutes') {
-    return splitDefaultHours(baseHours);
-  }
-
   return {
     hours: formatDecimalInput(baseHours),
     minutes: '',
@@ -119,10 +111,6 @@ function getOvertimePresetValue(preset, attendanceSettings) {
   }
 
   const hoursValue = Number(preset || 0);
-  if (attendanceSettings?.hoursFormat === 'hours_minutes') {
-    return splitDefaultHours(hoursValue);
-  }
-
   return {
     hours: formatDecimalInput(hoursValue),
     minutes: '',
@@ -139,16 +127,8 @@ function formatSelectedWorkersCount(count) {
 
 function formatHoursSummary(hours, minutes, attendanceSettings) {
   const hasHours = hours !== '' && hours !== null && hours !== undefined;
-  const hasMinutes = minutes !== '' && minutes !== null && minutes !== undefined;
-
-  if (!hasHours && !hasMinutes) {
+  if (!hasHours) {
     return 'nessuna modifica';
-  }
-
-  if (attendanceSettings?.hoursFormat === 'hours_minutes') {
-    const hourText = hasHours ? `${hours} h` : '0 h';
-    const minuteText = hasMinutes ? `${minutes} min` : '0 min';
-    return `${hourText} ${minuteText}`;
   }
 
   return String(hours || '0').trim();
@@ -251,16 +231,9 @@ export default function QuickAttendanceModal({
 
     setSelectionState(next);
     wasOpenRef.current = true;
-    if (attendanceSettings?.hoursFormat === 'hours_minutes') {
-      const uniformParts = getUniformInitialParts(rows);
-      const defaultParts = getDefaultQuickValue(attendanceSettings);
-      setCommonHours(uniformParts.hours || defaultParts.hours);
-      setCommonMinutes(uniformParts.minutes || defaultParts.minutes);
-    } else {
-      const defaultValue = getDefaultQuickValue(attendanceSettings);
-      setCommonHours(getUniformInitialHours(rows) || defaultValue.hours);
-      setCommonMinutes('');
-    }
+    const defaultValue = getDefaultQuickValue(attendanceSettings);
+    setCommonHours(getUniformInitialHours(rows) || defaultValue.hours);
+    setCommonMinutes('');
 
     setPresencePreset('default');
     setOvertimePreset('none');
@@ -634,7 +607,7 @@ export default function QuickAttendanceModal({
               </div>
 
               <div style={quickControlColumnStyle}>
-                <div style={quickControlTitleStyle}>Presenze</div>
+              <div style={quickControlTitleStyle}>Presenze</div>
                 <div style={quickInlineControlsStyle}>
                 <select
                   value={presencePreset}
@@ -647,44 +620,23 @@ export default function QuickAttendanceModal({
                   ) : null}
                   <option value="custom">Valore manuale</option>
                 </select>
-                {attendanceSettings?.hoursFormat === 'hours_minutes' ? (
-                  <>
-                    <input
-                      type="text"
-                      value={commonHours}
-                      onChange={(event) => handleCommonHoursChange(event.target.value)}
-                      onFocus={(event) => event.currentTarget.select()}
-                      placeholder={attendanceSettings?.inputMode === 'hours_and_symbol' ? `${attendanceSettings.quickSymbol} o h` : 'Ore'}
-                      style={{ width: 72, textAlign: 'center' }}
-                    />
-                    <input
-                      type="text"
-                      value={commonMinutes}
-                      onChange={(event) => handleCommonMinutesChange(event.target.value)}
-                      onFocus={(event) => event.currentTarget.select()}
-                      placeholder="Min"
-                      style={{ width: 62, textAlign: 'center' }}
-                    />
-                  </>
-                ) : (
-                  <input
-                    type="text"
-                    value={commonHours}
-                    onChange={(event) => handleCommonHoursChange(event.target.value)}
-                    onFocus={(event) => event.currentTarget.select()}
-                    placeholder={
-                      attendanceSettings?.inputMode === 'hours_and_symbol'
-                        ? `Es. ${attendanceSettings.quickSymbol} o ${attendanceSettings.baseHours}`
-                        : 'Ore per tutti'
-                    }
-                    style={{ width: 100, textAlign: 'center' }}
-                  />
-                )}
+                <input
+                  type="text"
+                  value={commonHours}
+                  onChange={(event) => handleCommonHoursChange(event.target.value)}
+                  onFocus={(event) => event.currentTarget.select()}
+                  placeholder={
+                    attendanceSettings?.inputMode === 'hours_and_symbol'
+                      ? `Es. ${attendanceSettings.quickSymbol} o ${attendanceSettings.baseHours}`
+                      : 'Ore per tutti'
+                  }
+                  style={{ width: 100, textAlign: 'center' }}
+                />
               </div>
               </div>
 
               <div style={quickControlColumnStyle}>
-                <div style={quickControlTitleStyle}>Straordinari</div>
+              <div style={quickControlTitleStyle}>Straordinari</div>
                 <div style={quickInlineControlsStyle}>
                 <select
                   value={overtimePreset}
@@ -697,35 +649,14 @@ export default function QuickAttendanceModal({
                   <option value="2">2 ore</option>
                   <option value="custom">Valore manuale</option>
                 </select>
-                {attendanceSettings?.hoursFormat === 'hours_minutes' ? (
-                  <>
-                    <input
-                      type="text"
-                      value={commonOvertimeHours}
-                      onChange={(event) => handleCommonOvertimeHoursChange(event.target.value)}
-                      onFocus={(event) => event.currentTarget.select()}
-                      placeholder="Ore"
-                      style={{ width: 72, textAlign: 'center' }}
-                    />
-                    <input
-                      type="text"
-                      value={commonOvertimeMinutes}
-                      onChange={(event) => handleCommonOvertimeMinutesChange(event.target.value)}
-                      onFocus={(event) => event.currentTarget.select()}
-                      placeholder="Min"
-                      style={{ width: 62, textAlign: 'center' }}
-                    />
-                  </>
-                ) : (
-                  <input
-                    type="text"
-                    value={commonOvertimeHours}
-                    onChange={(event) => handleCommonOvertimeHoursChange(event.target.value)}
-                    onFocus={(event) => event.currentTarget.select()}
-                    placeholder="Straordinario"
-                    style={{ width: 100, textAlign: 'center' }}
-                  />
-                )}
+                <input
+                  type="text"
+                  value={commonOvertimeHours}
+                  onChange={(event) => handleCommonOvertimeHoursChange(event.target.value)}
+                  onFocus={(event) => event.currentTarget.select()}
+                  placeholder="Straordinario"
+                  style={{ width: 100, textAlign: 'center' }}
+                />
               </div>
               </div>
 
