@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const { dialog, app } = require('electron');
 const { getDataDir, getConfigDir, getDocumentsDir, getBackupsDir, getUserDataRoot } = require('./storagePaths');
 const settingsService = require('./settingsService');
+const { getDb, getDbPath } = require('./db');
 
 const MAX_MANUAL_BACKUPS = 10;
 const MAX_AUTO_BACKUPS = 14;
@@ -44,21 +45,26 @@ function hashFile(filePath) {
   return hash.digest('hex');
 }
 
-function copyDirRecursive(sourceDir, targetDir, relativeBase = '', files = []) {
+function copyDirRecursive(sourceDir, targetDir, relativeBase = '', files = [], options = {}) {
   ensureDir(targetDir);
 
   if (!fs.existsSync(sourceDir)) {
     return files;
   }
 
+  const skipAbsolutePaths = options.skipAbsolutePaths || new Set();
+
   const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
   for (const entry of entries) {
     const sourcePath = path.join(sourceDir, entry.name);
+    if (skipAbsolutePaths.has(sourcePath)) {
+      continue;
+    }
     const relativePath = path.join(relativeBase, entry.name);
     const targetPath = path.join(targetDir, entry.name);
 
     if (entry.isDirectory()) {
-      copyDirRecursive(sourcePath, targetPath, relativePath, files);
+      copyDirRecursive(sourcePath, targetPath, relativePath, files, options);
     } else if (entry.isFile()) {
       ensureDir(path.dirname(targetPath));
       fs.copyFileSync(sourcePath, targetPath);
@@ -72,6 +78,35 @@ function copyDirRecursive(sourceDir, targetDir, relativeBase = '', files = []) {
   }
 
   return files;
+}
+
+function escapeSqlitePath(filePath) {
+  return String(filePath).replace(/'/g, "''");
+}
+
+function backupSqliteDatabase(targetPath, files = [], relativePath = 'data/presenze.sqlite') {
+  const db = getDb();
+  const sourceDbPath = getDbPath();
+
+  ensureDir(path.dirname(targetPath));
+  if (fs.existsSync(targetPath)) {
+    fs.rmSync(targetPath, { force: true });
+  }
+
+  db.exec(`VACUUM INTO '${escapeSqlitePath(targetPath)}'`);
+
+  const stats = fs.statSync(targetPath);
+  files.push({
+    relative_path: relativePath,
+    size_bytes: stats.size,
+    sha256: hashFile(targetPath),
+  });
+
+  return {
+    sourceDbPath,
+    sourceWalPath: `${sourceDbPath}-wal`,
+    sourceShmPath: `${sourceDbPath}-shm`,
+  };
 }
 
 async function copyDirRecursiveWithRetry(sourceDir, targetDir, relativeBase = '', files = []) {
@@ -197,14 +232,30 @@ function createBackup(type = 'manual') {
   const backupDir = ensureDir(path.join(backupRoot, folderName));
 
   const files = [];
-  copyDirRecursive(getDataDir(), path.join(backupDir, 'data'), 'data', files);
+  const targetDataDir = path.join(backupDir, 'data');
+  const dbBackupTargetPath = path.join(targetDataDir, path.basename(getDbPath()));
+  const { sourceDbPath, sourceWalPath, sourceShmPath } = backupSqliteDatabase(
+    dbBackupTargetPath,
+    files,
+    path.join('data', path.basename(getDbPath()))
+  );
+  copyDirRecursive(getDataDir(), targetDataDir, 'data', files, {
+    skipAbsolutePaths: new Set([sourceDbPath, sourceWalPath, sourceShmPath]),
+  });
   copyDirRecursive(getConfigDir(), path.join(backupDir, 'config'), 'config', files);
   copyDirRecursive(getDocumentsDir(), path.join(backupDir, 'documents'), 'documents', files);
 
   const manifest = buildManifest({ type, folderName, files });
   fs.writeFileSync(getManifestPath(backupDir), JSON.stringify(manifest, null, 2), 'utf8');
 
-  if (type === 'automatic') {
+  const validation = validateBackup(backupDir);
+  if (validation.valid) {
+    console.info(`Backup ${folderName} validato correttamente.`);
+  } else {
+    console.error(`Validazione backup fallita per ${folderName}: ${validation.message}`);
+  }
+
+  if (type === 'automatic' && validation.valid) {
     settingsService.writeSettings({
       ...settings,
       backup: {
@@ -216,7 +267,11 @@ function createBackup(type = 'manual') {
 
   pruneOldBackups(backupRoot, type);
 
-  return getBackupStats(backupDir);
+  return {
+    ...getBackupStats(backupDir),
+    is_valid: validation.valid,
+    validation_message: validation.message,
+  };
 }
 
 function readBackupManifest(backupDir) {
