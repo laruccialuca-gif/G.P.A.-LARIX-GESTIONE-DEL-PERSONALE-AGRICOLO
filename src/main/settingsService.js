@@ -201,9 +201,11 @@ function normalizeSettings(input = {}) {
 
   const mode = merged.employers?.mode === 'one' ? 'one' : 'two';
   const sourceItems = Array.isArray(merged.employers?.items) ? merged.employers.items : [];
-  const items = sourceItems.slice(0, mode === 'one' ? 1 : 2).map(normalizeEmployerItem);
+  const minimumItems = mode === 'one' ? 1 : 2;
+  const targetItemsCount = mode === 'one' ? 1 : Math.max(sourceItems.length, minimumItems);
+  const items = sourceItems.slice(0, targetItemsCount).map(normalizeEmployerItem);
 
-  while (items.length < (mode === 'one' ? 1 : 2)) {
+  while (items.length < minimumItems) {
     items.push(normalizeEmployerItem({}, items.length));
   }
 

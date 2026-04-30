@@ -21,13 +21,36 @@ function emptySetupDraft() {
       logo_file_name: null,
     },
     selectedYear: currentYear,
-    employersMode: 'two',
-    primaryEmployer: { name: 'Laruccia Cosimo', short_name: 'LC' },
-    secondaryEmployer: { name: 'Laruccia Giuseppe', short_name: 'LG' },
+    employersMode: 'multiple',
+    employersCount: 2,
+    employerItems: [
+      { key: 'employer_1', name: 'Laruccia Cosimo', short_name: 'LC' },
+      { key: 'employer_2', name: 'Laruccia Giuseppe', short_name: 'LG' },
+    ],
     standardDayHours: 7,
     overtimeEnabled: false,
     attendanceHoursFormat: 'decimal',
   };
+}
+
+function normalizeSetupEmployerItem(item, index) {
+  const fallbackShort = index === 0 ? 'LC' : index === 1 ? 'LG' : `D${index + 1}`;
+  return {
+    key: item?.key || `employer_${index + 1}`,
+    name: item?.name || '',
+    short_name: String(item?.short_name || fallbackShort).toUpperCase(),
+  };
+}
+
+function ensureEmployerItems(items, count) {
+  const targetCount = Math.max(1, Number(count || 1));
+  const normalized = Array.isArray(items) ? items.map(normalizeSetupEmployerItem) : [];
+
+  while (normalized.length < targetCount) {
+    normalized.push(normalizeSetupEmployerItem({}, normalized.length));
+  }
+
+  return normalized.slice(0, targetCount);
 }
 
 function resolveLogoSrc(value) {
@@ -65,6 +88,16 @@ export default function SetupPage() {
 
         const employers = Array.isArray(settingsData?.employers?.items) ? settingsData.employers.items : [];
         setSettings(settingsData || null);
+        const normalizedEmployerItems = ensureEmployerItems(
+          employers.length
+            ? employers
+            : [
+                { key: 'employer_1', name: 'Laruccia Cosimo', short_name: 'LC' },
+                { key: 'employer_2', name: 'Laruccia Giuseppe', short_name: 'LG' },
+              ],
+          Math.max(employers.length || 0, 2)
+        );
+
         setDraft({
           company: {
             name: settingsData?.company?.name || '',
@@ -74,15 +107,14 @@ export default function SetupPage() {
             logo_file_name: settingsData?.company?.logo_file_name || null,
           },
           selectedYear: Number(settingsData?.setup?.initial_year || new Date().getFullYear()) || new Date().getFullYear(),
-          employersMode: employers.length <= 1 ? (String(employers[0]?.short_name || '').toUpperCase() === 'LG' ? 'lg' : 'lc') : 'two',
-          primaryEmployer: {
-            name: employers[0]?.name || 'Laruccia Cosimo',
-            short_name: employers[0]?.short_name || 'LC',
-          },
-          secondaryEmployer: {
-            name: employers[1]?.name || 'Laruccia Giuseppe',
-            short_name: employers[1]?.short_name || 'LG',
-          },
+          employersMode: employers.length <= 1 ? 'one' : 'multiple',
+          employersCount: employers.length <= 1 ? 1 : normalizedEmployerItems.length,
+          employerItems: employers.length <= 1
+            ? ensureEmployerItems(
+                employers.length ? employers : [{ key: 'employer_1', name: 'Laruccia Cosimo', short_name: 'LC' }],
+                1
+              )
+            : normalizedEmployerItems,
           standardDayHours: Number(settingsData?.general?.standard_day_hours || 7) || 7,
           overtimeEnabled: !!settingsData?.general?.overtime_enabled,
           attendanceHoursFormat: settingsData?.general?.attendance_hours_format === 'hours_minutes' ? 'hours_minutes' : 'decimal',
@@ -121,25 +153,38 @@ export default function SetupPage() {
         };
       }
 
-      if (path.startsWith('primaryEmployer.')) {
-        const key = path.replace('primaryEmployer.', '');
+      if (path.startsWith('employerItems.')) {
+        const [, indexRaw, key] = path.split('.');
+        const index = Number(indexRaw);
         return {
           ...current,
-          primaryEmployer: {
-            ...current.primaryEmployer,
-            [key]: value,
-          },
+          employerItems: current.employerItems.map((item, itemIndex) =>
+            itemIndex === index
+              ? {
+                  ...item,
+                  [key]: value,
+                }
+              : item
+          ),
         };
       }
 
-      if (path.startsWith('secondaryEmployer.')) {
-        const key = path.replace('secondaryEmployer.', '');
+      if (path === 'employersMode') {
+        const nextCount = value === 'one' ? 1 : Math.max(Number(current.employersCount || 2), 2);
         return {
           ...current,
-          secondaryEmployer: {
-            ...current.secondaryEmployer,
-            [key]: value,
-          },
+          employersMode: value,
+          employersCount: nextCount,
+          employerItems: ensureEmployerItems(current.employerItems, nextCount),
+        };
+      }
+
+      if (path === 'employersCount') {
+        const nextCount = Math.max(2, Number(value || 2));
+        return {
+          ...current,
+          employersCount: nextCount,
+          employerItems: ensureEmployerItems(current.employerItems, nextCount),
         };
       }
 
@@ -183,27 +228,14 @@ export default function SetupPage() {
   async function handleComplete() {
     if (!validateStep(currentStep)) return;
 
-    const employers =
-      draft.employersMode === 'two'
-        ? [
-            {
-              key: 'employer_1',
-              name: draft.primaryEmployer.name || 'Datore 1',
-              short_name: (draft.primaryEmployer.short_name || 'LC').toUpperCase(),
-            },
-            {
-              key: 'employer_2',
-              name: draft.secondaryEmployer.name || 'Datore 2',
-              short_name: (draft.secondaryEmployer.short_name || 'LG').toUpperCase(),
-            },
-          ]
-        : [
-            {
-              key: 'employer_1',
-              name: draft.employersMode === 'lg' ? (draft.secondaryEmployer.name || 'Datore') : (draft.primaryEmployer.name || 'Datore'),
-              short_name: (draft.employersMode === 'lg' ? draft.secondaryEmployer.short_name : draft.primaryEmployer.short_name || 'LC').toUpperCase(),
-            },
-          ];
+    const employers = ensureEmployerItems(
+      draft.employerItems,
+      draft.employersMode === 'one' ? 1 : Math.max(Number(draft.employersCount || 2), 2)
+    ).map((item, index) => ({
+      key: item.key || `employer_${index + 1}`,
+      name: String(item.name || '').trim() || `Datore ${index + 1}`,
+      short_name: String(item.short_name || `D${index + 1}`).trim().toUpperCase() || `D${index + 1}`,
+    }));
 
     setSaving(true);
     try {
@@ -222,7 +254,7 @@ export default function SetupPage() {
           logo_file_name: draft.company.logo_file_name || null,
         },
         employers: {
-          mode: draft.employersMode === 'two' ? 'two' : 'one',
+          mode: draft.employersMode === 'one' ? 'one' : 'two',
           items: employers,
         },
         general: {
@@ -329,36 +361,64 @@ export default function SetupPage() {
             <div style={{ display: 'grid', gap: 18 }}>
               <div className="settings-switch-list">
                 <label className="communication-checkbox">
-                  <input type="radio" name="employers-mode" checked={draft.employersMode === 'lc'} onChange={() => updateDraft('employersMode', 'lc')} />
-                  Solo LC
+                  <input type="radio" name="employers-mode" checked={draft.employersMode === 'one'} onChange={() => updateDraft('employersMode', 'one')} />
+                  1 datore di lavoro
                 </label>
                 <label className="communication-checkbox">
-                  <input type="radio" name="employers-mode" checked={draft.employersMode === 'lg'} onChange={() => updateDraft('employersMode', 'lg')} />
-                  Solo LG
-                </label>
-                <label className="communication-checkbox">
-                  <input type="radio" name="employers-mode" checked={draft.employersMode === 'two'} onChange={() => updateDraft('employersMode', 'two')} />
-                  Entrambi
+                  <input type="radio" name="employers-mode" checked={draft.employersMode === 'multiple'} onChange={() => updateDraft('employersMode', 'multiple')} />
+                  2 o piu datori di lavoro
                 </label>
               </div>
 
-              <div className="settings-employers-list">
-                <div className="settings-employer-card">
-                  <div style={{ fontWeight: 800, marginBottom: 10 }}>Datore LC</div>
-                  <div className="settings-inline-grid">
-                    <input value={draft.primaryEmployer.name} onChange={(e) => updateDraft('primaryEmployer.name', e.target.value)} placeholder="Nome LC" />
-                    <input value={draft.primaryEmployer.short_name} onChange={(e) => updateDraft('primaryEmployer.short_name', e.target.value.toUpperCase())} placeholder="Sigla" maxLength={4} />
+              {draft.employersMode === 'multiple' ? (
+                <div className="settings-form-grid">
+                  <label>
+                    <span className="communication-field-label">Numero datori di lavoro</span>
+                    <select
+                      value={draft.employersCount}
+                      onChange={(e) => updateDraft('employersCount', Number(e.target.value))}
+                    >
+                      {Array.from({ length: 9 }, (_, index) => index + 2).map((count) => (
+                        <option key={count} value={count}>
+                          {count} datori
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="muted-box" style={{ alignSelf: 'end' }}>
+                    Se scegli piu di 2 datori, il setup crea automaticamente i campi aggiuntivi.
                   </div>
                 </div>
-                {draft.employersMode === 'two' || draft.employersMode === 'lg' ? (
-                  <div className="settings-employer-card">
-                    <div style={{ fontWeight: 800, marginBottom: 10 }}>Datore LG</div>
-                    <div className="settings-inline-grid">
-                      <input value={draft.secondaryEmployer.name} onChange={(e) => updateDraft('secondaryEmployer.name', e.target.value)} placeholder="Nome LG" />
-                      <input value={draft.secondaryEmployer.short_name} onChange={(e) => updateDraft('secondaryEmployer.short_name', e.target.value.toUpperCase())} placeholder="Sigla" maxLength={4} />
+              ) : null}
+
+              <div className="settings-employers-list">
+                {ensureEmployerItems(
+                  draft.employerItems,
+                  draft.employersMode === 'one' ? 1 : Math.max(Number(draft.employersCount || 2), 2)
+                ).map((item, index) => {
+                  const isSingleEmployer = draft.employersMode === 'one';
+                  const label = isSingleEmployer ? 'Datore' : `Datore ${index + 1}`;
+                  const siglaLabel = isSingleEmployer ? 'Sigla' : `Sigla ${index + 1}`;
+
+                  return (
+                    <div key={item.key} className="settings-employer-card">
+                      <div style={{ fontWeight: 800, marginBottom: 10 }}>{label}</div>
+                      <div className="settings-inline-grid">
+                        <input
+                          value={item.name}
+                          onChange={(e) => updateDraft(`employerItems.${index}.name`, e.target.value)}
+                          placeholder={label}
+                        />
+                        <input
+                          value={item.short_name}
+                          onChange={(e) => updateDraft(`employerItems.${index}.short_name`, e.target.value.toUpperCase())}
+                          placeholder={siglaLabel}
+                          maxLength={4}
+                        />
+                      </div>
                     </div>
-                  </div>
-                ) : null}
+                  );
+                })}
               </div>
             </div>
           ) : null}
