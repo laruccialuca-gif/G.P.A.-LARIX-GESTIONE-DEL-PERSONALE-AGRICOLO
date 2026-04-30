@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import DocumentActions from '../components/DocumentActions';
 import { calculateAttendanceTotals, formatHoursValue, formatWorkedSummary, getSafeStandardHours } from '../utils/attendanceSummary';
@@ -214,12 +214,35 @@ function normalizeAdvances(advances) {
   }));
 }
 
+function isAdvanceDraftEmpty(advance) {
+  return String(advance?.amount ?? '').trim() === '' && String(advance?.date ?? '').trim() === '';
+}
+
+function buildEditorAdvances(savedAdvances, currentAdvances = []) {
+  const meaningfulSavedAdvances = normalizeAdvances(savedAdvances).filter((advance) => !isAdvanceDraftEmpty(advance));
+  const emptyDraftRows = (currentAdvances || []).filter(isAdvanceDraftEmpty).length;
+  const emptyRowsToKeep = meaningfulSavedAdvances.length ? emptyDraftRows : Math.max(1, emptyDraftRows);
+
+  return [
+    ...meaningfulSavedAdvances,
+    ...Array.from({ length: emptyRowsToKeep }, () => createEmptyAdvance()),
+  ];
+}
+
 function normalizeCurrency(value) {
   return Number(value || 0);
 }
 
 function formatCurrency(value) {
   return `€ ${Number(value || 0).toFixed(2)}`;
+}
+
+function formatSignedCurrency(value) {
+  const amount = Number(value || 0);
+  return new Intl.NumberFormat('it-IT', {
+    style: 'currency',
+    currency: 'EUR',
+  }).format(amount);
 }
 
 function getIpcRecoveryMessage(error, fallbackMessage) {
@@ -302,10 +325,14 @@ export default function ReportPage() {
   const [giftAmount, setGiftAmount] = useState('');
   const [giftLabel, setGiftLabel] = useState('');
   const [debtPlans, setDebtPlans] = useState([]);
+  const [resolvedDebtPlans, setResolvedDebtPlans] = useState([]);
   const [isEditUnlocked, setIsEditUnlocked] = useState(false);
   const [savedEconomicSnapshot, setSavedEconomicSnapshot] = useState(null);
+  const [savedEditorState, setSavedEditorState] = useState(null);
+  const [saveState, setSaveState] = useState('idle');
   const [overtimeRateOverride, setOvertimeRateOverride] = useState('');
   const [showOvertimePanel, setShowOvertimePanel] = useState(false);
+  const autosaveTimeoutRef = useRef(null);
 
   const [teamPeriodStart, setTeamPeriodStart] = useState(formatLocalDate(startOfMonth(currentMonth)));
   const [teamPeriodEnd, setTeamPeriodEnd] = useState(formatLocalDate(endOfMonth(currentMonth)));
@@ -383,6 +410,12 @@ export default function ReportPage() {
   useEffect(() => {
     setIsEditUnlocked(false);
   }, [selectedEntity, currentMonth]);
+
+  useEffect(() => () => {
+    if (autosaveTimeoutRef.current) {
+      clearTimeout(autosaveTimeoutRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (!employee) {
@@ -472,27 +505,122 @@ export default function ReportPage() {
 
   useEffect(() => {
     async function loadPayrollContext() {
+      function normalizeDebtPlansForEditor(plans = []) {
+        return (plans || []).map((plan) => ({
+          id: plan.id,
+          label: plan.label || '',
+          total_amount: String(plan.total_amount || ''),
+          status: plan.status || 'active',
+          created_from_month: plan.created_from_month || currentMonthKey,
+          installments: (plan.installments || []).length
+            ? plan.installments.map((installment) => ({
+                id: installment.id,
+                target_month: installment.target_month || '',
+                amount: String(installment.amount || ''),
+                note: installment.note || '',
+              }))
+            : [createEmptyDebtInstallment()],
+        }));
+      }
+
+      function splitDebtPlansByStatus(plans = []) {
+        return plans.reduce(
+          (acc, plan) => {
+            if ((plan.status || 'active') === 'active') {
+              acc.active.push(plan);
+            } else {
+              acc.resolved.push(plan);
+            }
+            return acc;
+          },
+          { active: [], resolved: [] }
+        );
+      }
+
+      function buildSavedStateFromRecord(record) {
+        const savedNMacchine = Number(record.n_macchine_mese || 0);
+        const savedPrezzo = Number(record.prezzo_per_macchina || 0);
+        const savedTrasporto = Number(record.totale_trasporto || 0);
+        const normalizedPlans = normalizeDebtPlansForEditor(record.debt_plans || []);
+        const splitPlans = splitDebtPlansByStatus(normalizedPlans);
+
+        return {
+          datore: record.datore || defaultEmployerValue,
+          importoBustaPaga: record.importo_busta_paga ? String(record.importo_busta_paga) : '',
+          giornateBustaPaga: record.giornate_busta_paga ? String(record.giornate_busta_paga) : '',
+          advances: buildEditorAdvances(record.advances),
+          restoPrecedente: record.resto_precedente !== null && record.resto_precedente !== undefined ? String(record.resto_precedente) : '',
+          trasportoAttivo: savedNMacchine > 0 || savedPrezzo > 0 || savedTrasporto > 0,
+          nMacchineMese: savedNMacchine ? String(savedNMacchine) : '',
+          prezzoPerMacchina: savedPrezzo ? String(savedPrezzo) : '',
+          noteExtra: record.note || '',
+          isPagato: !!record.is_pagato,
+          restoPaid: !!record.resto_pagato,
+          restoPaidDate: record.resto_pagato_data || '',
+          payrollDocument: record.payroll_document || null,
+          currentPayrollRecord: record || null,
+          giftAmount: record.regalo_importo ? String(record.regalo_importo) : '',
+          giftLabel: record.regalo_descrizione || '',
+          debtPlans: splitPlans.active,
+          resolvedDebtPlans: splitPlans.resolved,
+          overtimeRateOverride: '',
+          showOvertimePanel: false,
+        };
+      }
+
+      function buildSavedStateFromPreviousBalance(previous) {
+        return {
+          datore: defaultEmployerValue,
+          importoBustaPaga: '',
+          giornateBustaPaga: '',
+          advances: [createEmptyAdvance()],
+          restoPrecedente: previous?.previousBalance !== null && previous?.previousBalance !== undefined ? String(previous.previousBalance) : '',
+          trasportoAttivo: false,
+          nMacchineMese: '',
+          prezzoPerMacchina: '',
+          noteExtra: '',
+          isPagato: false,
+          restoPaid: false,
+          restoPaidDate: '',
+          payrollDocument: null,
+          currentPayrollRecord: null,
+          giftAmount: '',
+          giftLabel: '',
+          debtPlans: [],
+          resolvedDebtPlans: [],
+          overtimeRateOverride: '',
+          showOvertimePanel: false,
+        };
+      }
+
+      function applyEditorState(nextState) {
+        setDatore(nextState.datore);
+        setImportoBustaPaga(nextState.importoBustaPaga);
+        setGiornateBustaPaga(nextState.giornateBustaPaga);
+        setAdvances(nextState.advances);
+        setRestoPrecedente(nextState.restoPrecedente);
+        setTrasportoAttivo(nextState.trasportoAttivo);
+        setNMacchineMese(nextState.nMacchineMese);
+        setPrezzoPerMacchina(nextState.prezzoPerMacchina);
+        setNoteExtra(nextState.noteExtra);
+        setIsPagato(nextState.isPagato);
+        setRestoPaid(nextState.restoPaid);
+        setRestoPaidDate(nextState.restoPaidDate);
+        setPayrollDocument(nextState.payrollDocument);
+        setGiftAmount(nextState.giftAmount);
+        setGiftLabel(nextState.giftLabel);
+        setDebtPlans(nextState.debtPlans);
+        setResolvedDebtPlans(nextState.resolvedDebtPlans);
+        setCurrentPayrollRecord(nextState.currentPayrollRecord);
+        setOvertimeRateOverride(nextState.overtimeRateOverride);
+        setShowOvertimePanel(nextState.showOvertimePanel);
+      }
+
       if (!isEmployeeMode || !employee) {
-        setDatore(defaultEmployerValue);
-        setImportoBustaPaga('');
-        setGiornateBustaPaga('');
-        setAdvances([createEmptyAdvance()]);
-        setRestoPrecedente('');
-        setTrasportoAttivo(false);
-        setNMacchineMese('');
-        setPrezzoPerMacchina('');
-        setNoteExtra('');
-        setIsPagato(false);
-        setRestoPaid(false);
-        setRestoPaidDate('');
-        setPayrollDocument(null);
-        setGiftAmount('');
-        setGiftLabel('');
-        setDebtPlans([]);
-        setCurrentPayrollRecord(null);
+        applyEditorState(buildSavedStateFromPreviousBalance(null));
+        setSavedEditorState(null);
         setSavedEconomicSnapshot(null);
-        setOvertimeRateOverride('');
-        setShowOvertimePanel(false);
+        setSaveState('idle');
         return;
       }
 
@@ -502,113 +630,58 @@ export default function ReportPage() {
         const existing = await window.api.payroll.getRecord(employee.id, currentMonthKey);
 
         if (existing) {
-          setCurrentPayrollRecord(existing);
-          setDatore(existing.datore || defaultEmployerValue);
-          setImportoBustaPaga(existing.importo_busta_paga ? String(existing.importo_busta_paga) : '');
-          setGiornateBustaPaga(existing.giornate_busta_paga ? String(existing.giornate_busta_paga) : '');
-          setAdvances(normalizeAdvances(existing.advances));
-          setRestoPrecedente(existing.resto_precedente !== null && existing.resto_precedente !== undefined ? String(existing.resto_precedente) : '');
-          const savedNMacchine = Number(existing.n_macchine_mese || 0);
-          const savedPrezzo = Number(existing.prezzo_per_macchina || 0);
-          const savedTrasporto = Number(existing.totale_trasporto || 0);
-          setTrasportoAttivo(savedNMacchine > 0 || savedPrezzo > 0 || savedTrasporto > 0);
-          setNMacchineMese(savedNMacchine ? String(savedNMacchine) : '');
-          setPrezzoPerMacchina(savedPrezzo ? String(savedPrezzo) : '');
-          setNoteExtra(existing.note || '');
-          setIsPagato(!!existing.is_pagato);
-          setRestoPaid(!!existing.resto_pagato);
-          setRestoPaidDate(existing.resto_pagato_data || '');
-          setPayrollDocument(existing.payroll_document || null);
-          setGiftAmount(existing.regalo_importo ? String(existing.regalo_importo) : '');
-          setGiftLabel(existing.regalo_descrizione || '');
-          setDebtPlans(
-            (existing.debt_plans || []).map((plan) => ({
-              id: plan.id,
-              label: plan.label || '',
-              total_amount: String(plan.total_amount || ''),
-              created_from_month: plan.created_from_month || currentMonthKey,
-              installments: (plan.installments || []).length
-                ? plan.installments.map((installment) => ({
-                    id: installment.id,
-                    target_month: installment.target_month || '',
-                    amount: String(installment.amount || ''),
-                    note: installment.note || '',
-                  }))
-                : [createEmptyDebtInstallment()],
-            }))
-          );
-          setOvertimeRateOverride('');
+          const nextSavedState = buildSavedStateFromRecord(existing);
+          applyEditorState(nextSavedState);
+          setSavedEditorState(nextSavedState);
           setSavedEconomicSnapshot(
             buildEconomicSnapshot({
-              datore: existing.datore || defaultEmployerValue,
-              importoBustaPaga: existing.importo_busta_paga ? String(existing.importo_busta_paga) : '',
-              giornateBustaPaga: existing.giornate_busta_paga ? String(existing.giornate_busta_paga) : '',
-              advances: normalizeAdvances(existing.advances),
-              restoPrecedente: existing.resto_precedente !== null && existing.resto_precedente !== undefined ? String(existing.resto_precedente) : '',
-              trasportoAttivo: savedNMacchine > 0 || savedPrezzo > 0 || savedTrasporto > 0,
-              nMacchineMese: savedNMacchine ? String(savedNMacchine) : '',
-              prezzoPerMacchina: savedPrezzo ? String(savedPrezzo) : '',
-              noteExtra: existing.note || '',
-              isPagato: !!existing.is_pagato,
-              restoPaid: !!existing.resto_pagato,
-              restoPaidDate: existing.resto_pagato_data || '',
-              giftAmount: existing.regalo_importo ? String(existing.regalo_importo) : '',
-              giftLabel: existing.regalo_descrizione || '',
-              debtPlans: (existing.debt_plans || []).map((plan) => ({
-                id: plan.id,
-                label: plan.label || '',
-                total_amount: String(plan.total_amount || ''),
-                created_from_month: plan.created_from_month || currentMonthKey,
-                installments: (plan.installments || []).map((installment) => ({
-                  id: installment.id,
-                  target_month: installment.target_month || '',
-                  amount: String(installment.amount || ''),
-                  note: installment.note || '',
-                })),
-              })),
+              datore: nextSavedState.datore,
+              importoBustaPaga: nextSavedState.importoBustaPaga,
+              giornateBustaPaga: nextSavedState.giornateBustaPaga,
+              advances: nextSavedState.advances,
+              restoPrecedente: nextSavedState.restoPrecedente,
+              trasportoAttivo: nextSavedState.trasportoAttivo,
+              nMacchineMese: nextSavedState.nMacchineMese,
+              prezzoPerMacchina: nextSavedState.prezzoPerMacchina,
+              noteExtra: nextSavedState.noteExtra,
+              isPagato: nextSavedState.isPagato,
+              restoPaid: nextSavedState.restoPaid,
+              restoPaidDate: nextSavedState.restoPaidDate,
+              giftAmount: nextSavedState.giftAmount,
+              giftLabel: nextSavedState.giftLabel,
+              debtPlans: nextSavedState.debtPlans,
+              resolvedDebtPlans: nextSavedState.resolvedDebtPlans,
             })
           );
+          setSaveState('idle');
           return;
         }
 
         const previous = await window.api.payroll.getPreviousBalance(employee.id, currentMonthKey);
-        setDatore(defaultEmployerValue);
-        setImportoBustaPaga('');
-        setGiornateBustaPaga('');
-        setAdvances([createEmptyAdvance()]);
-        setRestoPrecedente(previous?.previousBalance !== null && previous?.previousBalance !== undefined ? String(previous.previousBalance) : '');
-        setTrasportoAttivo(false);
-        setNMacchineMese('');
-        setPrezzoPerMacchina('');
-        setNoteExtra('');
-        setIsPagato(false);
-        setRestoPaid(false);
-        setRestoPaidDate('');
-        setPayrollDocument(null);
-        setGiftAmount('');
-        setGiftLabel('');
-        setDebtPlans([]);
-        setCurrentPayrollRecord(null);
-        setOvertimeRateOverride('');
+        const nextSavedState = buildSavedStateFromPreviousBalance(previous);
+        applyEditorState(nextSavedState);
+        setSavedEditorState(nextSavedState);
         setSavedEconomicSnapshot(
           buildEconomicSnapshot({
-            datore: defaultEmployerValue,
-            importoBustaPaga: '',
-            giornateBustaPaga: '',
-            advances: [createEmptyAdvance()],
-            restoPrecedente: previous?.previousBalance !== null && previous?.previousBalance !== undefined ? String(previous.previousBalance) : '',
-            trasportoAttivo: false,
-            nMacchineMese: '',
-            prezzoPerMacchina: '',
-            noteExtra: '',
-            isPagato: false,
-            restoPaid: false,
-            restoPaidDate: '',
-            giftAmount: '',
-            giftLabel: '',
-            debtPlans: [],
+            datore: nextSavedState.datore,
+            importoBustaPaga: nextSavedState.importoBustaPaga,
+            giornateBustaPaga: nextSavedState.giornateBustaPaga,
+            advances: nextSavedState.advances,
+            restoPrecedente: nextSavedState.restoPrecedente,
+            trasportoAttivo: nextSavedState.trasportoAttivo,
+            nMacchineMese: nextSavedState.nMacchineMese,
+            prezzoPerMacchina: nextSavedState.prezzoPerMacchina,
+            noteExtra: nextSavedState.noteExtra,
+            isPagato: nextSavedState.isPagato,
+            restoPaid: nextSavedState.restoPaid,
+            restoPaidDate: nextSavedState.restoPaidDate,
+            giftAmount: nextSavedState.giftAmount,
+            giftLabel: nextSavedState.giftLabel,
+            debtPlans: nextSavedState.debtPlans,
+            resolvedDebtPlans: nextSavedState.resolvedDebtPlans,
           })
         );
+        setSaveState('idle');
       } catch (err) {
         console.error(err);
         alert('Errore caricamento saldo precedente');
@@ -651,8 +724,8 @@ export default function ReportPage() {
 
     window.api.payroll.getPreviousBalance(employee.id, currentMonthKey)
       .then((previous) => {
-        if (!previous?.previousMonth || Number(previous?.previousBalance || 0) <= 0) {
-          alert('Nessun resto da dare all’operaio da importare dai mesi precedenti.');
+        if (!previous?.previousMonth || Number(previous?.previousBalance || 0) === 0) {
+          alert('Nessun saldo precedente aperto da importare dai mesi precedenti.');
           return;
         }
 
@@ -751,11 +824,12 @@ export default function ReportPage() {
       }))
       .filter((advance) => advance.amount > 0);
     const totalAdvances = normalizedAdvances.reduce((sum, advance) => sum + advance.amount, 0);
-    const normalizedDebtPlansPayload = debtPlans
+    const normalizedDebtPlansPayload = [...debtPlans, ...resolvedDebtPlans]
       .map((plan) => ({
         id: plan.id || null,
         label: plan.label || '',
         total_amount: Number(plan.total_amount || 0),
+        status: plan.status || 'active',
         created_from_month: plan.created_from_month || currentMonthKey,
         installments: (plan.installments || [])
           .map((installment) => ({
@@ -766,7 +840,7 @@ export default function ReportPage() {
           }))
           .filter((installment) => installment.target_month && installment.amount > 0),
       }))
-      .filter((plan) => plan.total_amount > 0 && plan.installments.length);
+      .filter((plan) => plan.status !== 'active' || (plan.total_amount > 0 && plan.installments.length));
     const importoBustaPagaNum = parseFloat(importoBustaPaga) || 0;
     const restoPrecedenteNum = parseFloat(restoPrecedente) || 0;
     const nMacchineMeseNum = trasportoAttivo ? parseFloat(nMacchineMese) || 0 : 0;
@@ -841,46 +915,80 @@ export default function ReportPage() {
         note: noteExtra,
       });
 
+      const normalizedSavedPlans = (saved?.debt_plans || []).map((plan) => ({
+        id: plan.id,
+        label: plan.label || '',
+        total_amount: String(plan.total_amount || ''),
+        status: plan.status || 'active',
+        created_from_month: plan.created_from_month || currentMonthKey,
+        installments: (plan.installments || []).length
+          ? plan.installments.map((installment) => ({
+              id: installment.id,
+              target_month: installment.target_month || '',
+              amount: String(installment.amount || ''),
+              note: installment.note || '',
+            }))
+          : [createEmptyDebtInstallment()],
+      }));
+      const nextActiveDebtPlans = normalizedSavedPlans.filter((plan) => (plan.status || 'active') === 'active');
+      const nextResolvedDebtPlans = normalizedSavedPlans.filter((plan) => (plan.status || 'active') !== 'active');
+
       setCurrentPayrollRecord(saved || null);
       setPayrollDocument(saved?.payroll_document || null);
       setRestoPaidDate(normalizedRestoPaidDate);
-      setAdvances(normalizeAdvances(saved?.advances));
-      setDebtPlans(
-        (saved?.debt_plans || []).map((plan) => ({
-          id: plan.id,
-          label: plan.label || '',
-          total_amount: String(plan.total_amount || ''),
-          created_from_month: plan.created_from_month || currentMonthKey,
-          installments: (plan.installments || []).length
-            ? plan.installments.map((installment) => ({
-                id: installment.id,
-                target_month: installment.target_month || '',
-                amount: String(installment.amount || ''),
-                note: installment.note || '',
-              }))
-            : [createEmptyDebtInstallment()],
-        }))
-      );
-      setIsEditUnlocked(false);
+      const nextEditorAdvances = buildEditorAdvances(saved?.advances, advances);
+      setAdvances(nextEditorAdvances);
+      setDebtPlans(nextActiveDebtPlans);
+      setResolvedDebtPlans(nextResolvedDebtPlans);
+      if (options.autosave) {
+        setIsEditUnlocked(true);
+      } else {
+        setIsEditUnlocked(false);
+      }
+      const nextSavedState = {
+        datore,
+        importoBustaPaga,
+        giornateBustaPaga,
+        advances: nextEditorAdvances,
+        restoPrecedente,
+        trasportoAttivo,
+        nMacchineMese,
+        prezzoPerMacchina,
+        noteExtra,
+        isPagato,
+        restoPaid,
+        restoPaidDate: normalizedRestoPaidDate,
+        payrollDocument: saved?.payroll_document || null,
+        currentPayrollRecord: saved || null,
+        giftAmount,
+        giftLabel,
+        debtPlans: nextActiveDebtPlans,
+        resolvedDebtPlans: nextResolvedDebtPlans,
+        overtimeRateOverride,
+        showOvertimePanel,
+      };
+      setSavedEditorState(nextSavedState);
       setSavedEconomicSnapshot(
         buildEconomicSnapshot({
-          datore,
-          importoBustaPaga,
-          giornateBustaPaga,
-          advances,
-          restoPrecedente,
-          trasportoAttivo,
-          nMacchineMese,
-          prezzoPerMacchina,
-          noteExtra,
-          isPagato,
-          restoPaid,
-          restoPaidDate: normalizedRestoPaidDate,
-          giftAmount,
-          giftLabel,
-          debtPlans,
+          datore: nextSavedState.datore,
+          importoBustaPaga: nextSavedState.importoBustaPaga,
+          giornateBustaPaga: nextSavedState.giornateBustaPaga,
+          advances: nextSavedState.advances,
+          restoPrecedente: nextSavedState.restoPrecedente,
+          trasportoAttivo: nextSavedState.trasportoAttivo,
+          nMacchineMese: nextSavedState.nMacchineMese,
+          prezzoPerMacchina: nextSavedState.prezzoPerMacchina,
+          noteExtra: nextSavedState.noteExtra,
+          isPagato: nextSavedState.isPagato,
+          restoPaid: nextSavedState.restoPaid,
+          restoPaidDate: nextSavedState.restoPaidDate,
+          giftAmount: nextSavedState.giftAmount,
+          giftLabel: nextSavedState.giftLabel,
+          debtPlans: nextSavedState.debtPlans,
+          resolvedDebtPlans: nextSavedState.resolvedDebtPlans,
         })
       );
+      setSaveState('saved');
 
       if (!options.silent) {
         alert('Report processato e salvato nello storico');
@@ -1014,7 +1122,25 @@ export default function ReportPage() {
   }
 
   function removeDebtPlan(index) {
-    setDebtPlans((current) => current.filter((_, currentIndex) => currentIndex !== index));
+    const confirmed = window.confirm('Il debito è stato saldato?');
+    if (!confirmed) return;
+
+    setDebtPlans((current) => {
+      const targetPlan = current[index];
+      if (!targetPlan) return current;
+
+      if (targetPlan.id) {
+        setResolvedDebtPlans((resolvedCurrent) => [
+          ...resolvedCurrent,
+          {
+            ...targetPlan,
+            status: 'paid',
+          },
+        ]);
+      }
+
+      return current.filter((_, currentIndex) => currentIndex !== index);
+    });
   }
 
   function addDebtInstallment(planIndex) {
@@ -1028,16 +1154,24 @@ export default function ReportPage() {
   }
 
   function removeDebtInstallment(planIndex, installmentIndex) {
-    setDebtPlans((current) =>
-      current.map((plan, currentIndex) => {
-        if (currentIndex !== planIndex) return plan;
-        const nextInstallments = plan.installments.filter((_, currentInstallmentIndex) => currentInstallmentIndex !== installmentIndex);
-        return {
-          ...plan,
-          installments: nextInstallments.length ? nextInstallments : [createEmptyDebtInstallment()],
-        };
-      })
-    );
+    const confirmed = window.confirm('Il debito è stato saldato?');
+    if (!confirmed) return;
+    setDebtPlans((current) => {
+      const targetPlan = current[planIndex];
+      if (!targetPlan) return current;
+
+      if (targetPlan.id) {
+        setResolvedDebtPlans((resolvedCurrent) => [
+          ...resolvedCurrent,
+          {
+            ...targetPlan,
+            status: 'paid',
+          },
+        ]);
+      }
+
+      return current.filter((_, currentIndex) => currentIndex !== planIndex);
+    });
   }
 
   function generateDebtInstallments(planIndex, countValue, startMonthValue) {
@@ -1125,6 +1259,7 @@ export default function ReportPage() {
   const normalizedDebtPlans = debtPlans
     .map((plan) => ({
       ...plan,
+      status: plan.status || 'active',
       total_amount: Number(plan.total_amount || 0),
       installments: (plan.installments || [])
         .map((installment) => ({
@@ -1182,6 +1317,7 @@ export default function ReportPage() {
     giftAmount,
     giftLabel,
     debtPlans,
+    resolvedDebtPlans,
   });
   const hasUnsavedChanges =
     isEmployeeMode &&
@@ -1199,6 +1335,67 @@ export default function ReportPage() {
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges]);
+
+  useEffect(() => {
+    if (!isEmployeeMode || !employee || !hasUnsavedChanges) {
+      if (!hasUnsavedChanges && saveState === 'dirty') {
+        setSaveState('idle');
+      }
+      return undefined;
+    }
+
+    setSaveState((current) => (current === 'saving' ? current : 'dirty'));
+
+    autosaveTimeoutRef.current = setTimeout(async () => {
+      setSaveState('saving');
+      const saved = await handleSavePayrollRecord({ silent: true, autosave: true });
+      if (!saved) {
+        setSaveState('dirty');
+      }
+    }, 700);
+
+    return () => {
+      if (autosaveTimeoutRef.current) {
+        clearTimeout(autosaveTimeoutRef.current);
+      }
+    };
+  }, [hasUnsavedChanges, currentEconomicSnapshot, isEmployeeMode, employee?.id]);
+
+  function handleUnlockEdit() {
+    setIsEditUnlocked(true);
+  }
+
+  function handleCancelReportChanges() {
+    if (!savedEditorState) {
+      return;
+    }
+
+    if (autosaveTimeoutRef.current) {
+      clearTimeout(autosaveTimeoutRef.current);
+    }
+
+    setDatore(savedEditorState.datore);
+    setImportoBustaPaga(savedEditorState.importoBustaPaga);
+    setGiornateBustaPaga(savedEditorState.giornateBustaPaga);
+    setAdvances(savedEditorState.advances);
+    setRestoPrecedente(savedEditorState.restoPrecedente);
+    setTrasportoAttivo(savedEditorState.trasportoAttivo);
+    setNMacchineMese(savedEditorState.nMacchineMese);
+    setPrezzoPerMacchina(savedEditorState.prezzoPerMacchina);
+    setNoteExtra(savedEditorState.noteExtra);
+    setIsPagato(savedEditorState.isPagato);
+    setRestoPaid(savedEditorState.restoPaid);
+    setRestoPaidDate(savedEditorState.restoPaidDate);
+    setPayrollDocument(savedEditorState.payrollDocument);
+    setGiftAmount(savedEditorState.giftAmount);
+    setGiftLabel(savedEditorState.giftLabel);
+    setDebtPlans(savedEditorState.debtPlans);
+    setResolvedDebtPlans(savedEditorState.resolvedDebtPlans);
+    setCurrentPayrollRecord(savedEditorState.currentPayrollRecord);
+    setOvertimeRateOverride(savedEditorState.overtimeRateOverride);
+    setShowOvertimePanel(savedEditorState.showOvertimePanel);
+    setSaveState('idle');
+  }
 
   function guardUnsavedChanges(callback) {
     if (hasUnsavedChanges) {
@@ -1404,6 +1601,14 @@ export default function ReportPage() {
                     Modalità modifica attiva
                   </div>
                 ) : null}
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={handleUnlockEdit}
+                  disabled={isEditUnlocked}
+                >
+                  Modifica
+                </button>
               </div>
             </div>
           ) : null}
@@ -1687,15 +1892,15 @@ export default function ReportPage() {
                     {differenzaFinale > 0
                       ? `Resto da dare all'operaio ${formatCurrency(differenzaFinale)}`
                       : differenzaFinale < 0
-                      ? `Da restituire ${formatCurrency(Math.abs(differenzaFinale))}`
+                      ? `Da ricevere ${formatSignedCurrency(differenzaFinale)}`
                       : 'Pareggio'}
                   </div>
                 </div>
 
-                {differenzaFinale > 0 ? (
+                {restoPrecedenteNum !== 0 || differenzaFinale > 0 ? (
                   <>
                     <div>
-                      <div style={fieldLabelStyle}>Stato resto</div>
+                      <div style={fieldLabelStyle}>Stato saldo</div>
                       <button
                         type="button"
                         className="button"
@@ -1722,7 +1927,7 @@ export default function ReportPage() {
                     </div>
 
                     <div>
-                      <div style={fieldLabelStyle}>Data pagamento resto</div>
+                      <div style={fieldLabelStyle}>Data chiusura saldo</div>
                       <input
                         type="date"
                         value={restoPaidDate}
@@ -1759,8 +1964,12 @@ export default function ReportPage() {
           <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', paddingTop: 6 }}>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               {hasUnsavedChanges ? (
-                <span className="soft-chip" style={{ background: 'rgba(239, 68, 68, 0.12)', color: '#b91c1c', borderColor: 'rgba(185, 28, 28, 0.14)' }}>
-                  Modifiche non salvate
+                <span className="soft-chip" style={{ background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', borderColor: 'rgba(245, 158, 11, 0.18)' }}>
+                  {saveState === 'saving' ? 'Salvataggio...' : 'Modifiche in corso'}
+                </span>
+              ) : saveState === 'saved' ? (
+                <span className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', borderColor: 'rgba(22, 101, 52, 0.14)' }}>
+                  Salvato
                 </span>
               ) : (
                 <span className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', borderColor: 'rgba(22, 101, 52, 0.14)' }}>
@@ -1774,12 +1983,20 @@ export default function ReportPage() {
                 <button
                   type="button"
                   className="button-secondary"
-                  onClick={() => setIsEditUnlocked(true)}
+                  onClick={handleUnlockEdit}
                   disabled={isEditUnlocked}
                 >
                   Modifica
                 </button>
               ) : null}
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={handleCancelReportChanges}
+                disabled={!hasUnsavedChanges}
+              >
+                Annulla
+              </button>
               <button type="button" className="button" onClick={() => handleSavePayrollRecord()}>
                 Salva nel registro
               </button>
@@ -2140,7 +2357,7 @@ function EmployeePrintArea({
           {restoPrecedenteNum !== 0 ? (
             <div style={rp2EconRowStyle}>
               <div style={rp2EconLabelStyle}>Resto mese precedente</div>
-              <div style={rp2EconAmountStyle(restoPrecedenteNum > 0 ? '#059669' : '#dc2626')}>{formatCurrency(restoPrecedenteNum)}</div>
+              <div style={rp2EconAmountStyle(restoPrecedenteNum > 0 ? '#059669' : '#dc2626')}>{formatSignedCurrency(restoPrecedenteNum)}</div>
             </div>
           ) : null}
 
@@ -2225,7 +2442,7 @@ function EmployeePrintArea({
             </div>
           </div>
           <div style={rp2ResultValueStyle(differenzaFinale)}>
-            {differenzaFinale !== 0 ? formatCurrency(Math.abs(differenzaFinale)) : '—'}
+            {differenzaFinale !== 0 ? formatSignedCurrency(differenzaFinale) : '—'}
           </div>
         </div>
 

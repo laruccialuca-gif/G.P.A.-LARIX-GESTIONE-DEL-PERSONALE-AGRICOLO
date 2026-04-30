@@ -132,7 +132,10 @@ function buildCompensationSummary(record, month) {
   const crediti = normalizeNumber(record.resto_precedente);
   const trasporto = normalizeNumber(record.totale_trasporto);
   const aggiunte = normalizeNumber(record.regalo_importo);
-  const totale = retribuzione - acconti - rateDebiti + crediti + trasporto + aggiunte;
+  const calculatedTotal = retribuzione - acconti - rateDebiti + crediti + trasporto + aggiunte;
+  const totale = record.differenza_finale !== null && record.differenza_finale !== undefined
+    ? normalizeNumber(record.differenza_finale)
+    : calculatedTotal;
 
   return {
     totale,

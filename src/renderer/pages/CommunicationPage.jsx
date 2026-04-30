@@ -116,7 +116,10 @@ function buildCompensationSummary(record, month) {
   const crediti = Number(record.resto_precedente || 0);
   const trasporto = Number(record.totale_trasporto || 0);
   const aggiunte = Number(record.regalo_importo || 0);
-  const totale = retribuzione - acconti - rateDebiti + crediti + trasporto + aggiunte;
+  const calculatedTotal = retribuzione - acconti - rateDebiti + crediti + trasporto + aggiunte;
+  const totale = record.differenza_finale !== null && record.differenza_finale !== undefined
+    ? Number(record.differenza_finale || 0)
+    : calculatedTotal;
 
   return {
     retribuzione,
