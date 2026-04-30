@@ -9,6 +9,8 @@ const { isDemoVariant } = require('./runtimeContext');
 
 const LICENSE_FILE_NAME = 'license.json';
 const LICENSE_PUBLIC_KEY_FILE = 'license-public.pem';
+const LOCAL_TEST_LICENSE_KEY = 'GPA-TEST-2026';
+const LOCAL_LICENSE_SCHEMA_VERSION = 2;
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -139,6 +141,188 @@ function removeStoredLicense() {
   }
 }
 
+function addDays(date, amount) {
+  const next = new Date(date.getTime());
+  next.setDate(next.getDate() + amount);
+  return next;
+}
+
+function normalizeIsoDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return date.toISOString();
+}
+
+function normalizeActivationCode(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function isLocalTestActivationCode(value) {
+  return normalizeActivationCode(value) === LOCAL_TEST_LICENSE_KEY;
+}
+
+function mapStatusLabel(code) {
+  if (code === 'active') return 'Attiva';
+  if (code === 'expired') return 'Scaduta';
+  return 'Demo';
+}
+
+function buildLicensePayload({
+  license_key = '',
+  license_id = '',
+  company_name = '',
+  activation_date = '',
+  expires_at = '',
+  license_status = 'demo',
+  activation_method = 'local',
+  customer_name = '',
+  admin_notes = '',
+} = {}) {
+  return {
+    license_key,
+    license_id,
+    customer_name,
+    company_name,
+    license_status,
+    activation_date,
+    expires_at,
+    max_installations: 1,
+    installation_id: getInstallContext().install_id,
+    machine_fingerprint: getInstallContext().machine_fingerprint,
+    admin_notes,
+    activation_method,
+  };
+}
+
+function syncSettingsLicenseMetadata(status) {
+  const settings = settingsService.getSettings();
+  const license = status?.license || null;
+
+  settingsService.writeSettings({
+    ...settings,
+    licensing: {
+      ...settings.licensing,
+      license_key: String(license?.license_key || '').trim(),
+      activation_status: status?.code || 'demo',
+      license_id: String(license?.license_id || '').trim(),
+      customer_name: String(license?.customer_name || '').trim(),
+      company_name: String(license?.company_name || '').trim(),
+      activated_at: String(license?.activation_date || '').trim(),
+      expires_at: String(license?.expires_at || '').trim(),
+      max_installations: Number(license?.max_installations || 1) || 1,
+      notes_admin: String(license?.admin_notes || '').trim(),
+    },
+  });
+}
+
+function touchStoredLicense(stored) {
+  if (!stored || typeof stored !== 'object') {
+    return stored;
+  }
+
+  const next = {
+    ...stored,
+    last_checked_at: new Date().toISOString(),
+  };
+  writeStoredLicense(next);
+  return next;
+}
+
+function buildStatus({
+  code,
+  message,
+  license = null,
+  activationRequest = null,
+}) {
+  const context = getInstallContext();
+  const settings = settingsService.getSettings();
+
+  const status = {
+    code,
+    label: mapStatusLabel(code),
+    message,
+    is_active: code !== 'expired',
+    is_blocking: false,
+    is_write_blocked: code === 'expired',
+    install_context: context,
+    activation_request: activationRequest,
+    license,
+    is_admin: settings.security.current_role === 'admin',
+  };
+
+  syncSettingsLicenseMetadata(status);
+  return status;
+}
+
+function buildDemoStatus(messageOverride = '') {
+  const settings = settingsService.getSettings();
+  const message = messageOverride || (
+    isDemoVariant()
+      ? 'Versione demo attiva. Nessuna licenza richiesta.'
+      : 'Modalita demo attiva. Inserisci una licenza annuale per sbloccare la versione completa.'
+  );
+
+  return buildStatus({
+    code: 'demo',
+    message,
+    activationRequest: isDemoVariant() ? null : createActivationRequest(),
+    license: buildLicensePayload({
+      license_key: '',
+      license_id: isDemoVariant() ? 'DEMO' : '',
+      company_name: settings.company.name || '',
+      activation_date: '',
+      expires_at: '',
+      license_status: 'demo',
+      activation_method: isDemoVariant() ? 'demo_builtin' : 'local_demo',
+      customer_name: isDemoVariant() ? 'Demo' : '',
+      admin_notes: isDemoVariant() ? 'Demo mode' : 'Licenza non ancora attivata',
+    }),
+  });
+}
+
+function buildActiveStatus(license, message = 'Licenza attiva.') {
+  return buildStatus({
+    code: 'active',
+    message,
+    activationRequest: createActivationRequest(),
+    license: {
+      ...license,
+      license_status: 'active',
+    },
+  });
+}
+
+function buildExpiredStatus(license, message = 'Licenza scaduta. Consultazione e backup restano disponibili, ma le nuove modifiche sono bloccate.') {
+  return buildStatus({
+    code: 'expired',
+    message,
+    activationRequest: createActivationRequest(),
+    license: {
+      ...license,
+      license_status: 'expired',
+    },
+  });
+}
+
+function createLocalTestLicense(activationCode) {
+  const activatedAt = new Date();
+  const expiresAt = addDays(activatedAt, 365);
+
+  return {
+    schema_version: LOCAL_LICENSE_SCHEMA_VERSION,
+    mode: 'local_test',
+    license_key: LOCAL_TEST_LICENSE_KEY,
+    license_status: 'active',
+    company_name: 'Licenza test',
+    license_id: 'LOCAL-TEST-2026',
+    activated_at: activatedAt.toISOString(),
+    expires_at: expiresAt.toISOString(),
+    last_checked_at: activatedAt.toISOString(),
+  };
+}
+
 function parseActivationInput(input) {
   const raw = String(input || '').trim();
   if (!raw) {
@@ -252,156 +436,130 @@ function verifyEnvelope(envelope) {
   };
 }
 
-function syncSettingsLicenseMetadata(result, envelope) {
-  const settings = settingsService.getSettings();
-  settingsService.writeSettings({
-    ...settings,
-    licensing: {
-      ...settings.licensing,
-      license_key: envelope ? hash(JSON.stringify(envelope)).slice(0, 24).toUpperCase() : '',
-      activation_status: result.code,
-      license_id: result.payload?.license_id || '',
-      customer_name: result.payload?.customer_name || '',
-      company_name: result.payload?.company_name || '',
-      activated_at: result.payload?.activation_date || '',
-      expires_at: result.payload?.expires_at || '',
-      max_installations: result.payload?.max_installations || 1,
-      notes_admin: result.payload?.admin_notes || '',
-    },
-  });
-}
-
 function buildStatusFromStoredLicense() {
-  const context = getInstallContext();
-  const settings = settingsService.getSettings();
-
   if (isDemoVariant()) {
-        return {
-          code: 'demo_mode',
-          label: 'Demo',
-          message: 'Versione demo attiva. Nessuna licenza richiesta.',
-      is_active: true,
-      is_blocking: false,
-      install_context: context,
-      activation_request: null,
-        license: {
-          license_id: 'DEMO',
-          customer_name: 'Demo',
-          company_name: settings.company.name || 'Gestionale Demo',
-          license_status: 'demo',
-          activation_date: '',
-          expires_at: '',
-        max_installations: 1,
-        installation_id: context.install_id,
-        machine_fingerprint: context.machine_fingerprint,
-        admin_notes: 'Demo mode',
-        activation_method: 'demo_builtin',
-      },
-      is_admin: settings.security.current_role === 'admin',
-    };
-  }
-
-  if (!app.isPackaged) {
-    return {
-      code: 'development_mode',
-      label: 'Sviluppo',
-      message: 'Controllo licenza non bloccante in ambiente di sviluppo.',
-      is_active: true,
-      is_blocking: false,
-      install_context: context,
-      activation_request: createActivationRequest(),
-      license: null,
-      is_admin: settings.security.current_role === 'admin',
-    };
+    return buildDemoStatus('Versione demo attiva. Nessuna licenza richiesta.');
   }
 
   const stored = readStoredLicense();
   if (!stored) {
-    syncSettingsLicenseMetadata({ code: 'not_activated', payload: null }, null);
-    return {
-      code: 'not_activated',
-      label: 'Non attivato',
-      message: 'Attivazione software da completare.',
-      is_active: false,
-      is_blocking: true,
-      install_context: context,
-      activation_request: createActivationRequest(),
-      license: null,
-      is_admin: settings.security.current_role === 'admin',
-    };
+    return buildDemoStatus();
   }
 
-  const verification = verifyEnvelope(stored.envelope);
-  syncSettingsLicenseMetadata(verification, stored.envelope);
+  const touched = touchStoredLicense(stored);
 
-  return {
-    code: verification.code,
-    label:
-      verification.code === 'active'
-        ? 'Attiva'
-        : verification.code === 'license_expired'
-        ? 'Scaduta'
-        : verification.code === 'license_suspended'
-        ? 'Sospesa'
-        : verification.code === 'license_disabled'
-        ? 'Disattivata'
-        : verification.code === 'installation_mismatch'
-        ? 'Installazione non valida'
-        : verification.code === 'machine_mismatch'
-        ? 'Dispositivo non valido'
-        : verification.code === 'public_key_missing'
-        ? 'Chiave pubblica mancante'
-        : 'Non valida',
-    message: verification.message,
-    is_active: verification.valid,
-    is_blocking: !verification.valid,
-    install_context: context,
-    activation_request: createActivationRequest(),
-    license: verification.payload
-      ? {
-          license_id: verification.payload.license_id,
-          customer_name: verification.payload.customer_name,
-          company_name: verification.payload.company_name,
-          license_status: verification.payload.license_status,
-          activation_date: verification.payload.activation_date,
-          expires_at: verification.payload.expires_at,
-          max_installations: verification.payload.max_installations,
-          installation_id: verification.payload.installation_id,
-          machine_fingerprint: verification.payload.machine_fingerprint,
-          admin_notes: verification.payload.admin_notes || '',
-          activation_method: verification.payload.activation_method || 'offline_code',
-        }
-      : null,
-    is_admin: settings.security.current_role === 'admin',
-  };
+  if (touched.mode === 'local_test') {
+    const expiresAt = new Date(touched.expires_at);
+    const baseLicense = buildLicensePayload({
+      license_key: touched.license_key || '',
+      license_id: touched.license_id || 'LOCAL-TEST-2026',
+      company_name: touched.company_name || '',
+      activation_date: touched.activated_at || '',
+      expires_at: touched.expires_at || '',
+      license_status: touched.license_status || 'active',
+      activation_method: 'local_test_code',
+      admin_notes: 'Attivazione locale di test',
+    });
+
+    if (!Number.isNaN(expiresAt.getTime()) && expiresAt.getTime() < Date.now()) {
+      return buildExpiredStatus(baseLicense);
+    }
+
+    return buildActiveStatus(baseLicense);
+  }
+
+  if (touched.envelope) {
+    const verification = verifyEnvelope(touched.envelope);
+    const payload = verification.payload || {};
+    const baseLicense = buildLicensePayload({
+      license_key: touched.license_key || hash(JSON.stringify(touched.envelope)).slice(0, 24).toUpperCase(),
+      license_id: payload.license_id || '',
+      company_name: payload.company_name || '',
+      activation_date: payload.activation_date || '',
+      expires_at: payload.expires_at || '',
+      license_status: payload.license_status || (verification.valid ? 'active' : 'expired'),
+      activation_method: payload.activation_method || 'offline_code',
+      customer_name: payload.customer_name || '',
+      admin_notes: payload.admin_notes || '',
+    });
+
+    if (verification.valid) {
+      return buildActiveStatus(baseLicense, 'Licenza attiva.');
+    }
+
+    return buildExpiredStatus(baseLicense, verification.message || 'Licenza non valida o scaduta.');
+  }
+
+  const fallbackLicense = buildLicensePayload({
+    license_key: String(touched.license_key || '').trim(),
+    license_id: String(touched.license_id || '').trim(),
+    company_name: String(touched.company_name || '').trim(),
+    activation_date: String(touched.activated_at || '').trim(),
+    expires_at: String(touched.expires_at || '').trim(),
+    license_status: 'expired',
+    activation_method: String(touched.mode || 'legacy_local'),
+    admin_notes: 'Stato licenza non riconosciuto',
+  });
+
+  return buildExpiredStatus(fallbackLicense, 'Licenza non valida o non riconosciuta.');
 }
 
 function activate(activationInput) {
-  const envelope = parseActivationInput(activationInput);
+  const normalizedInput = String(activationInput || '').trim();
+  if (!normalizedInput) {
+    throw new Error('Codice licenza mancante.');
+  }
+
+  if (isLocalTestActivationCode(normalizedInput)) {
+    writeStoredLicense(createLocalTestLicense(LOCAL_TEST_LICENSE_KEY));
+    return buildStatusFromStoredLicense();
+  }
+
+  const envelope = parseActivationInput(normalizedInput);
   const verification = verifyEnvelope(envelope);
   if (!verification.valid) {
     throw new Error(verification.message);
   }
 
   writeStoredLicense({
-    schema_version: 1,
+    schema_version: LOCAL_LICENSE_SCHEMA_VERSION,
+    mode: 'signed_envelope',
+    license_key: hash(JSON.stringify(envelope)).slice(0, 24).toUpperCase(),
+    license_status: verification.payload?.license_status || 'active',
+    company_name: verification.payload?.company_name || '',
+    license_id: verification.payload?.license_id || '',
+    activated_at: verification.payload?.activation_date || new Date().toISOString(),
+    expires_at: verification.payload?.expires_at || '',
+    last_checked_at: new Date().toISOString(),
     activated_locally_at: new Date().toISOString(),
     envelope,
   });
 
-  syncSettingsLicenseMetadata(verification, envelope);
   return buildStatusFromStoredLicense();
 }
 
 function deactivate() {
   settingsService.requireAdmin();
   removeStoredLicense();
-  syncSettingsLicenseMetadata({ code: 'not_activated', payload: null }, null);
   return buildStatusFromStoredLicense();
 }
 
 function getLicenseStatus() {
   return buildStatusFromStoredLicense();
+}
+
+function requireWritableLicense(actionLabel = 'questa operazione') {
+  const status = getLicenseStatus();
+  if (!status?.is_write_blocked) {
+    return status;
+  }
+
+  const error = new Error(
+    `Licenza scaduta. ${actionLabel} non e disponibile finche non riattivi la licenza. ` +
+    'Puoi comunque consultare i dati, stampare lo storico e creare backup.'
+  );
+  error.code = 'LICENSE_EXPIRED';
+  throw error;
 }
 
 module.exports = {
@@ -412,4 +570,5 @@ module.exports = {
   getLicenseFilePath,
   getLicenseStatus,
   getPublicKeyPath,
+  requireWritableLicense,
 };
