@@ -346,9 +346,7 @@ function normalizeSettingsPayload(input = {}) {
       attendance_entry_mode: input.general?.attendance_entry_mode === 'hours_only'
         ? 'hours_only'
         : 'hours_and_symbol',
-      attendance_hours_format: input.general?.attendance_hours_format === 'hours_minutes'
-        ? 'hours_minutes'
-        : 'decimal',
+      attendance_hours_format: 'decimal',
       overtime_enabled: !!input.general?.overtime_enabled,
       overtime_hourly_rate: Number(input.general?.overtime_hourly_rate || 0) || 0,
       overtime_display_mode: input.general?.overtime_display_mode === 'separate'
@@ -588,7 +586,7 @@ export default function SettingsPage() {
         },
         general: {
           ...settings.general,
-          attendance_hours_format: settings.general.attendance_hours_format || 'decimal',
+          attendance_hours_format: 'decimal',
         },
         backup: settings.backup,
         cloud: settings.cloud,
@@ -909,17 +907,6 @@ export default function SettingsPage() {
               </select>
             </label>
             <label>
-              <span className="communication-field-label">Formato ore presenze</span>
-              <select
-                value={settings.general.attendance_hours_format || 'decimal'}
-                disabled={!isAdmin}
-                onChange={(e) => updateSection('general', { attendance_hours_format: e.target.value })}
-              >
-                <option value="decimal">Decimale (1 box)</option>
-                <option value="hours_minutes">Ore / minuti (2 box)</option>
-              </select>
-            </label>
-            <label>
               <span className="communication-field-label">Simbolo rapido giornata</span>
               <input
                 maxLength="3"
@@ -947,7 +934,7 @@ export default function SettingsPage() {
             Esempio: se il simbolo e <strong>{settings.general.attendance_quick_symbol || 'X'}</strong> e la base giornata e 7,
             allora <strong>{settings.general.attendance_quick_symbol || 'X'} = 7 ore = 1 giornata</strong>.
             <br />
-            Formato inserimento ore attivo: <strong>{settings.general.attendance_hours_format === 'hours_minutes' ? 'ore / minuti' : 'decimale'}</strong>.
+            Formato inserimento ore attivo: <strong>decimale</strong>.
           </div>
 
           <SettingsBox

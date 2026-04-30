@@ -1051,6 +1051,13 @@ textarea {
   gap: 6px;
 }
 
+.attendance-hours-preview {
+  font-size: 11px;
+  color: #1d4ed8;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .attendance-bulk-checkbox {
   align-self: end;
 }

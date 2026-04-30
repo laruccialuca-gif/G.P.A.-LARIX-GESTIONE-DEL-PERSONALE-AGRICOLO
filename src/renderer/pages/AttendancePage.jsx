@@ -301,6 +301,28 @@ function normalizeDecimalString(value) {
   return String(value || '').replace(',', '.').trim();
 }
 
+function formatDecimalPreview(value) {
+  const normalized = normalizeDecimalString(value);
+  if (!normalized) return '';
+  const numeric = Number(normalized);
+  if (!Number.isFinite(numeric) || numeric < 0) return '';
+
+  const totalMinutes = Math.round(numeric * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours > 0 && minutes > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (hours > 0) {
+    return `${hours}h`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m`;
+  }
+  return '0m';
+}
+
 function splitHoursToParts(hoursValue) {
   if (hoursValue === '' || hoursValue === null || hoursValue === undefined || Number(hoursValue) === 0) {
     return { hours: '', minutes: '' };
@@ -354,7 +376,7 @@ function getOvertimeInputValue(att) {
 function getAttendanceSettings(settings) {
   return {
     inputMode: settings?.general?.attendance_entry_mode === 'hours_only' ? 'hours_only' : 'hours_and_symbol',
-    hoursFormat: settings?.general?.attendance_hours_format === 'hours_minutes' ? 'hours_minutes' : 'decimal',
+    hoursFormat: 'decimal',
     quickSymbol: String(settings?.general?.attendance_quick_symbol || 'X').trim().toUpperCase().slice(0, 3) || 'X',
     baseHours: getSafeStandardHours(settings?.general?.standard_day_hours),
     autoSymbolizeBaseHours: !!settings?.general?.attendance_auto_symbolize_base_hours,
@@ -566,6 +588,8 @@ export default function AttendancePage() {
   const [saveState, setSaveState] = useState('idle');
   const [showQuickEntry, setShowQuickEntry] = useState(false);
   const [quickEntryDate, setQuickEntryDate] = useState(formatLocalDate(new Date()));
+  const [showHoursLegend, setShowHoursLegend] = useState(false);
+  const [liveHoursPreview, setLiveHoursPreview] = useState('');
   const [openMarkerMenuKey, setOpenMarkerMenuKey] = useState(null);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
   const printAreaRef = useRef(null);
@@ -768,6 +792,10 @@ export default function AttendancePage() {
   function getDisplayedInputValue(employeeId, date, field, fallbackValue) {
     const draftKey = getInputDraftKey(employeeId, date, field);
     return inputDrafts[draftKey] ?? fallbackValue;
+  }
+
+  function updateLiveHoursPreview(value) {
+    setLiveHoursPreview(formatDecimalPreview(value));
   }
 
   function markDirtyState() {
@@ -1225,6 +1253,7 @@ export default function AttendancePage() {
   function handleMainValueChange(employeeId, date, value) {
     const existing = getAtt(employeeId, date);
     setInputDraft(employeeId, date, 'main', value);
+    updateLiveHoursPreview(value);
     const parsed = parseMainInputValue(value, attendanceSettings);
 
     if (parsed.kind === 'invalid') {
@@ -1290,6 +1319,7 @@ export default function AttendancePage() {
     }
 
     setInputDraft(employeeId, date, 'main', getMainInputValue(att));
+    updateLiveHoursPreview(getMainInputValue(att));
   }
 
   function handleHoursMinutesValueChange(employeeId, date, field, value) {
@@ -1441,52 +1471,7 @@ export default function AttendancePage() {
     }
 
     employeeIds.forEach((employeeId) => {
-      if (attendanceSettings.hoursFormat === 'hours_minutes') {
-        const existing = getAtt(employeeId, date);
-        const parsed = parseHoursMinutesValue(value, minutesValue, attendanceSettings);
-
-        if (parsed.kind === 'invalid') {
-          return;
-        }
-
-        const nextEntry =
-          parsed.kind === 'type'
-            ? {
-                employee_id: employeeId,
-                date,
-                status: parsed.status,
-                marker_code: existing?.marker_code || null,
-                entry_code: null,
-                hours_worked: 0,
-                overtime_hours: 0,
-                notes: existing?.notes || null,
-              }
-            : parsed.kind === 'symbol'
-            ? {
-                employee_id: employeeId,
-                date,
-                status: 'presente',
-                marker_code: existing?.marker_code || null,
-                entry_code: parsed.symbol,
-                hours_worked: parsed.hours,
-                overtime_hours: existing?.overtime_hours || 0,
-                notes: existing?.notes || null,
-              }
-            : {
-                employee_id: employeeId,
-                date,
-                status: 'presente',
-                marker_code: existing?.marker_code || null,
-                entry_code: null,
-                hours_worked: parsed.kind === 'empty' ? '' : parsed.hours,
-                overtime_hours: existing?.overtime_hours || 0,
-                notes: existing?.notes || null,
-              };
-
-        queuePendingEntry(employeeId, date, nextEntry);
-      } else {
-        handleMainValueChange(employeeId, date, value);
-      }
+      handleMainValueChange(employeeId, date, value);
     });
   }
 
@@ -1496,10 +1481,7 @@ export default function AttendancePage() {
     }
 
     employeeIds.forEach((employeeId) => {
-      const parsed =
-        attendanceSettings.hoursFormat === 'hours_minutes'
-          ? parseOvertimeHoursMinutesValue(value, minutesValue, attendanceSettings)
-          : parseOvertimeInputValue(value, attendanceSettings);
+      const parsed = parseOvertimeInputValue(value, attendanceSettings);
 
       if (parsed.kind === 'invalid') {
         return;
@@ -1910,9 +1892,15 @@ export default function AttendancePage() {
               <input
                 type="text"
                 value={bulkHoursValue}
-                onChange={(event) => setBulkHoursValue(event.target.value)}
+                onChange={(event) => {
+                  setBulkHoursValue(event.target.value);
+                  updateLiveHoursPreview(event.target.value);
+                }}
                 placeholder={attendanceSettings.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : 'Ore'}
               />
+              {formatDecimalPreview(bulkHoursValue) ? (
+                <span className="attendance-hours-preview">{formatDecimalPreview(bulkHoursValue)}</span>
+              ) : null}
             </label>
 
             <label className="attendance-bulk-field">
@@ -1963,9 +1951,24 @@ export default function AttendancePage() {
 
       <div className="panel panel-section" style={{ padding: 18 }}>
         <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#115e59' }}>
-              Legenda principale
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#115e59' }}>
+                Legenda principale
+              </div>
+              <button
+                type="button"
+                className="button-secondary"
+                style={{ padding: '6px 12px', minHeight: 0 }}
+                onClick={() => setShowHoursLegend((current) => !current)}
+              >
+                {showHoursLegend ? 'Nascondi legenda ore' : 'Legenda ore ?'}
+              </button>
+              {liveHoursPreview ? (
+                <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
+                  Anteprima ore: {liveHoursPreview}
+                </span>
+              ) : null}
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.1)', color: '#1d4ed8' }}>
@@ -1976,6 +1979,16 @@ export default function AttendancePage() {
               </span>
             </div>
           </div>
+          {showHoursLegend ? (
+            <div className="muted-box" style={{ display: 'grid', gap: 4 }}>
+              <strong>Esempi inserimento ore:</strong>
+              <span>1 = 1 ora</span>
+              <span>1.5 = 1 ora e 30 minuti</span>
+              <span>0.5 = 30 minuti</span>
+              <span>0.25 = 15 minuti</span>
+              <span>0.75 = 45 minuti</span>
+            </div>
+          ) : null}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {MAIN_DAY_TYPES.map((item) => (
               <span
@@ -2095,8 +2108,6 @@ export default function AttendancePage() {
                       const markerMenuKey = `${employee.id}_${dateStr}`;
                       const isMainType = MAIN_DAY_TYPES.some((item) => item.value === att?.status);
                       const isEditingMarker = openMarkerMenuKey === markerMenuKey || !markerMeta;
-                      const hmValue = getHoursMinutesInputValue(att);
-                      const overtimeHmValue = getOvertimeInputValue(att);
 
                       return (
                         <td
@@ -2109,138 +2120,53 @@ export default function AttendancePage() {
                           title={dayInfo?.holidayLabel || undefined}
                         >
                           <div className="attendance-cell-stack">
-                            {attendanceSettings.hoursFormat === 'hours_minutes' ? (
-                              <div style={{ display: 'grid', gap: 3, justifyItems: 'center' }}>
-                                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                                  <input
-                                  className="attendance-hours-input"
-                                  type="text"
-                                  inputMode="numeric"
-                                  value={hmValue.hours}
-                                  onChange={(event) => handleHoursMinutesValueChange(employee.id, dateStr, 'hours', event.target.value)}
-                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
-                                  onClick={selectAllInputText}
-                                  onKeyDown={handleGridKeyDown}
-                                    data-attendance-focus="true"
-                                    placeholder={attendanceSettings.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : 'h'}
-                                    style={{
-                                      width: 34,
-                                      ...(isSpecial
-                                        ? { border: '1px solid #f59e0b', background: 'rgba(245, 158, 11, 0.08)', fontWeight: 800 }
-                                        : { border: '1px solid #d1d5db', background: '#fff', fontWeight: 600 }),
-                                    }}
-                                    title={isSpecial ? specialOpt?.text : 'Ore intere oppure simbolo rapido / F / P / M'}
-                                  />
-                                  <input
-                                  className="attendance-hours-input"
-                                  type="text"
-                                  inputMode="numeric"
-                                  value={hmValue.minutes}
-                                  onChange={(event) => handleHoursMinutesValueChange(employee.id, dateStr, 'minutes', event.target.value)}
-                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
-                                  onClick={selectAllInputText}
-                                  onKeyDown={handleGridKeyDown}
-                                    data-attendance-focus="true"
-                                    placeholder="m"
-                                    disabled={!!att?.entry_code || isSpecial}
-                                    style={{
-                                      width: 30,
-                                      border: '1px solid #d1d5db',
-                                      background: !!att?.entry_code || isSpecial ? '#f3f4f6' : '#fff',
-                                      fontWeight: 600,
-                                    }}
-                                    title="Minuti 0-59"
-                                  />
-                                </div>
-                                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                                  <input
-                                  className="attendance-hours-input"
-                                  type="text"
-                                  inputMode="numeric"
-                                  value={overtimeHmValue.hours}
-                                  onChange={(event) => handleOvertimeHoursMinutesChange(employee.id, dateStr, 'hours', event.target.value)}
-                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
-                                  onClick={selectAllInputText}
-                                  onKeyDown={handleGridKeyDown}
-                                    data-attendance-focus="true"
-                                    placeholder={attendanceSettings.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : 'str'}
-                                    disabled={isSpecial}
-                                    style={{
-                                      width: 34,
-                                      border: '1px solid #c7d2fe',
-                                      background: isSpecial ? '#f3f4f6' : '#eef2ff',
-                                      fontWeight: 600,
-                                    }}
-                                    title="Straordinario: ore intere oppure simbolo rapido"
-                                  />
-                                  <input
-                                  className="attendance-hours-input"
-                                  type="text"
-                                  inputMode="numeric"
-                                  value={overtimeHmValue.minutes}
-                                  onChange={(event) => handleOvertimeHoursMinutesChange(employee.id, dateStr, 'minutes', event.target.value)}
-                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
-                                  onClick={selectAllInputText}
-                                  onKeyDown={handleGridKeyDown}
-                                    data-attendance-focus="true"
-                                    placeholder="str"
-                                    disabled={isSpecial}
-                                    style={{
-                                      width: 30,
-                                      border: '1px solid #c7d2fe',
-                                      background: isSpecial ? '#f3f4f6' : '#eef2ff',
-                                      fontWeight: 600,
-                                    }}
-                                    title="Straordinario: minuti 0-59"
-                                  />
-                                </div>
-                              </div>
-                            ) : (
-                              <>
-                                <input
-                                  className="attendance-hours-input"
-                                  type="text"
-                                  inputMode="decimal"
-                                  value={getDisplayedInputValue(employee.id, dateStr, 'main', getMainInputValue(att))}
-                                  onChange={(event) => handleMainValueChange(employee.id, dateStr, event.target.value)}
-                                  onBlur={() => handleMainValueBlur(employee.id, dateStr)}
-                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
-                                  onClick={selectAllInputText}
-                                  onKeyDown={handleGridKeyDown}
-                                  data-attendance-focus="true"
-                                  placeholder=""
-                                  style={isSpecial
-                                    ? { border: '1px solid #f59e0b', background: 'rgba(245, 158, 11, 0.08)', fontWeight: 800 }
-                                    : { border: '1px solid #d1d5db', background: '#fff', fontWeight: 600 }}
-                                  title={isSpecial ? specialOpt?.text : 'Inserisci ore oppure F / P / M'}
-                                />
-                                <input
-                                  className="attendance-hours-input"
-                                  type="text"
-                                  inputMode="decimal"
-                                  value={getDisplayedInputValue(
-                                    employee.id,
-                                    dateStr,
-                                    'overtime',
-                                    att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : ''
-                                  )}
-                                  onChange={(event) => handleOvertimeValueChange(employee.id, dateStr, event.target.value)}
-                                  onBlur={() => handleOvertimeValueBlur(employee.id, dateStr)}
-                                  onFocus={(event) => handleGridInputFocus(dateStr, event)}
-                                  onClick={selectAllInputText}
-                                  onKeyDown={handleGridKeyDown}
-                                  data-attendance-focus="true"
-                                  placeholder="str"
-                                  disabled={isSpecial}
-                                  style={{
-                                    border: '1px solid #c7d2fe',
-                                    background: isSpecial ? '#f3f4f6' : '#eef2ff',
-                                    fontWeight: 600,
-                                  }}
-                                  title="Straordinario separato dalle ore normali"
-                                />
-                              </>
-                            )}
+                            <>
+                              <input
+                                className="attendance-hours-input"
+                                type="text"
+                                inputMode="decimal"
+                                value={getDisplayedInputValue(employee.id, dateStr, 'main', getMainInputValue(att))}
+                                onChange={(event) => handleMainValueChange(employee.id, dateStr, event.target.value)}
+                                onBlur={() => handleMainValueBlur(employee.id, dateStr)}
+                                onFocus={(event) => {
+                                  handleGridInputFocus(dateStr, event);
+                                  updateLiveHoursPreview(event.currentTarget.value);
+                                }}
+                                onClick={selectAllInputText}
+                                onKeyDown={handleGridKeyDown}
+                                data-attendance-focus="true"
+                                placeholder=""
+                                style={isSpecial
+                                  ? { border: '1px solid #f59e0b', background: 'rgba(245, 158, 11, 0.08)', fontWeight: 800 }
+                                  : { border: '1px solid #d1d5db', background: '#fff', fontWeight: 600 }}
+                                title={isSpecial ? specialOpt?.text : 'Inserisci ore decimali oppure F / P / M'}
+                              />
+                              <input
+                                className="attendance-hours-input"
+                                type="text"
+                                inputMode="decimal"
+                                value={getDisplayedInputValue(
+                                  employee.id,
+                                  dateStr,
+                                  'overtime',
+                                  att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : ''
+                                )}
+                                onChange={(event) => handleOvertimeValueChange(employee.id, dateStr, event.target.value)}
+                                onBlur={() => handleOvertimeValueBlur(employee.id, dateStr)}
+                                onFocus={(event) => handleGridInputFocus(dateStr, event)}
+                                onClick={selectAllInputText}
+                                onKeyDown={handleGridKeyDown}
+                                data-attendance-focus="true"
+                                placeholder="str"
+                                disabled={isSpecial}
+                                style={{
+                                  border: '1px solid #c7d2fe',
+                                  background: isSpecial ? '#f3f4f6' : '#eef2ff',
+                                  fontWeight: 600,
+                                }}
+                                title="Straordinario decimale separato dalle ore normali"
+                              />
+                            </>
 
                             {isMainType ? (
                               <span className="attendance-marker-placeholder" />
