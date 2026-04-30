@@ -15,6 +15,19 @@ const PLATFORM = process.platform; // 'darwin' | 'win32' | 'linux'
 // Set by init() from main.js after app is ready.
 // Default to __dirname/tessdata for dev; init() overrides with app.getPath('userData')/tessdata.
 let TESSDATA_DIR = path.join(__dirname, 'tessdata');
+let canvasLib = null;
+let canvasLoadAttempted = false;
+
+function loadCanvasLib() {
+  if (canvasLoadAttempted) return canvasLib;
+  canvasLoadAttempted = true;
+  try {
+    canvasLib = require('@napi-rs/canvas');
+  } catch (e) {
+    console.warn('canvas non disponibile, fallback attivo');
+  }
+  return canvasLib;
+}
 
 // Called once from main.js inside app.whenReady() so TESSDATA_DIR points to a writable location.
 function init({ userDataDir }) {
@@ -91,7 +104,11 @@ async function runSwiftOcr(filePath) {
 // Returns [{pageNumber, items:[{t,x,y,w,h}]}]
 async function runTesseractOcr(filePath) {
   const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
-  const { createCanvas } = require('@napi-rs/canvas');
+  const { createCanvas } = loadCanvasLib() || {};
+  if (!createCanvas) {
+    console.warn('[pdfImport] OCR immagini saltato: canvas non disponibile');
+    return [];
+  }
   const { createWorker } = require('tesseract.js');
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = '';

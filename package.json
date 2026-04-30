@@ -5,11 +5,11 @@
   "private": true,
   "main": "src/main/main.js",
   "scripts": {
-    "postinstall": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3,@napi-rs/canvas",
+    "postinstall": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3",
     "guard:win-host": "node tools/guard-windows-build.mjs",
     "clean:build:artifacts": "node tools/clean-build-artifacts.mjs",
     "clean:demo:output": "node tools/report-demo-build.mjs --clean",
-    "rebuild:native:electron": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3,@napi-rs/canvas",
+    "rebuild:native:electron": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3",
     "verify:win:native:standard": "node tools/verify-win-native-module.mjs standard",
     "verify:win:native:demo": "node tools/verify-win-native-module.mjs demo",
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
@@ -88,11 +88,10 @@
     }
   },
   "dependencies": {
-    "@napi-rs/canvas": "^0.1.99",
     "better-sqlite3": "^11.7.0",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.1.1",
-    "pdfjs-dist": "^3.11.174",
+    "pdfjs-dist": "^2.16.105",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.30.1",
