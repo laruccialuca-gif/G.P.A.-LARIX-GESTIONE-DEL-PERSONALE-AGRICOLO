@@ -376,6 +376,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState(emptySettings());
   const [backups, setBackups] = useState([]);
   const [licenseStatus, setLicenseStatus] = useState(null);
+  const [licenseActivationCode, setLicenseActivationCode] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [unlockPin, setUnlockPin] = useState('');
@@ -417,6 +418,31 @@ export default function SettingsPage() {
   }, [settings.employers]);
 
   const isAdmin = !!settings.is_admin;
+  const isDevMode = settings.runtime_info?.packaged === false;
+  const normalizedLicenseUi = useMemo(() => {
+    const rawCode = String(licenseStatus?.code || settings.licensing.activation_status || '').trim().toLowerCase();
+    const isActive = rawCode === 'active';
+    const isExpired = rawCode === 'expired' || rawCode === 'license_expired';
+
+    if (isActive) {
+      return {
+        statusLabel: 'ATTIVA',
+        message: licenseStatus?.message || 'Licenza attiva.',
+      };
+    }
+
+    if (isExpired) {
+      return {
+        statusLabel: 'SCADUTA',
+        message: licenseStatus?.message || 'Licenza scaduta.',
+      };
+    }
+
+    return {
+      statusLabel: 'DEMO',
+      message: licenseStatus?.message || 'Modalita demo attiva.',
+    };
+  }, [licenseStatus, settings.licensing.activation_status]);
   const markerSuggestionSymbol = useMemo(() => suggestMarkerSymbol(newMarkerLabel), [newMarkerLabel]);
   const macroAreas = [
     {
@@ -732,6 +758,19 @@ export default function SettingsPage() {
     } catch (err) {
       console.error(err);
       alert(err?.message || 'Errore disattivazione licenza');
+    }
+  }
+
+  async function handleActivateLicense() {
+    try {
+      const next = await window.api.license.activate(licenseActivationCode);
+      setLicenseStatus(next);
+      setSettings(await window.api.settings.get());
+      setLicenseActivationCode('');
+      alert(next?.message || 'Licenza attivata.');
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || 'Errore attivazione licenza');
     }
   }
 
@@ -1535,7 +1574,7 @@ export default function SettingsPage() {
             </label>
             <label>
               <span className="communication-field-label">Stato licenza</span>
-              <input value={licenseStatus?.label || settings.licensing.activation_status} readOnly />
+              <input value={normalizedLicenseUi.statusLabel} readOnly />
             </label>
             <label style={{ gridColumn: '1 / -1' }}>
               <span className="communication-field-label">Codice dispositivo</span>
@@ -1557,13 +1596,53 @@ export default function SettingsPage() {
               <span className="communication-field-label">Scadenza</span>
               <input value={licenseStatus?.license?.expires_at || settings.licensing.expires_at || '—'} readOnly />
             </label>
+            <label style={{ gridColumn: '1 / -1' }}>
+              <span className="communication-field-label">Codice licenza</span>
+              <input
+                value={licenseActivationCode}
+                onChange={(e) => setLicenseActivationCode(e.target.value)}
+                placeholder="Inserisci il codice licenza, ad esempio GPA-TEST-2026"
+                disabled={!isAdmin}
+              />
+            </label>
+            <label style={{ gridColumn: '1 / -1' }}>
+              <span className="communication-field-label">Messaggio licenza</span>
+              <textarea
+                rows={3}
+                value={normalizedLicenseUi.message || '—'}
+                readOnly
+                style={{ resize: 'vertical' }}
+              />
+            </label>
+            {isDevMode ? (
+              <label style={{ gridColumn: '1 / -1' }}>
+                <span className="communication-field-label">Modalita sviluppo</span>
+                <textarea
+                  rows={2}
+                  value="Modalita sviluppo attiva – controllo licenza disabilitato"
+                  readOnly
+                  style={{ resize: 'vertical' }}
+                />
+              </label>
+            ) : null}
           </div>
 
           <div className="settings-actions-row">
+            <button
+              className="button"
+              onClick={handleActivateLicense}
+              disabled={!isAdmin || !licenseActivationCode.trim()}
+            >
+              Attiva licenza
+            </button>
             <button className="button-secondary" onClick={loadData}>
               Aggiorna stato licenza
             </button>
-            <button className="button-danger" onClick={handleDeactivateLicense} disabled={!isAdmin || !licenseStatus?.license}>
+            <button
+              className="button-danger"
+              onClick={handleDeactivateLicense}
+              disabled={!isAdmin || !licenseStatus?.license || licenseStatus?.code === 'demo'}
+            >
               Disattiva licenza locale
             </button>
           </div>

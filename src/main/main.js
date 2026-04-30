@@ -110,6 +110,10 @@ const { ensureAppStorageStructure } = require('./storagePaths');
 
 const isDev = !app.isPackaged;
 
+function requireWritableLicense(actionLabel) {
+  return licenseService.requireWritableLicense(actionLabel);
+}
+
 function getAppIconPath() {
   return path.join(__dirname, '..', 'assets', 'larix-icon.png');
 }
@@ -613,7 +617,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('employees:findHistoryMatches', async (_, criteria) =>
     employeeRepo.findEmployeeHistoryMatches(criteria)
   );
-  ipcMain.handle('employees:create', async (_, payload) => employeeRepo.createEmployee(payload));
+  ipcMain.handle('employees:create', async (_, payload) => {
+    requireWritableLicense('L’aggiunta di nuovi dipendenti');
+    return employeeRepo.createEmployee(payload);
+  });
   ipcMain.handle('employees:update', async (_, id, payload) => employeeRepo.updateEmployee(id, payload));
   ipcMain.handle('employees:archive', async (_, id) => employeeRepo.archiveEmployee(id));
   ipcMain.handle('employees:restore', async (_, id) => employeeRepo.restoreEmployee(id));
@@ -680,6 +687,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('employees:confirmPdfImport', async (_, { filePath, rows }) => {
+    requireWritableLicense('L’importazione di nuovi dipendenti');
     const results = [];
     for (const row of rows) {
       if (!row.selected) continue;
@@ -772,8 +780,14 @@ app.whenReady().then(async () => {
     return communicationRepo.openCommunicationEmail(id, options);
   });
 
-  ipcMain.handle('attendance:save', async (_, payload) => attendanceRepo.saveAttendance(payload));
-  ipcMain.handle('attendance:bulkUpsert', async (_, payload) => attendanceRepo.bulkUpsertAttendance(payload));
+  ipcMain.handle('attendance:save', async (_, payload) => {
+    requireWritableLicense('L’inserimento di nuove presenze');
+    return attendanceRepo.saveAttendance(payload);
+  });
+  ipcMain.handle('attendance:bulkUpsert', async (_, payload) => {
+    requireWritableLicense('L’inserimento di nuove presenze');
+    return attendanceRepo.bulkUpsertAttendance(payload);
+  });
   ipcMain.handle('attendance:listByMonth', async (_, year, month) =>
     attendanceRepo.listAttendanceByMonth(year, month)
   );
@@ -784,9 +798,10 @@ app.whenReady().then(async () => {
     attendanceRepo.getAttendanceMatrix(month)
   );
 
-  ipcMain.handle('payroll:saveRecord', async (_, payload) =>
-    payrollRepo.upsertPayrollRecord(payload)
-  );
+  ipcMain.handle('payroll:saveRecord', async (_, payload) => {
+    requireWritableLicense('La creazione o modifica di report e dati economici');
+    return payrollRepo.upsertPayrollRecord(payload);
+  });
   ipcMain.handle('payroll:listByEmployee', async (_, employeeId) =>
     payrollRepo.listPayrollRecordsByEmployee(employeeId)
   );
@@ -799,24 +814,29 @@ app.whenReady().then(async () => {
   ipcMain.handle('payroll:getPreviousBalance', async (_, employeeId, month) =>
     payrollRepo.getPreviousBalance(employeeId, month)
   );
-  ipcMain.handle('payroll:uploadDocument', async (_, employeeId, month) =>
-    payrollRepo.uploadPayrollDocument(mainWindow, employeeId, month)
-  );
+  ipcMain.handle('payroll:uploadDocument', async (_, employeeId, month) => {
+    requireWritableLicense('Il caricamento di nuove buste paga');
+    return payrollRepo.uploadPayrollDocument(mainWindow, employeeId, month);
+  });
   ipcMain.handle('payroll:openDocument', async (_, employeeId, month) =>
     payrollRepo.openPayrollDocument(employeeId, month)
   );
-  ipcMain.handle('payroll:deleteDocument', async (_, employeeId, month) =>
-    payrollRepo.deletePayrollDocument(employeeId, month)
-  );
-  ipcMain.handle('payroll:archiveRecord', async (_, id) =>
-    payrollRepo.archivePayrollRecord(id)
-  );
-  ipcMain.handle('payroll:restoreRecord', async (_, id) =>
-    payrollRepo.restorePayrollRecord(id)
-  );
-  ipcMain.handle('payroll:deleteRecord', async (_, id) =>
-    payrollRepo.deletePayrollRecord(id)
-  );
+  ipcMain.handle('payroll:deleteDocument', async (_, employeeId, month) => {
+    requireWritableLicense('La modifica delle buste paga');
+    return payrollRepo.deletePayrollDocument(employeeId, month);
+  });
+  ipcMain.handle('payroll:archiveRecord', async (_, id) => {
+    requireWritableLicense('La modifica dei report economici');
+    return payrollRepo.archivePayrollRecord(id);
+  });
+  ipcMain.handle('payroll:restoreRecord', async (_, id) => {
+    requireWritableLicense('La modifica dei report economici');
+    return payrollRepo.restorePayrollRecord(id);
+  });
+  ipcMain.handle('payroll:deleteRecord', async (_, id) => {
+    requireWritableLicense('La modifica dei report economici');
+    return payrollRepo.deletePayrollRecord(id);
+  });
 
   ipcMain.handle('reports:savePdf', async (_, payload) => {
     const defaultFileName = payload?.fileName || 'report.pdf';

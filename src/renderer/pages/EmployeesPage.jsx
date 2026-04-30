@@ -1127,6 +1127,7 @@ export default function EmployeesPage() {
               textTransform: 'uppercase', letterSpacing: '0.05em',
             }}>
               {selectionMode && <div style={{ width: 26 }} />}
+              <div style={{ width: 34, flexShrink: 0 }} />
               <SortHeader label="Nome" field="name" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} flex={1} />
               <SortHeader label="Tipo assunzione" field="contract_type" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={130} />
               <SortHeader label="Data assunzione" field="hire_date_from" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={90} />
@@ -1134,7 +1135,8 @@ export default function EmployeesPage() {
               <SortHeader label="Scadenza" field="expiry" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={160} />
               <SortHeader label="Retribuzione" field="daily_pay" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={110} />
               <div style={{ width: 150 }}>Compliance</div>
-              <div style={{ width: 70 }} />
+              <div style={{ width: 162, flexShrink: 0 }}>Stato</div>
+              <div style={{ width: 92, flexShrink: 0, textAlign: 'right' }}>Azioni</div>
             </div>
 
             {renderedEmployees.length === 0 ? (
