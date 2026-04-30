@@ -576,11 +576,32 @@ app.whenReady().then(async () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     try {
       const result = await backupService.restoreBackup(resolvedBackupDir);
+      if (isDev) {
+        await dialog.showMessageBox({
+          type: 'info',
+          title: 'Ripristino completato',
+          message: "Ripristino completato. In modalita sviluppo riavvia manualmente l'app.",
+          buttons: ['OK'],
+        });
+        setTimeout(() => {
+          app.exit(0);
+        }, 150);
+        return {
+          ...result,
+          relaunching: false,
+          dev_manual_restart_required: true,
+          message: "Ripristino completato. In modalita sviluppo riavvia manualmente l'app.",
+        };
+      }
+
       setTimeout(() => {
         app.relaunch();
         app.exit(0);
       }, 300);
-      return result;
+      return {
+        ...result,
+        relaunching: true,
+      };
     } catch (err) {
       getDb();
       throw err;

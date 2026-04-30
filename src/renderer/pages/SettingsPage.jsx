@@ -702,7 +702,7 @@ export default function SettingsPage() {
       }
 
       const confirmed = window.confirm(
-        `Confermi il ripristino completo del backup "${picked.backupDir}"?\n\nL'app verra riavviata al termine.`
+        `Confermi il ripristino completo del backup "${picked.backupDir}"?\n\nL'app verra chiusa al termine. In produzione si riavvia automaticamente; in modalita sviluppo dovrai riavviarla manualmente.`
       );
       if (!confirmed) return;
 
