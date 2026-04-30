@@ -323,6 +323,21 @@ function formatDecimalPreview(value) {
   return '0m';
 }
 
+function getAttendanceHoursTone(inputValue, attendanceSettings) {
+  const parsed = parseMainInputValue(inputValue, attendanceSettings);
+  if (parsed.kind === 'type') return 'special';
+  if (parsed.kind !== 'hours' && parsed.kind !== 'symbol') return '';
+
+  const baseHours = Number(attendanceSettings?.baseHours || 0);
+  const hours = Number(parsed.hours || 0);
+  const diff = hours - baseHours;
+
+  if (hours === baseHours) return 'standard';
+  if (diff === 1) return 'plus-one';
+  if (diff >= 3 && diff <= 24) return 'high';
+  return '';
+}
+
 function splitHoursToParts(hoursValue) {
   if (hoursValue === '' || hoursValue === null || hoursValue === undefined || Number(hoursValue) === 0) {
     return { hours: '', minutes: '' };
@@ -2108,6 +2123,15 @@ export default function AttendancePage() {
                       const markerMenuKey = `${employee.id}_${dateStr}`;
                       const isMainType = MAIN_DAY_TYPES.some((item) => item.value === att?.status);
                       const isEditingMarker = openMarkerMenuKey === markerMenuKey || !markerMeta;
+                      const mainInputValue = getDisplayedInputValue(employee.id, dateStr, 'main', getMainInputValue(att));
+                      const overtimeInputValue = getDisplayedInputValue(
+                        employee.id,
+                        dateStr,
+                        'overtime',
+                        att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : ''
+                      );
+                      const mainInputTone = getAttendanceHoursTone(mainInputValue, attendanceSettings);
+                      const overtimeHasValue = String(overtimeInputValue || '').trim() !== '';
 
                       return (
                         <td
@@ -2122,10 +2146,10 @@ export default function AttendancePage() {
                           <div className="attendance-cell-stack">
                             <>
                               <input
-                                className="attendance-hours-input"
+                                className={`attendance-hours-input ${mainInputTone ? `attendance-hours-input--${mainInputTone}` : ''}`}
                                 type="text"
                                 inputMode="decimal"
-                                value={getDisplayedInputValue(employee.id, dateStr, 'main', getMainInputValue(att))}
+                                value={mainInputValue}
                                 onChange={(event) => handleMainValueChange(employee.id, dateStr, event.target.value)}
                                 onBlur={() => handleMainValueBlur(employee.id, dateStr)}
                                 onFocus={(event) => {
@@ -2136,21 +2160,13 @@ export default function AttendancePage() {
                                 onKeyDown={handleGridKeyDown}
                                 data-attendance-focus="true"
                                 placeholder=""
-                                style={isSpecial
-                                  ? { border: '1px solid #f59e0b', background: 'rgba(245, 158, 11, 0.08)', fontWeight: 800 }
-                                  : { border: '1px solid #d1d5db', background: '#fff', fontWeight: 600 }}
                                 title={isSpecial ? specialOpt?.text : 'Inserisci ore decimali oppure F / P / M'}
                               />
                               <input
-                                className="attendance-hours-input"
+                                className={`attendance-hours-input attendance-hours-input--overtime ${overtimeHasValue ? 'attendance-hours-input--overtime-filled' : ''}`}
                                 type="text"
                                 inputMode="decimal"
-                                value={getDisplayedInputValue(
-                                  employee.id,
-                                  dateStr,
-                                  'overtime',
-                                  att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : ''
-                                )}
+                                value={overtimeInputValue}
                                 onChange={(event) => handleOvertimeValueChange(employee.id, dateStr, event.target.value)}
                                 onBlur={() => handleOvertimeValueBlur(employee.id, dateStr)}
                                 onFocus={(event) => handleGridInputFocus(dateStr, event)}
@@ -2159,11 +2175,6 @@ export default function AttendancePage() {
                                 data-attendance-focus="true"
                                 placeholder="str"
                                 disabled={isSpecial}
-                                style={{
-                                  border: '1px solid #c7d2fe',
-                                  background: isSpecial ? '#f3f4f6' : '#eef2ff',
-                                  fontWeight: 600,
-                                }}
                                 title="Straordinario decimale separato dalle ore normali"
                               />
                             </>

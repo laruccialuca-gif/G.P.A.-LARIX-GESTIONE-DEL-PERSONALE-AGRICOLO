@@ -1098,6 +1098,41 @@ textarea {
   border-radius: 8px;
   font-size: 11px;
   line-height: 1.1;
+  border: 1px solid #d1d5db;
+  background: #fff;
+  font-weight: 600;
+  color: #111827;
+}
+
+.attendance-hours-input--special {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.08);
+  font-weight: 800;
+}
+
+.attendance-hours-input--standard {
+  border-color: #22c55e;
+  background: rgba(34, 197, 94, 0.14);
+}
+
+.attendance-hours-input--plus-one {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.14);
+}
+
+.attendance-hours-input--high {
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.14);
+}
+
+.attendance-hours-input--overtime {
+  border-color: #c7d2fe;
+  background: #fff;
+}
+
+.attendance-hours-input--overtime-filled {
+  background: rgba(199, 210, 254, 0.32);
+  color: #1e3a8a;
 }
 
 .attendance-marker-button,
@@ -1131,6 +1166,21 @@ textarea {
 
 .attendance-marker-placeholder {
   display: inline-block;
+}
+
+@media print {
+  .attendance-hours-input,
+  .attendance-hours-input--special,
+  .attendance-hours-input--standard,
+  .attendance-hours-input--plus-one,
+  .attendance-hours-input--high,
+  .attendance-hours-input--overtime,
+  .attendance-hours-input--overtime-filled {
+    background: #fff !important;
+    border-color: #d1d5db !important;
+    color: #111827 !important;
+    box-shadow: none !important;
+  }
 }
 
 @media (max-width: 960px) {
