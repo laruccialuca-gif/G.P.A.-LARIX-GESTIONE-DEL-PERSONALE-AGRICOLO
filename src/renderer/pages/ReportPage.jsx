@@ -109,6 +109,13 @@ function formatPeriodLabel(start, end) {
   return `${formatDateLabel(start)} - ${formatDateLabel(end)}`;
 }
 
+function getPreviousMonthKey(monthKey) {
+  const parsed = parseDateValue(`${String(monthKey || '')}-01`);
+  if (!parsed) return '';
+  const previousMonth = new Date(parsed.getFullYear(), parsed.getMonth() - 1, 1);
+  return monthString(previousMonth);
+}
+
 function sanitizeFileName(value) {
   return value
     .replace(/[\\/:*?"<>|]/g, '')
@@ -271,6 +278,55 @@ function buildEconomicSnapshot(fields) {
   return JSON.stringify(fields);
 }
 
+function getPreviousBalanceLabel(amount) {
+  const numericAmount = Number(amount || 0);
+  if (numericAmount > 0) return 'Credito precedente';
+  if (numericAmount < 0) return 'Debito precedente';
+  return '';
+}
+
+function calculateRecordEffectiveBalance(record) {
+  if (!record) return 0;
+  const installmentsPaidByRecord = (record.debt_plans || [])
+    .flatMap((plan) => plan.installments || [])
+    .filter((installment) => String(installment.paid_record_id || '') === String(record.id || ''))
+    .reduce((sum, installment) => sum + Number(installment.amount || 0), 0);
+
+  return (
+    Number(record.retribuzione_calcolata || 0) +
+    Number(record.resto_precedente || 0) +
+    Number(record.totale_trasporto || 0) +
+    Number(record.regalo_importo || 0) -
+    Number(record.acconti || 0) -
+    Number(record.importo_busta_paga || 0) -
+    installmentsPaidByRecord
+  );
+}
+
+function buildPreviousBalanceReference(record, currentMonthKey) {
+  const snapshotReference = record?.report_snapshot_json?.previous_balance_snapshot || null;
+  if (snapshotReference?.source_month) {
+    return snapshotReference;
+  }
+
+  const importedBalance = Number(record?.resto_precedente || 0);
+  if (importedBalance === 0) {
+    return null;
+  }
+
+  const fallbackMonth = getPreviousMonthKey(currentMonthKey);
+  if (!fallbackMonth) {
+    return null;
+  }
+
+  return {
+    source_month: fallbackMonth,
+    imported_balance: importedBalance,
+    source_resto_paid: false,
+    inferred: true,
+  };
+}
+
 function getEffectiveOvertimeRate(employee, settings) {
   const overtimeEnabled = !!settings?.general?.overtime_enabled;
   if (!overtimeEnabled) return 0;
@@ -332,6 +388,8 @@ export default function ReportPage() {
   const [saveState, setSaveState] = useState('idle');
   const [overtimeRateOverride, setOvertimeRateOverride] = useState('');
   const [showOvertimePanel, setShowOvertimePanel] = useState(false);
+  const [previousBalanceReference, setPreviousBalanceReference] = useState(null);
+  const [previousBalanceWarning, setPreviousBalanceWarning] = useState('');
   const autosaveTimeoutRef = useRef(null);
 
   const [teamPeriodStart, setTeamPeriodStart] = useState(formatLocalDate(startOfMonth(currentMonth)));
@@ -565,6 +623,7 @@ export default function ReportPage() {
           resolvedDebtPlans: splitPlans.resolved,
           overtimeRateOverride: '',
           showOvertimePanel: false,
+          previousBalanceReference: buildPreviousBalanceReference(record, currentMonthKey),
         };
       }
 
@@ -590,6 +649,7 @@ export default function ReportPage() {
           resolvedDebtPlans: [],
           overtimeRateOverride: '',
           showOvertimePanel: false,
+          previousBalanceReference: null,
         };
       }
 
@@ -614,6 +674,7 @@ export default function ReportPage() {
         setCurrentPayrollRecord(nextState.currentPayrollRecord);
         setOvertimeRateOverride(nextState.overtimeRateOverride);
         setShowOvertimePanel(nextState.showOvertimePanel);
+        setPreviousBalanceReference(nextState.previousBalanceReference || null);
       }
 
       if (!isEmployeeMode || !employee) {
@@ -621,6 +682,7 @@ export default function ReportPage() {
         setSavedEditorState(null);
         setSavedEconomicSnapshot(null);
         setSaveState('idle');
+        setPreviousBalanceWarning('');
         return;
       }
 
@@ -682,6 +744,7 @@ export default function ReportPage() {
           })
         );
         setSaveState('idle');
+        setPreviousBalanceWarning('');
       } catch (err) {
         console.error(err);
         alert('Errore caricamento saldo precedente');
@@ -718,13 +781,91 @@ export default function ReportPage() {
     loadTeamPayroll();
   }, [isTeamMode, selectedTeam, currentMonth, selectedYear]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function checkPreviousBalanceConsistency() {
+      if (!isEmployeeMode || !employee || !currentPayrollRecord?.processed_at) {
+        setPreviousBalanceWarning('');
+        return;
+      }
+
+      const snapshot = previousBalanceReference;
+      if (!snapshot?.source_month) {
+        setPreviousBalanceWarning('');
+        return;
+      }
+
+      try {
+        const sourceRecord = await window.api.payroll.getRecord(employee.id, snapshot.source_month);
+        if (cancelled) return;
+
+        const currentSourcePaid = !!sourceRecord?.resto_pagato;
+        const currentSourceBalance = sourceRecord ? calculateRecordEffectiveBalance(sourceRecord) : 0;
+        const importedBalance = Number(snapshot.imported_balance || 0);
+        const importedPaid = !!snapshot.source_resto_paid;
+        const amountChanged = Math.abs(currentSourceBalance - importedBalance) > 0.009;
+        const paidChanged = currentSourcePaid !== importedPaid;
+
+        if (!sourceRecord || paidChanged || amountChanged) {
+          setPreviousBalanceWarning(
+            `Attenzione: il resto precedente importato da ${snapshot.source_month} risulta modificato o saldato dopo l'elaborazione di questo report. Controllare e riprocessare il report.`
+          );
+          return;
+        }
+
+        setPreviousBalanceWarning('');
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) {
+          setPreviousBalanceWarning('');
+        }
+      }
+    }
+
+    checkPreviousBalanceConsistency();
+    return () => {
+      cancelled = true;
+    };
+  }, [isEmployeeMode, employee?.id, currentPayrollRecord?.id, currentPayrollRecord?.processed_at, previousBalanceReference]);
+
   function importPreviousBalance() {
     if (!employee) return;
     const currentMonthKey = monthString(currentMonth);
 
     window.api.payroll.getPreviousBalance(employee.id, currentMonthKey)
       .then((previous) => {
+        if (previous?.alreadyPaid) {
+          setPreviousBalanceWarning(
+            `Attenzione: il resto precedente importato da ${previousBalanceReference?.source_month || previous.paidPreviousMonth || getPreviousMonthKey(currentMonthKey)} risulta modificato o saldato dopo l'elaborazione di questo report. Controllare e riprocessare il report.`
+          );
+          const shouldRemove = window.confirm(
+            'Il resto precedente importato risulta saldato. Controllare e aggiornare il report.\n\nVuoi rimuovere il resto precedente importato da questo report?'
+          );
+          if (shouldRemove) {
+            setRestoPrecedente('');
+            setPreviousBalanceReference(null);
+            setPreviousBalanceWarning('');
+          }
+          return;
+        }
+
         if (!previous?.previousMonth || Number(previous?.previousBalance || 0) === 0) {
+          if (previousBalanceReference || Number(restoPrecedente || 0) !== 0) {
+            setPreviousBalanceWarning(
+              `Attenzione: il resto precedente importato da ${previousBalanceReference?.source_month || getPreviousMonthKey(currentMonthKey)} risulta modificato o saldato dopo l'elaborazione di questo report. Controllare e riprocessare il report.`
+            );
+            const shouldRemove = window.confirm(
+              'Il resto precedente importato risulta saldato. Controllare e aggiornare il report.\n\nVuoi rimuovere il resto precedente importato da questo report?'
+            );
+            if (shouldRemove) {
+              setRestoPrecedente('');
+              setPreviousBalanceReference(null);
+              setPreviousBalanceWarning('');
+            }
+            return;
+          }
+
           alert('Nessun saldo precedente aperto da importare dai mesi precedenti.');
           return;
         }
@@ -734,6 +875,12 @@ export default function ReportPage() {
             ? String(previous.previousBalance)
             : ''
         );
+        setPreviousBalanceReference({
+          source_month: previous.previousMonth,
+          imported_balance: Number(previous.previousBalance || 0),
+          source_resto_paid: false,
+        });
+        setPreviousBalanceWarning('');
       })
       .catch((err) => {
         console.error(err);
@@ -910,6 +1057,7 @@ export default function ReportPage() {
           is_pagato: isPagato,
           resto_pagato: restoPaid,
           resto_pagato_data: normalizedRestoPaidDate || null,
+          previous_balance_snapshot: previousBalanceReference,
         },
         debt_plans: normalizedDebtPlansPayload,
         note: noteExtra,
@@ -966,6 +1114,7 @@ export default function ReportPage() {
         resolvedDebtPlans: nextResolvedDebtPlans,
         overtimeRateOverride,
         showOvertimePanel,
+        previousBalanceReference,
       };
       setSavedEditorState(nextSavedState);
       setSavedEconomicSnapshot(
@@ -1295,6 +1444,7 @@ export default function ReportPage() {
     return sum + Math.max(plan.total_amount - paidInstallments - currentInstallmentTotal, 0);
   }, 0);
   const restoPrecedenteNum = parseFloat(restoPrecedente) || 0;
+  const previousBalanceBadgeLabel = getPreviousBalanceLabel(restoPrecedenteNum);
   const nMacchineMeseNum = trasportoAttivo ? parseFloat(nMacchineMese) || 0 : 0;
   const prezzoPerMacchinaNum = trasportoAttivo ? parseFloat(prezzoPerMacchina) || 0 : 0;
   const totaleTrasporto = nMacchineMeseNum * prezzoPerMacchinaNum;
@@ -1394,6 +1544,7 @@ export default function ReportPage() {
     setCurrentPayrollRecord(savedEditorState.currentPayrollRecord);
     setOvertimeRateOverride(savedEditorState.overtimeRateOverride);
     setShowOvertimePanel(savedEditorState.showOvertimePanel);
+    setPreviousBalanceReference(savedEditorState.previousBalanceReference || null);
     setSaveState('idle');
   }
 
@@ -1610,6 +1761,12 @@ export default function ReportPage() {
                   Modifica
                 </button>
               </div>
+            </div>
+          ) : null}
+
+          {previousBalanceWarning ? (
+            <div style={reportWarningStyle}>
+              {previousBalanceWarning}
             </div>
           ) : null}
 
@@ -1833,6 +1990,13 @@ export default function ReportPage() {
                     <input type="number" step="0.01" value={restoPrecedente} onChange={(e) => setRestoPrecedente(e.target.value)} placeholder="automatico dal mese precedente" style={fieldStyle} />
                     <button type="button" onClick={importPreviousBalance}>Importa</button>
                   </div>
+                  {previousBalanceBadgeLabel ? (
+                    <div style={{ marginTop: 10 }}>
+                      <span style={previousBalanceBadgeStyle(restoPrecedenteNum)}>
+                        {previousBalanceBadgeLabel}
+                      </span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -2265,11 +2429,12 @@ function EmployeePrintArea({
   const monthName = MONTH_NAMES[currentMonth.getMonth()];
   const yearStr = String(currentMonth.getFullYear());
   const mainBalanceLabel =
-    differenzaFinale > 0 ? "Resto da dare all'operaio" : differenzaFinale < 0 ? 'Resto da dare al datore' : 'Pareggio';
+    differenzaFinale > 0 ? "Resto da dare all'operaio" : differenzaFinale < 0 ? 'Da restituire' : 'Pareggio';
+  const previousBalanceLabel = getPreviousBalanceLabel(restoPrecedenteNum);
   const payslipDaysNum = Number(giornateBustaPaga || 0);
   const payrollDifference = totalCalculatedPay - importoBustaPagaNum;
-  const payrollDifferenceLabel =
-    payrollDifference > 0 ? 'Credito da integrare' : payrollDifference < 0 ? 'Debito da integrare' : 'Allineato';
+  const balanceWithPrevious = payrollDifference + restoPrecedenteNum;
+  const balanceBeforeDeductions = balanceWithPrevious + totaleTrasporto + giftAmountNum;
   const totalTrattenute = totalAdvances + currentInstallmentTotal;
   const hasDeductions = visibleAdvances.length > 0 || currentInstallments.length > 0;
 
@@ -2356,8 +2521,11 @@ function EmployeePrintArea({
 
           {restoPrecedenteNum !== 0 ? (
             <div style={rp2EconRowStyle}>
-              <div style={rp2EconLabelStyle}>Resto mese precedente</div>
-              <div style={rp2EconAmountStyle(restoPrecedenteNum > 0 ? '#059669' : '#dc2626')}>{formatSignedCurrency(restoPrecedenteNum)}</div>
+              <div>
+                <div style={rp2EconLabelStyle}>{previousBalanceLabel || 'Resto mese precedente'}</div>
+                <div style={rp2EconSubStyle}>Saldo importato dal mese precedente</div>
+              </div>
+              <div style={rp2EconAmountStyle()}>{formatSignedCurrency(restoPrecedenteNum)}</div>
             </div>
           ) : null}
 
@@ -2378,16 +2546,16 @@ function EmployeePrintArea({
             </div>
           ) : null}
 
-          {importoBustaPagaNum > 0 ? (
-            payrollDifference > 0 ? (
+          {importoBustaPagaNum > 0 || restoPrecedenteNum !== 0 || totaleTrasporto !== 0 || giftAmountNum !== 0 ? (
+            balanceBeforeDeductions > 0 ? (
               <div style={rp2CreditBoxStyle}>
-                <span>Credito da integrare</span>
-                <span>{formatCurrency(payrollDifference)}</span>
+                <span>Totale credito</span>
+                <span>{formatCurrency(balanceBeforeDeductions)}</span>
               </div>
-            ) : payrollDifference < 0 ? (
+            ) : balanceBeforeDeductions < 0 ? (
               <div style={rp2DeductionBoxStyle}>
-                <span>Debito da integrare</span>
-                <span>{formatCurrency(Math.abs(payrollDifference))}</span>
+                <span>Totale debito</span>
+                <span>{formatCurrency(Math.abs(balanceBeforeDeductions))}</span>
               </div>
             ) : null
           ) : (
@@ -2438,7 +2606,7 @@ function EmployeePrintArea({
             <div style={rp2ResultFormulaStyle}>
               {differenzaFinale > 0 && restoPaid && restoPaidDate
                 ? `Pagato il ${formatDateLabel(restoPaidDate)}`
-                : 'Retribuzione − busta paga − trattenute'}
+                : 'Retribuzione − busta paga + saldo precedente + trasporto + extra − acconti − rate'}
             </div>
           </div>
           <div style={rp2ResultValueStyle(differenzaFinale)}>
@@ -2782,6 +2950,7 @@ const fieldStyle = {
   border: '1px solid rgba(31, 41, 55, 0.12)',
   borderRadius: 8,
   background: 'rgba(255, 255, 255, 0.92)',
+  color: '#000',
 };
 
 const readonlyBoxStyle = {
@@ -2791,6 +2960,7 @@ const readonlyBoxStyle = {
   borderRadius: 8,
   background: 'rgba(244, 248, 243, 0.92)',
   fontWeight: 700,
+  color: '#000',
 };
 
 const editorBlockStyle = {
@@ -2822,12 +2992,37 @@ const fieldLabelStyle = {
   fontSize: 12,
   fontWeight: 700,
   marginBottom: 6,
+  color: '#000',
 };
 
 const fieldSubtleStyle = {
   fontSize: 12,
   color: '#64748b',
 };
+
+const reportWarningStyle = {
+  gridColumn: '1 / -1',
+  padding: '12px 14px',
+  borderRadius: 12,
+  border: '1px solid rgba(217, 119, 6, 0.28)',
+  background: 'rgba(245, 158, 11, 0.12)',
+  color: '#000',
+  fontWeight: 700,
+};
+
+function previousBalanceBadgeStyle(amount) {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '5px 10px',
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 700,
+    border: '1px solid rgba(31, 41, 55, 0.12)',
+    background: Number(amount || 0) > 0 ? 'rgba(22, 163, 74, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+    color: '#000',
+  };
+}
 
 function getBalanceBoxStyle(value) {
   return {
@@ -2836,7 +3031,7 @@ function getBalanceBoxStyle(value) {
     fontWeight: 700,
     border: '1px solid rgba(31, 41, 55, 0.12)',
     background: value > 0 ? 'rgba(239, 68, 68, 0.1)' : value < 0 ? 'rgba(22, 163, 74, 0.12)' : 'rgba(244, 248, 243, 0.92)',
-    color: value > 0 ? '#b91c1c' : value < 0 ? '#14532d' : '#334155',
+    color: '#000',
   };
 }
 
@@ -3228,13 +3423,13 @@ const rp2TariffLabelStyle = { color: '#6b7280', marginRight: 4 };
 const rp2EconRowStyle = { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, padding: '3px 0', borderBottom: '1px solid #f3f4f6' };
 const rp2EconLabelStyle = { fontSize: 10, fontWeight: 600, color: '#111827' };
 const rp2EconSubStyle = { fontSize: 9, color: '#6b7280', marginTop: 2 };
-const rp2EconAmountStyle = (color) => ({ fontSize: 11, fontWeight: 700, color: color || '#111827', whiteSpace: 'nowrap', marginLeft: 'auto', flexShrink: 0 });
-const rp2CreditBoxStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '5px 8px', marginTop: 5, fontSize: 11, fontWeight: 700, color: '#1d4ed8' };
-const rp2DeductionBoxStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '5px 8px', marginTop: 5, fontSize: 11, fontWeight: 700, color: '#dc2626' };
+const rp2EconAmountStyle = () => ({ fontSize: 11, fontWeight: 700, color: '#000', whiteSpace: 'nowrap', marginLeft: 'auto', flexShrink: 0 });
+const rp2CreditBoxStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '5px 8px', marginTop: 5, fontSize: 11, fontWeight: 700, color: '#000' };
+const rp2DeductionBoxStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '5px 8px', marginTop: 5, fontSize: 11, fontWeight: 700, color: '#000' };
 const rp2ResultCardStyle = { border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 10px', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 };
-const rp2ResultLabelStyle = { fontSize: 11, fontWeight: 600, color: '#374151', marginBottom: 2 };
+const rp2ResultLabelStyle = { fontSize: 11, fontWeight: 600, color: '#000', marginBottom: 2 };
 const rp2ResultFormulaStyle = { fontSize: 10, color: '#6b7280' };
-const rp2ResultValueStyle = (diff) => ({ fontSize: 22, fontWeight: 700, color: diff > 0 ? '#1d4ed8' : diff < 0 ? '#dc2626' : '#111827', lineHeight: 1, whiteSpace: 'nowrap', flexShrink: 0 });
+const rp2ResultValueStyle = () => ({ fontSize: 22, fontWeight: 700, color: '#000', lineHeight: 1, whiteSpace: 'nowrap', flexShrink: 0 });
 const rp2NoteStyle = { fontSize: 10, color: '#6b7280', fontStyle: 'italic', padding: '4px 0' };
 const rp2DayOvertimeStyle = { fontSize: 9, fontWeight: 600, color: '#d97706', marginTop: 1 };
 const rp2DayMarkerStyle = (color) => ({ fontSize: 9, marginTop: 1, color: color || '#6b7280' });
