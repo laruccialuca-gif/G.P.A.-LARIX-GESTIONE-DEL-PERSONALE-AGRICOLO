@@ -2246,6 +2246,8 @@ export default function ReportPage() {
         <EmployeePrintArea
           employee={employee}
           currentMonth={currentMonth}
+          datore={datore}
+          employerOptions={employerOptions}
           attendanceBaseHours={attendanceBaseHours}
           hoursFormat={hoursFormat}
           attendanceMap={attendanceMap}
@@ -2390,6 +2392,8 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers }) {
 function EmployeePrintArea({
   employee,
   currentMonth,
+  datore,
+  employerOptions,
   attendanceBaseHours,
   hoursFormat,
   attendanceMap,
@@ -2432,6 +2436,11 @@ function EmployeePrintArea({
     differenzaFinale > 0 ? "Resto da dare all'operaio" : differenzaFinale < 0 ? 'Da restituire' : 'Pareggio';
   const previousBalanceLabel = getPreviousBalanceLabel(restoPrecedenteNum);
   const payslipDaysNum = Number(giornateBustaPaga || 0);
+  const hasMultipleEmployers = Array.isArray(employerOptions) && employerOptions.length > 1;
+  const selectedEmployer = hasMultipleEmployers
+    ? employerOptions.find((option) => (option.short_name || option.value) === datore)
+    : null;
+  const selectedEmployerLabel = selectedEmployer?.short_name || selectedEmployer?.value || datore || '';
   const payrollDifference = totalCalculatedPay - importoBustaPagaNum;
   const balanceWithPrevious = payrollDifference + restoPrecedenteNum;
   const balanceBeforeDeductions = balanceWithPrevious + totaleTrasporto + giftAmountNum;
@@ -2514,7 +2523,11 @@ function EmployeePrintArea({
           <div style={rp2EconRowStyle}>
             <div>
               <div style={rp2EconLabelStyle}>Busta paga</div>
-              <div style={rp2EconSubStyle}>{payslipDaysNum ? `${payslipDaysNum} gg inserite` : 'Non inserita'}</div>
+              <div style={rp2EconSubStyle}>
+                {payslipDaysNum
+                  ? `${payslipDaysNum} gg inserite${hasMultipleEmployers && selectedEmployerLabel ? ` — ${selectedEmployerLabel}` : ''}`
+                  : 'Non inserita'}
+              </div>
             </div>
             <div style={rp2EconAmountStyle('#111827')}>{importoBustaPagaNum > 0 ? formatCurrency(importoBustaPagaNum) : '—'}</div>
           </div>
