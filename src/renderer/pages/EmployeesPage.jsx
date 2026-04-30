@@ -55,6 +55,15 @@ function compareNumbers(a, b) {
   return Number(a || 0) - Number(b || 0);
 }
 
+function formatCurrency(value) {
+  return new Intl.NumberFormat('it-IT', {
+    style: 'currency',
+    currency: 'EUR',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(Number(value || 0));
+}
+
 function SortHeader({ label, field, sortField, sortDirection, onToggle, width, flex, extraStyle }) {
   const isActive = sortField === field;
   const arrow = isActive ? (sortDirection === 'asc' ? '↑' : '↓') : '↕';
@@ -251,7 +260,9 @@ function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected,
       </div>
 
       <div style={{ fontSize: 12, color: '#374151', width: 110, flexShrink: 0 }} onClick={() => onClick(employee)}>
-        {employee.daily_pay ? `€ ${Number(employee.daily_pay).toFixed(2)}/g` : '—'}
+        {employee.daily_pay !== null && employee.daily_pay !== undefined && employee.daily_pay !== ''
+          ? `${formatCurrency(employee.daily_pay)}/gg`
+          : '—'}
       </div>
 
       <div style={{ display: 'flex', gap: 5, flexShrink: 0, width: 150 }} onClick={() => onClick(employee)}>
