@@ -565,6 +565,7 @@ export default function EmployeesPage() {
   const [teams, setTeams] = useState([]);
   const [loading, setLoading] = useState(true);
   const [pdfImportLoading, setPdfImportLoading] = useState(false);
+  const [pdfImportStatus, setPdfImportStatus] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [showTeamForm, setShowTeamForm] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -587,6 +588,7 @@ export default function EmployeesPage() {
   const [selectedArchivedEmployeeIds, setSelectedArchivedEmployeeIds] = useState([]);
   const [sortField, setSortField] = useState('name');
   const [sortDirection, setSortDirection] = useState('asc');
+  const pdfImportOperationRef = useRef({ id: 0, cancelled: false });
 
   async function loadData() {
     setLoading(true);
@@ -801,24 +803,98 @@ export default function EmployeesPage() {
     }
   }
 
+  async function resetActivePdfImportLock(reason) {
+    try {
+      const jobs = await window.api.operations.getActiveJobs();
+      const pdfImportJob = Array.isArray(jobs)
+        ? jobs.find((job) => job?.type === 'pdf-import' && job?.status === 'running')
+        : null;
+      if (pdfImportJob) {
+        console.info('[pdf-import] import lock reset', { reason, jobId: pdfImportJob.job_id });
+        await window.api.operations.reset('pdf-import', reason);
+      }
+    } catch (err) {
+      console.warn('[pdf-import] lock reset check failed', err);
+    }
+  }
+
   async function handleOpenPdfImport() {
     if (pdfImportLoading) return;
 
+    await resetActivePdfImportLock('open-import-modal');
+    const operationId = pdfImportOperationRef.current.id + 1;
+    pdfImportOperationRef.current = { id: operationId, cancelled: false };
+    console.info('[pdf-import] import started', { operationId });
     setPdfImportLoading(true);
+    setPdfImportStatus('Importazione PDF in corso...');
     try {
       const result = await window.api.employees.parsePdfImport({
         targetYear: getTargetYear(),
       });
-      if (result.canceled) return;
+      const isCurrentOperation = pdfImportOperationRef.current.id === operationId;
+      if (!isCurrentOperation || pdfImportOperationRef.current.cancelled) {
+        console.info('[pdf-import] import ignored after cancel', { operationId });
+        return;
+      }
+      if (result.canceled) {
+        console.info('[pdf-import] import cancelled', { operationId });
+        setPdfImportStatus('Importazione annullata');
+        alert('Importazione annullata');
+        return;
+      }
+      console.info('[pdf-import] import completed', { operationId });
       setPdfImportData(result);
       setShowPdfImport(true);
     } catch (err) {
+      if (pdfImportOperationRef.current.id !== operationId || pdfImportOperationRef.current.cancelled) {
+        console.info('[pdf-import] import ignored after cancel', { operationId });
+        return;
+      }
       console.error(err);
-      alert('Errore lettura PDF: ' + err.message);
+      const errorMessage = err?.message || String(err);
+      if (
+        errorMessage.includes('PDF scansionato') ||
+        errorMessage.includes('OCR eseguito') ||
+        errorMessage.includes('OCR non riuscito') ||
+        err?.code === 'OCR_REQUIRED' ||
+        err?.code === 'OCR_NO_RECORDS'
+      ) {
+        alert(errorMessage);
+      } else {
+        alert('Errore lettura PDF: ' + errorMessage);
+      }
     } finally {
-      setPdfImportLoading(false);
+      if (pdfImportOperationRef.current.id === operationId) {
+        setPdfImportLoading(false);
+        if (!pdfImportOperationRef.current.cancelled) {
+          setPdfImportStatus('');
+        }
+      }
     }
   }
+
+  async function handleCancelPdfImport() {
+    if (!pdfImportLoading) return;
+    const operationId = pdfImportOperationRef.current.id;
+    pdfImportOperationRef.current = { id: operationId, cancelled: true };
+    console.info('[pdf-import] import cancelled', { operationId });
+    setPdfImportStatus('Importazione annullata');
+    setPdfImportLoading(false);
+    setShowPdfImport(false);
+    setPdfImportData(null);
+    try {
+      await window.api.operations.cancel('pdf-import');
+    } catch (err) {
+      console.warn('[pdf-import] cancel request failed', err);
+    }
+    alert('Importazione annullata');
+  }
+
+  useEffect(() => {
+    if (showPdfImport) {
+      resetActivePdfImportLock('pdf-import-modal-opened');
+    }
+  }, [showPdfImport]);
 
   async function handleConfirmPdfImport(rows) {
     const res = await window.api.employees.confirmPdfImport({
@@ -1042,6 +1118,38 @@ export default function EmployeesPage() {
                 'Importa da PDF'
               )}
             </button>
+            {pdfImportLoading ? (
+              <>
+                <span
+                  className="soft-chip"
+                  style={{
+                    background: 'rgba(15, 118, 110, 0.12)',
+                    color: '#0f766e',
+                    borderColor: 'rgba(15, 118, 110, 0.18)',
+                  }}
+                >
+                  {pdfImportStatus || 'Importazione PDF in corso...'}
+                </span>
+                <button
+                  type="button"
+                  className="button-danger"
+                  onClick={handleCancelPdfImport}
+                >
+                  Interrompi importazione
+                </button>
+              </>
+            ) : pdfImportStatus ? (
+              <span
+                className="soft-chip"
+                style={{
+                  background: 'rgba(107, 114, 128, 0.12)',
+                  color: '#374151',
+                  borderColor: 'rgba(107, 114, 128, 0.18)',
+                }}
+              >
+                {pdfImportStatus}
+              </span>
+            ) : null}
           </div>
         </section>
 
@@ -1492,8 +1600,11 @@ export default function EmployeesPage() {
           onConfirm={handleConfirmPdfImport}
           records={pdfImportData?.records || []}
           employerOptions={settings?.employer_options || []}
+          settings={settings}
+          filePath={pdfImportData?.filePath || ''}
           pdfEmployer={pdfImportData?.pdfEmployer || null}
           initialEmployerResolution={pdfImportData?.employerResolution || null}
+          importDiagnostics={pdfImportData?.importDiagnostics || null}
         />
       </ModalErrorBoundary>
     </div>

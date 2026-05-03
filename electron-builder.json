@@ -15,7 +15,17 @@
     "node_modules/**/*.node",
     "node_modules/@napi-rs/canvas/**/*",
     "node_modules/better-sqlite3/**/*",
-    "src/main/pdf-ocr"
+    "src/main/pdf-ocr",
+    "resources/tessdata/**/*"
+  ],
+  "extraResources": [
+    {
+      "from": "resources/tessdata",
+      "to": "tessdata",
+      "filter": [
+        "**/*"
+      ]
+    }
   ],
   "afterPack": "tools/fix-pdf-ocr-perms.cjs",
   "npmRebuild": false,

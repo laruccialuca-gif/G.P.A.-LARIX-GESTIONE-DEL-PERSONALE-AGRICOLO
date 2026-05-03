@@ -1,13 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { app, dialog } = require('electron');
+const { app, dialog, safeStorage } = require('electron');
 const { getConfigDir, getBackupsDir, getStorageLayout, getUpdatesDir } = require('./storagePaths');
 const { getDbPath, getDatabaseRuntimeInfo } = require('./db');
 const { defaultUpdateSettings, normalizeUpdateSettings, buildUpdateRuntimeSummary } = require('./updateService');
 const { getAppVariant, getRuntimeContext, isDemoVariant } = require('./runtimeContext');
 
 const SETTINGS_FILE_NAME = 'settings.json';
+const SECRET_PREFIX = 'safe-storage:';
 const LOGO_FILE_PREFIX = 'company-logo';
 const MARKER_ASSETS_DIR_NAME = 'markers';
 const MARKER_FILE_PREFIX = 'marker-image';
@@ -36,6 +37,40 @@ const DEFAULT_ATTENDANCE_MARKERS = [
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
   return dirPath;
+}
+
+function decryptSettingSecret(value) {
+  const raw = String(value || '');
+  if (!raw.startsWith(SECRET_PREFIX)) return raw;
+  try {
+    if (!safeStorage?.isEncryptionAvailable?.()) return '';
+    const encrypted = Buffer.from(raw.slice(SECRET_PREFIX.length), 'base64');
+    return safeStorage.decryptString(encrypted);
+  } catch {
+    return '';
+  }
+}
+
+function encryptSettingSecret(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith(SECRET_PREFIX)) return raw;
+  try {
+    if (!safeStorage?.isEncryptionAvailable?.()) return raw;
+    return `${SECRET_PREFIX}${safeStorage.encryptString(raw).toString('base64')}`;
+  } catch {
+    return raw;
+  }
+}
+
+function buildPersistedSettingsPayload(settings) {
+  return {
+    ...settings,
+    ocr: {
+      ...settings.ocr,
+      ocr_space_api_key: encryptSettingSecret(settings.ocr?.ocr_space_api_key),
+    },
+  };
 }
 
 function getSettingsFilePath() {
@@ -110,6 +145,14 @@ function defaultSettings() {
       sync_mode: 'backup_only',
       versioning_strategy: 'timestamped',
       conflict_strategy: 'manual_review',
+    },
+    ocr: {
+      online_fallback_enabled: false,
+      provider: 'ocr_space',
+      ocr_space_api_key: '',
+      language: 'ita',
+      engine: 2,
+      confirm_privacy_before_online: true,
     },
     software: {
       updates: defaultUpdateSettings(),
@@ -306,6 +349,14 @@ function normalizeSettings(input = {}) {
       versioning_strategy: String(merged.cloud?.versioning_strategy || 'timestamped').trim() || 'timestamped',
       conflict_strategy: String(merged.cloud?.conflict_strategy || 'manual_review').trim() || 'manual_review',
     },
+    ocr: {
+      online_fallback_enabled: !!merged.ocr?.online_fallback_enabled,
+      provider: 'ocr_space',
+      ocr_space_api_key: decryptSettingSecret(merged.ocr?.ocr_space_api_key).trim(),
+      language: merged.ocr?.language === 'eng' ? 'eng' : 'ita',
+      engine: Number(merged.ocr?.engine) === 1 ? 1 : 2,
+      confirm_privacy_before_online: merged.ocr?.confirm_privacy_before_online !== false,
+    },
     software: {
       updates: normalizeUpdateSettings(merged.software?.updates),
     },
@@ -347,7 +398,8 @@ function readSettings() {
 function writeSettings(settings) {
   const filePath = getSettingsFilePath();
   ensureDir(path.dirname(filePath));
-  fs.writeFileSync(filePath, JSON.stringify(normalizeSettings(settings), null, 2), 'utf8');
+  const normalized = normalizeSettings(settings);
+  fs.writeFileSync(filePath, JSON.stringify(buildPersistedSettingsPayload(normalized), null, 2), 'utf8');
 }
 
 function getSettings() {
@@ -722,6 +774,10 @@ function buildSettingsSummary(settings = readSettings()) {
       attendance_quick_symbol: normalizedSettings.general?.attendance_quick_symbol || 'X',
       attendance_auto_symbolize_base_hours: !!normalizedSettings.general?.attendance_auto_symbolize_base_hours,
       attendance_markers: normalizeAttendanceMarkers(normalizedSettings.general?.attendance_markers),
+    },
+    ocr: {
+      ...normalizedSettings.ocr,
+      online_configured: !!String(normalizedSettings.ocr?.ocr_space_api_key || process.env.OCR_SPACE_API_KEY || '').trim(),
     },
     employer_options: getEmployerOptions(normalizedSettings),
     pdf_import_employer_mappings: normalizedSettings.employers?.pdf_import_mappings || [],

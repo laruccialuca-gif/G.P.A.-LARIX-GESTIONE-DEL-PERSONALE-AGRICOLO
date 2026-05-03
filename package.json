@@ -7,23 +7,24 @@
   "scripts": {
     "postinstall": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3",
     "guard:win-host": "node tools/guard-windows-build.mjs",
+    "check:ocr": "node tools/check-ocr.cjs",
     "check:smart-quotes": "node tools/check-smart-quotes.cjs",
     "clean:build:artifacts": "node tools/clean-build-artifacts.mjs",
     "clean:demo:output": "node tools/report-demo-build.mjs --clean",
     "rebuild:native:electron": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3",
     "verify:win:native:standard": "node tools/verify-win-native-module.mjs standard",
     "verify:win:native:demo": "node tools/verify-win-native-module.mjs demo",
-    "dev": "cross-env ELECTRON_RUN_AS_NODE= concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "dev:demo": "cross-env ELECTRON_RUN_AS_NODE= concurrently \"vite\" \"wait-on http://localhost:5173 && cross-env APP_VARIANT=demo electron .\"",
-    "dev:production": "cross-env ELECTRON_RUN_AS_NODE= APP_VARIANT=production concurrently --kill-others --names vite,electron \"vite\" \"wait-on -t 30000 http://localhost:5173 && electron .\"",
-    "dev:license-admin": "cross-env ELECTRON_RUN_AS_NODE= LICENSE_ADMIN_DEV=1 LICENSE_ADMIN_DEV_URL=http://localhost:5176/index-license-admin.html concurrently --kill-others --names vite,electron \"vite --config vite.license-admin.config.js\" \"wait-on -t 30000 http://localhost:5176/index-license-admin.html && electron src/license-admin/main/main.js\"",
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && node tools/run-electron-clean-env.cjs .\"",
+    "dev:demo": "concurrently \"vite\" \"wait-on http://localhost:5173 && node tools/run-electron-clean-env.cjs --variant demo .\"",
+    "dev:production": "concurrently --kill-others --names vite,electron \"vite\" \"wait-on -t 30000 http://localhost:5173 && node tools/run-electron-clean-env.cjs --variant production .\"",
+    "dev:license-admin": "concurrently --kill-others --names vite,electron \"vite --config vite.license-admin.config.js\" \"wait-on -t 30000 http://localhost:5176/index-license-admin.html && node tools/run-electron-clean-env.cjs --env LICENSE_ADMIN_DEV=1 --env LICENSE_ADMIN_DEV_URL=http://localhost:5176/index-license-admin.html src/license-admin/main/main.js\"",
     "build": "vite build",
     "build:license-admin": "vite build --config vite.license-admin.config.js",
     "build:demo:info": "node tools/report-demo-build.mjs --stage=before",
     "build:demo:result": "node tools/report-demo-build.mjs --stage=after",
-    "start": "cross-env ELECTRON_RUN_AS_NODE= electron .",
-    "start:demo": "cross-env ELECTRON_RUN_AS_NODE= APP_VARIANT=demo electron .",
-    "start:license-admin": "cross-env ELECTRON_RUN_AS_NODE= electron src/license-admin/main/main.js",
+    "start": "node tools/run-electron-clean-env.cjs .",
+    "start:demo": "node tools/run-electron-clean-env.cjs --variant demo .",
+    "start:license-admin": "node tools/run-electron-clean-env.cjs src/license-admin/main/main.js",
     "test:license:scenarios": "node tools/license-scenarios.cjs",
     "dist:win:dir": "npm run guard:win-host && npm run rebuild:native:electron && npm run build && electron-builder --config electron-builder.json --win dir && npm run verify:win:native:standard",
     "dist:win:nsis": "npm run guard:win-host && npm run rebuild:native:electron && npm run build && electron-builder --config electron-builder.json --win nsis && npm run verify:win:native:standard",
@@ -54,7 +55,17 @@
       "node_modules/**/*.node",
       "node_modules/@napi-rs/canvas/**/*",
       "node_modules/better-sqlite3/**/*",
-      "src/main/pdf-ocr"
+      "src/main/pdf-ocr",
+      "resources/tessdata/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/tessdata",
+        "to": "tessdata",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "afterPack": "tools/fix-pdf-ocr-perms.cjs",
     "npmRebuild": false,

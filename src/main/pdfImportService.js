@@ -9,10 +9,13 @@ const employeeRepo = require('./employeeRepo');
 const PLATFORM = process.platform; // 'darwin' | 'win32' | 'linux'
 
 // Set by init() from main.js after app is ready.
-// Default to __dirname/tessdata for dev; init() overrides with app.getPath('userData')/tessdata.
+// Default to __dirname/tessdata for dev; init() resolves the packaged resources/tessdata path.
 let TESSDATA_DIR = path.join(__dirname, 'tessdata');
+let USER_TESSDATA_DIR = TESSDATA_DIR;
 let APP_IS_PACKAGED = Boolean(app?.isPackaged);
 let OCR_BINARY = resolveOcrBinaryPath();
+let BUNDLED_TESSDATA_DIR = resolveBundledTessdataDir();
+let TESSDATA_SOURCE = 'default';
 let canvasLib = null;
 let canvasLoadAttempted = false;
 let logWriter = () => {};
@@ -27,6 +30,42 @@ function logPdfImportEvent(event, details = {}) {
     logWriter(`pdf-import:${event}`, details);
   } catch {
     // Best effort.
+  }
+}
+
+function createAbortError() {
+  const error = new Error('Importazione annullata');
+  error.name = 'AbortError';
+  error.code = 'PDF_IMPORT_CANCELLED';
+  return error;
+}
+
+function createOcrUnavailableError() {
+  const error = new Error('OCR non disponibile su questo sistema');
+  error.code = 'OCR_UNAVAILABLE';
+  return error;
+}
+
+function createOcrRequiredError(reason = 'missing_tessdata') {
+  const searchedPathSuffix = reason === 'missing_tessdata' && TESSDATA_DIR
+    ? ` Cartella OCR cercata: ${TESSDATA_DIR}`
+    : '';
+  const error = new Error(
+    `PDF scansionato: per leggerlo serve OCR. Installa/abilita dati OCR oppure inserisci manualmente.${searchedPathSuffix}`
+  );
+  error.code = 'OCR_REQUIRED';
+  error.reason = reason;
+  error.tessdataPath = TESSDATA_DIR;
+  return error;
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError' || error?.code === 'PDF_IMPORT_CANCELLED';
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw createAbortError();
   }
 }
 
@@ -114,6 +153,196 @@ function resolveOcrBinaryPath() {
   return path.join(__dirname, 'pdf-ocr');
 }
 
+function resolveBundledTessdataDir() {
+  if (process.resourcesPath) {
+    return path.join(process.resourcesPath, 'tessdata');
+  }
+
+  return path.join(__dirname, '..', '..', 'resources', 'tessdata');
+}
+
+function buildTessdataCandidates(userDataDir) {
+  const candidates = [];
+  const addCandidate = (source, dir) => {
+    if (!dir) return;
+    const normalizedDir = path.resolve(dir);
+    if (candidates.some((candidate) => candidate.dir === normalizedDir)) return;
+    candidates.push({
+      source,
+      dir: normalizedDir,
+      exists: fs.existsSync(normalizedDir),
+      files: listTessdataFiles(normalizedDir),
+      ita_exists: getLanguageCandidates('ita', normalizedDir).some((filePath) => fs.existsSync(filePath)),
+      eng_exists: getLanguageCandidates('eng', normalizedDir).some((filePath) => fs.existsSync(filePath)),
+    });
+  };
+
+  addCandidate('packaged', process.resourcesPath ? path.join(process.resourcesPath, 'tessdata') : '');
+  addCandidate('resources', path.join(process.cwd(), 'resources', 'tessdata'));
+  try {
+    addCandidate('appPath', app?.getAppPath ? path.join(app.getAppPath(), 'resources', 'tessdata') : '');
+  } catch {
+    // app.getAppPath can be unavailable before Electron app init in CLI contexts.
+  }
+  addCandidate('dirname', path.resolve(__dirname, '../../resources/tessdata'));
+  addCandidate('userData', userDataDir ? path.join(userDataDir, 'tessdata') : '');
+
+  return candidates;
+}
+
+function resolveRuntimeTessdata(userDataDir) {
+  const candidates = buildTessdataCandidates(userDataDir);
+  const withLanguage = candidates.find((candidate) => candidate.exists && (candidate.ita_exists || candidate.eng_exists));
+  const existing = withLanguage || candidates.find((candidate) => candidate.exists);
+  const fallback = existing || candidates[candidates.length - 1] || {
+    source: 'default',
+    dir: path.join(__dirname, 'tessdata'),
+    exists: false,
+    files: [],
+    ita_exists: false,
+    eng_exists: false,
+  };
+
+  return {
+    ...fallback,
+    candidates,
+  };
+}
+
+function listTessdataFiles(dir = TESSDATA_DIR) {
+  try {
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir)
+      .filter((fileName) => /\.traineddata(?:\.gz)?$/i.test(fileName))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+function logTessdataRuntime(reason = 'check') {
+  const itaPath = path.join(TESSDATA_DIR, 'ita.traineddata.gz');
+  const engPath = path.join(TESSDATA_DIR, 'eng.traineddata.gz');
+  const languages = getAvailableTesseractLanguages(TESSDATA_DIR);
+  logPdfImportEvent('tessdata-runtime', {
+    reason,
+    is_packaged: APP_IS_PACKAGED,
+    cwd: process.cwd(),
+    dirname: __dirname,
+    process_resources_path: process.resourcesPath || '',
+    tessdata_path: TESSDATA_DIR,
+    tessdata_source: TESSDATA_SOURCE,
+    bundled_tessdata_path: BUNDLED_TESSDATA_DIR,
+    user_tessdata_path: USER_TESSDATA_DIR,
+    tessdata_exists: fs.existsSync(TESSDATA_DIR),
+    ita_traineddata_gz_exists: fs.existsSync(itaPath),
+    eng_traineddata_gz_exists: fs.existsSync(engPath),
+    files: listTessdataFiles(TESSDATA_DIR),
+    ocr_available: languages.length > 0,
+    reason_if_false: languages.length > 0 ? '' : `missing_tessdata: ${TESSDATA_DIR}`,
+    candidates: buildTessdataCandidates(USER_TESSDATA_DIR ? path.dirname(USER_TESSDATA_DIR) : ''),
+  });
+}
+
+function getLanguageCandidates(language, dir = TESSDATA_DIR) {
+  return [
+    path.join(dir, `${language}.traineddata.gz`),
+    path.join(dir, `${language}.traineddata`),
+  ];
+}
+
+function getAvailableTesseractLanguages(dir = TESSDATA_DIR) {
+  return ['ita', 'eng'].filter((language) =>
+    getLanguageCandidates(language, dir).some((filePath) => fs.existsSync(filePath))
+  );
+}
+
+function copyBundledTessdataIfAvailable() {
+  BUNDLED_TESSDATA_DIR = resolveBundledTessdataDir();
+  if (!fs.existsSync(BUNDLED_TESSDATA_DIR)) {
+    return false;
+  }
+
+  fs.mkdirSync(TESSDATA_DIR, { recursive: true });
+  let copied = false;
+  for (const language of ['ita', 'eng']) {
+    for (const sourcePath of getLanguageCandidates(language, BUNDLED_TESSDATA_DIR)) {
+      if (!fs.existsSync(sourcePath)) continue;
+      const targetPath = path.join(TESSDATA_DIR, path.basename(sourcePath));
+      if (!fs.existsSync(targetPath)) {
+        fs.copyFileSync(sourcePath, targetPath);
+        copied = true;
+      }
+    }
+  }
+  if (copied) {
+    logPdfImportEvent('tessdata-copied', {
+      source_dir: BUNDLED_TESSDATA_DIR,
+      target_dir: TESSDATA_DIR,
+    });
+  }
+  return copied;
+}
+
+function getAvailableTesseractLanguagesWithBundledFallback() {
+  const currentLanguages = getAvailableTesseractLanguages(TESSDATA_DIR);
+  if (currentLanguages.length) return currentLanguages;
+  if (TESSDATA_DIR !== BUNDLED_TESSDATA_DIR) {
+    copyBundledTessdataIfAvailable();
+  }
+  return getAvailableTesseractLanguages(TESSDATA_DIR);
+}
+
+function logOcrDisabled(reason, details = {}) {
+  logPdfImportEvent('ocr-disabled', {
+    reason,
+    bundled_dir: BUNDLED_TESSDATA_DIR,
+    user_tessdata_dir: TESSDATA_DIR,
+    ...details,
+  });
+}
+
+function logOcrRequired(filePath, reason, details = {}) {
+  logPdfImportEvent('ocr-required', {
+    file_path: filePath,
+    pdf_import_model: 'scanned_pdf_ocr',
+    ocr_available: false,
+    reason,
+    ...details,
+  });
+}
+
+function ensureTesseractLanguages() {
+  logTessdataRuntime('ensure-languages');
+  const languages = getAvailableTesseractLanguagesWithBundledFallback();
+  if (languages.length) {
+    process.env.TESSDATA_PREFIX = TESSDATA_DIR;
+    logPdfImportEvent('ocr-enabled', {
+      process_resources_path: process.resourcesPath || '',
+      tessdata_path: TESSDATA_DIR,
+      languages,
+      files: listTessdataFiles(TESSDATA_DIR),
+    });
+    return languages;
+  }
+
+  const expectedFiles = ['ita', 'eng'].flatMap((language) => getLanguageCandidates(language, TESSDATA_DIR));
+  logPdfImportEvent('ocr-disabled-missing-language', {
+    languages: ['ita', 'eng'],
+    expected_files: expectedFiles,
+    bundled_dir: BUNDLED_TESSDATA_DIR,
+    user_tessdata_dir: TESSDATA_DIR,
+    searched_tessdata_path: TESSDATA_DIR,
+    candidates: buildTessdataCandidates(USER_TESSDATA_DIR ? path.dirname(USER_TESSDATA_DIR) : ''),
+  });
+  logOcrDisabled('missing-language', {
+    languages: ['ita', 'eng'],
+    expected_files: expectedFiles,
+    searched_tessdata_path: TESSDATA_DIR,
+  });
+  return [];
+}
+
 function isExecutable(targetPath) {
   try {
     fs.accessSync(targetPath, fs.constants.X_OK);
@@ -178,23 +407,35 @@ function loadCanvasLib() {
 
 // Called once from main.js inside app.whenReady() so TESSDATA_DIR points to a writable location.
 function init({ userDataDir }) {
-  TESSDATA_DIR = path.join(userDataDir, 'tessdata');
+  USER_TESSDATA_DIR = path.join(userDataDir, 'tessdata');
   APP_IS_PACKAGED = Boolean(app?.isPackaged);
   OCR_BINARY = resolveOcrBinaryPath();
+  BUNDLED_TESSDATA_DIR = resolveBundledTessdataDir();
+  const resolvedTessdata = resolveRuntimeTessdata(userDataDir);
+  TESSDATA_DIR = resolvedTessdata.dir;
+  TESSDATA_SOURCE = resolvedTessdata.source;
+  process.env.TESSDATA_PREFIX = TESSDATA_DIR;
+  if (TESSDATA_DIR === USER_TESSDATA_DIR) {
+    copyBundledTessdataIfAvailable();
+  }
+  logTessdataRuntime('init');
   ensureOcrExecutable();
 }
 
 // ── Text extraction via pdfjs-dist (no canvas, any platform) ─────────────────
 // Uses PDF's embedded text when available (fast, exact).
 // Returns [{pageNumber, items:[{t,x,y,w,h}]}] — normalized 0-1, origin bottom-left.
-async function extractTextPages(filePath) {
+async function extractTextPages(filePath, options = {}) {
+  const { signal } = options;
   try {
     const result = await withSuppressedPdfJsWarningsAsync(async () => {
+      throwIfAborted(signal);
       const pdfjsLib = loadPdfJsLib();
       const data = new Uint8Array(fs.readFileSync(filePath));
       const doc = await pdfjsLib.getDocument(buildPdfJsDocumentOptions(pdfjsLib, data)).promise;
       const pages = [];
       for (let i = 1; i <= doc.numPages; i++) {
+        throwIfAborted(signal);
         const page = await doc.getPage(i);
         const viewport = page.getViewport({ scale: 1.0 });
         const textContent = await page.getTextContent();
@@ -219,6 +460,9 @@ async function extractTextPages(filePath) {
     });
     return result;
   } catch (e) {
+    if (isAbortError(e)) {
+      throw e;
+    }
     logPdfImportEvent('text-parse-failed', {
       file_path: filePath,
       message: e?.message || String(e),
@@ -262,10 +506,13 @@ function isFieldLabelValue(value) {
   return [
     'nome',
     'cognome',
+    'cognomenome',
     'codicefiscale',
     'cf',
     'data',
     'datanascita',
+    'datainizio',
+    'iniziorapporto',
     'datore',
   ].includes(token);
 }
@@ -284,7 +531,7 @@ function findLabelItem(items, labels = []) {
 }
 
 function findFiscalCodeInItems(items = []) {
-  const directPattern = /\b([A-Z]{6}\s*[0-9]{2}\s*[A-Z]\s*[0-9]{2}\s*[A-Z]\s*[0-9]{3}\s*[A-Z])\b/i;
+  const directPattern = /([A-Z]\s*){6}[0-9O]\s*[0-9O]\s*[A-Z]\s*[0-9O]\s*[0-9O]\s*[A-Z]\s*[0-9O]\s*[0-9O]\s*[0-9O]\s*[A-Z]/i;
   const labelItem = findLabelItem(items, ['codice fiscale', 'c.f.', 'cf']);
   const candidates = [];
 
@@ -301,8 +548,8 @@ function findFiscalCodeInItems(items = []) {
 
     for (const candidate of nearbyCandidates) {
       const match = normalizeOcrText(candidate.t).toUpperCase().match(directPattern);
-      if (match?.[1]) {
-        const value = match[1].replace(/\s+/g, '').toUpperCase();
+      if (match?.[0]) {
+        const value = match[0].replace(/\s+/g, '').toUpperCase();
         return {
           value,
           source: `label:${normalizeOcrText(labelItem.t)}`,
@@ -325,6 +572,13 @@ function findFiscalCodeInItems(items = []) {
     source: 'missing-specific-label',
     block_text: '',
   };
+}
+
+function findFiscalCodeInText(value = '') {
+  const text = normalizeOcrText(value).toUpperCase();
+  const directPattern = /([A-Z]\s*){6}[0-9O]\s*[0-9O]\s*[A-Z]\s*[0-9O]\s*[0-9O]\s*[A-Z]\s*[0-9O]\s*[0-9O]\s*[0-9O]\s*[A-Z]/i;
+  const match = text.match(directPattern);
+  return match?.[0] ? match[0].replace(/\s+/g, '').toUpperCase() : null;
 }
 
 function escapeRegExp(value) {
@@ -461,6 +715,64 @@ function buildWorkerBlocks(pages = []) {
   return fallbackBlocks;
 }
 
+function hasWorkerCandidateSignal(lines = []) {
+  const text = normalizeOcrText(lines.map((line) => line.text).join(' '));
+  const token = normalizeLabelToken(text);
+  return Boolean(
+    findFiscalCodeInText(text) ||
+      token.includes('cognome') ||
+      token.includes('nome') ||
+      token.includes('codicefiscale') ||
+      token.includes('datainizio') ||
+      token.includes('iniziorapporto')
+  );
+}
+
+function buildScannedWorkerBlocks(pages = []) {
+  const lines = buildDocumentLines(pages);
+  const blocks = [];
+  const pagesWithoutRecord = [];
+
+  for (let pageNumber = 0; pageNumber < pages.length; pageNumber += 2) {
+    const pageNumbers = [pageNumber];
+    if (pages[pageNumber + 1]) pageNumbers.push(pageNumber + 1);
+    const blockLines = lines.filter((line) => pageNumbers.includes(line.pageNumber));
+    if (!blockLines.length) {
+      pagesWithoutRecord.push(...pageNumbers);
+      continue;
+    }
+
+    const hasSignal = hasWorkerCandidateSignal(blockLines);
+    if (!hasSignal) {
+      pagesWithoutRecord.push(...pageNumbers);
+      continue;
+    }
+
+    blocks.push({
+      lines: blockLines,
+      page_numbers: pageNumbers,
+      used_fallback: true,
+      candidate_source: 'scanned_page_pair',
+      original_text: normalizeOcrText(blockLines.map((entry) => entry.text).join(' ')),
+    });
+  }
+
+  if (!blocks.length) {
+    return {
+      blocks: buildWorkerBlocks(pages).map((block) => ({
+        ...block,
+        candidate_source: block.candidate_source || 'section_or_default_fallback',
+      })),
+      pages_without_record: pagesWithoutRecord,
+    };
+  }
+
+  return {
+    blocks,
+    pages_without_record: pagesWithoutRecord,
+  };
+}
+
 function linesToItems(lines = []) {
   return lines.flatMap((line) => line.items || []);
 }
@@ -581,6 +893,7 @@ function cleanWorkerLabelArtifacts(value) {
 function parseWorkerSection(section2Lines = []) {
   const items = linesToItems(section2Lines);
   const section2Labels = ['cognome', 'nome', 'codice fiscale', 'c.f.', 'cf', 'data nascita'];
+  const sectionText = normalizeOcrText(section2Lines.map((line) => line.text).join(' '));
 
   const surnameField = extractLabeledValue(section2Lines, ['cognome'], section2Labels.filter((label) => label !== 'cognome'), 'text');
   const nameField = extractLabeledValue(section2Lines, ['nome'], section2Labels.filter((label) => label !== 'nome'), 'text');
@@ -596,7 +909,7 @@ function parseWorkerSection(section2Lines = []) {
   return {
     first_name: cleanWorkerLabelArtifacts(nameField.value || findValueAt(items, 'Nome', 0.45, 1.0)),
     last_name: cleanWorkerLabelArtifacts(surnameField.value || findValueAt(items, 'Cognome', 0.1, 0.55)),
-    fiscal_code: fiscalCodeFromLines.value || fiscalCodeFromItems.value || null,
+    fiscal_code: fiscalCodeFromLines.value || fiscalCodeFromItems.value || findFiscalCodeInText(sectionText) || null,
     fiscal_code_source: fiscalCodeFromLines.value ? fiscalCodeFromLines.source : fiscalCodeFromItems.source,
     fiscal_code_block: fiscalCodeFromLines.value ? '' : fiscalCodeFromItems.block_text,
     birth_date: birthDateField.value || '',
@@ -660,9 +973,26 @@ function parseEmployerSection(section1Lines = []) {
 
 // ── macOS: Swift + PDFKit + Vision ───────────────────────────────────────────
 // Returns [{pageNumber, items:[{t,x,y,w,h}]}]
-async function runSwiftOcr(filePath) {
+async function runSwiftOcr(filePath, options = {}) {
+  const { signal } = options;
+  throwIfAborted(signal);
   return new Promise((resolve, reject) => {
-    execFile(OCR_BINARY, [filePath], { maxBuffer: 50 * 1024 * 1024 }, (err, stdout, stderr) => {
+    let child = null;
+    const abortHandler = () => {
+      logPdfImportEvent('ocr-process-kill', {
+        file_path: filePath,
+        platform: PLATFORM,
+        pid: child?.pid || null,
+      });
+      child?.kill?.('SIGTERM');
+      setTimeout(() => {
+        if (child && !child.killed) child.kill('SIGKILL');
+      }, 1500).unref?.();
+    };
+    signal?.addEventListener?.('abort', abortHandler, { once: true });
+    child = execFile(OCR_BINARY, [filePath], { maxBuffer: 50 * 1024 * 1024 }, (err, stdout, stderr) => {
+      signal?.removeEventListener?.('abort', abortHandler);
+      if (signal?.aborted) return reject(createAbortError());
       if (err) return reject(new Error(`OCR error: ${err.message}\n${stderr}`));
       const pages = [];
       for (const line of stdout.split('\n')) {
@@ -680,8 +1010,16 @@ async function runSwiftOcr(filePath) {
 
 // ── Windows: pdfjs-dist + @napi-rs/canvas → Tesseract.js ─────────────────────
 // Returns [{pageNumber, items:[{t,x,y,w,h}]}]
-async function runTesseractOcr(filePath) {
+async function runTesseractOcr(filePath, options = {}) {
+  const { signal } = options;
   return withSuppressedPdfJsWarningsAsync(async () => {
+    throwIfAborted(signal);
+    const languages = Array.isArray(options.languages) && options.languages.length
+      ? options.languages
+      : ensureTesseractLanguages();
+    if (!languages.length) {
+      throw createOcrUnavailableError();
+    }
     const pdfjsLib = loadPdfJsLib();
     const { createCanvas } = loadCanvasLib() || {};
     if (!createCanvas) {
@@ -697,12 +1035,43 @@ async function runTesseractOcr(filePath) {
     const data = new Uint8Array(fs.readFileSync(filePath));
     const doc = await pdfjsLib.getDocument(buildPdfJsDocumentOptions(pdfjsLib, data)).promise;
 
-    fs.mkdirSync(TESSDATA_DIR, { recursive: true });
-    const worker = await createWorker(['ita', 'eng'], 1, { langPath: TESSDATA_DIR });
+    process.env.TESSDATA_PREFIX = TESSDATA_DIR;
+    logPdfImportEvent('ocr-worker-start', {
+      process_resources_path: process.resourcesPath || '',
+      tessdata_path: TESSDATA_DIR,
+      tessdata_exists: fs.existsSync(TESSDATA_DIR),
+      ita_traineddata_gz_exists: fs.existsSync(path.join(TESSDATA_DIR, 'ita.traineddata.gz')),
+      eng_traineddata_gz_exists: fs.existsSync(path.join(TESSDATA_DIR, 'eng.traineddata.gz')),
+      languages,
+      files: listTessdataFiles(TESSDATA_DIR),
+    });
+    const worker = await createWorker(languages, 1, { langPath: TESSDATA_DIR });
+    let workerTerminated = false;
+    const terminateWorker = async () => {
+      if (workerTerminated) return;
+      workerTerminated = true;
+      try {
+        await worker.terminate();
+      } catch (error) {
+        logPdfImportEvent('ocr-worker-terminate-failed', {
+          file_path: filePath,
+          message: error?.message || String(error),
+        });
+      }
+    };
+    const abortHandler = () => {
+      logPdfImportEvent('ocr-worker-terminate', {
+        file_path: filePath,
+        platform: PLATFORM,
+      });
+      terminateWorker();
+    };
+    signal?.addEventListener?.('abort', abortHandler, { once: true });
 
-    const result = [];
+    const ocrPages = [];
     try {
       for (let i = 1; i <= doc.numPages; i++) {
+        throwIfAborted(signal);
         const page = await doc.getPage(i);
         const scale = 2.0;
         const viewport = page.getViewport({ scale });
@@ -721,28 +1090,67 @@ async function runTesseractOcr(filePath) {
           },
         }).promise;
 
+        throwIfAborted(signal);
         const pngBuffer = canvas.toBuffer('image/png');
-        const { data: ocrData } = await worker.recognize(pngBuffer);
+        const ocrResult = await worker.recognize(pngBuffer);
+        const ocrData = ocrResult?.data || {};
+        const ocrText = String(ocrData.text || '');
+        const ocrLines = Array.isArray(ocrData.lines)
+          ? ocrData.lines
+          : ocrText.split('\n').map((line) => line.trim()).filter(Boolean);
+        const ocrWords = Array.isArray(ocrData.words) ? ocrData.words : [];
+        throwIfAborted(signal);
+        logPdfImportEvent('ocr-page-result', {
+          file_path: filePath,
+          page_number: i - 1,
+          text_length: ocrText.length,
+          has_lines: Array.isArray(ocrData.lines),
+          has_words: Array.isArray(ocrData.words),
+          line_count: ocrLines.length,
+          word_count: ocrWords.length,
+        });
 
         // Tesseract bbox: origin top-left (y0=top, y1=bottom).
         // Convert to Vision-style: origin bottom-left (y=bottom-of-box / imgH flipped).
-        const rawWords = ocrData.words
-          .filter((wd) => wd.text.trim() && wd.confidence > 30)
+        const rawWords = ocrWords
+          .filter((wd) => String(wd?.text || '').trim() && Number(wd?.confidence || 0) > 30 && wd?.bbox)
           .map((wd) => ({
-            t: wd.text.trim(),
+            t: String(wd.text || '').trim(),
             x: wd.bbox.x0 / w,
             y: 1 - wd.bbox.y1 / h,
             w: (wd.bbox.x1 - wd.bbox.x0) / w,
             h: (wd.bbox.y1 - wd.bbox.y0) / h,
           }));
 
-        result.push({ pageNumber: i - 1, items: mergeAdjacentWords(rawWords) });
+        const fallbackLineItems = rawWords.length
+          ? []
+          : ocrLines.map((line, lineIndex) => ({
+              t: line,
+              x: 0.05,
+              y: Math.max(0.02, 0.95 - lineIndex * 0.03),
+              w: 0.9,
+              h: 0.025,
+            }));
+
+        const pageItems = rawWords.length ? mergeAdjacentWords(rawWords) : fallbackLineItems;
+        logPdfImportEvent('ocr-page-items', {
+          file_path: filePath,
+          page_number: i - 1,
+          ocr_text_length: ocrText.length,
+          ocr_items_count: pageItems.length,
+          used_text_fallback: !rawWords.length,
+        });
+        ocrPages.push({
+          pageNumber: i - 1,
+          items: pageItems,
+        });
       }
     } finally {
-      await worker.terminate();
+      signal?.removeEventListener?.('abort', abortHandler);
+      await terminateWorker();
     }
 
-    return result;
+    return ocrPages;
   });
 }
 
@@ -772,8 +1180,11 @@ function mergeAdjacentWords(words, xGapThreshold = 0.06, yTolerance = 0.015) {
 
 // ── Orchestrator: text first, then platform OCR ───────────────────────────────
 // Returns { pages, detectedModel } where pages is items[][] indexed by page number (0-based)
-async function extractPages(filePath) {
-  const textPages = await extractTextPages(filePath);
+async function extractPages(filePath, options = {}) {
+  const { signal } = options;
+  throwIfAborted(signal);
+  const textPages = await extractTextPages(filePath, { signal });
+  throwIfAborted(signal);
   const pageTextCounts = textPages.map((page) => getPageTextCharCount(page));
   const hasAnyText = pageTextCounts.some((count) => count > 0);
   const hasSparseText = pageTextCounts.some((count) => count > 0 && count <= 30);
@@ -795,6 +1206,11 @@ async function extractPages(filePath) {
     return {
       pages: arr,
       detectedModel,
+      diagnostics: buildImportDiagnostics({
+        detected_model: detectedModel,
+        text_length: getPagesTextLength(textPages),
+        reason: 'embedded_text',
+      }),
     };
   }
 
@@ -803,14 +1219,38 @@ async function extractPages(filePath) {
   if (PLATFORM === 'darwin') {
     const availability = ensureOcrExecutable();
     if (!availability.exists) {
-      throw new Error(
-        `OCR non disponibile. Percorso OCR: ${availability.ocr_path}. Esiste: no. Fallback parsing testuale: no.`
-      );
+      logOcrDisabled('missing-ocr-binary', {
+        pdf_import_model: detectedModel,
+        ocr_available: false,
+        ocr_path: availability.ocr_path,
+      });
+      if (detectedModel === 'scanned_pdf_ocr') {
+        logOcrRequired(filePath, 'missing_ocr_binary', {
+          ocr_path: availability.ocr_path,
+        });
+        throw createOcrRequiredError('missing_ocr_binary');
+      }
+      logOcrFallback(filePath, 'missing-ocr-binary', {
+        textual_page_count: textPages.length,
+      });
+      return buildTextFallbackResult(textPages, detectedModel);
     }
     if (!availability.executable) {
-      throw new Error(
-        `OCR non eseguibile. Percorso OCR: ${availability.ocr_path}. Esiste: si. Eseguibile: no.`
-      );
+      logOcrDisabled('ocr-binary-not-executable', {
+        pdf_import_model: detectedModel,
+        ocr_available: false,
+        ocr_path: availability.ocr_path,
+      });
+      if (detectedModel === 'scanned_pdf_ocr') {
+        logOcrRequired(filePath, 'ocr_binary_not_executable', {
+          ocr_path: availability.ocr_path,
+        });
+        throw createOcrRequiredError('ocr_binary_not_executable');
+      }
+      logOcrFallback(filePath, 'ocr-binary-not-executable', {
+        textual_page_count: textPages.length,
+      });
+      return buildTextFallbackResult(textPages, detectedModel);
     }
     logPdfImportEvent('extract-mode', {
       file_path: filePath,
@@ -821,17 +1261,53 @@ async function extractPages(filePath) {
       ocr_executable: availability.executable,
       textual_fallback: false,
     });
-    const ocrPages = await runSwiftOcr(filePath);
-    const arr = [];
-    for (const p of ocrPages) arr[p.pageNumber] = p.items;
-    return {
-      pages: arr,
-      detectedModel,
-    };
+    try {
+      const ocrPages = await runSwiftOcr(filePath, { signal });
+      const arr = [];
+      for (const p of ocrPages) arr[p.pageNumber] = p.items;
+      return {
+        pages: arr,
+        detectedModel,
+      };
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      logOcrDisabled('ocr-execution-failed', {
+        platform: PLATFORM,
+        pdf_import_model: detectedModel,
+        ocr_available: true,
+        message: error?.message || String(error),
+      });
+      if (detectedModel === 'scanned_pdf_ocr') {
+        logOcrRequired(filePath, 'ocr_execution_failed', {
+          message: error?.message || String(error),
+        });
+        throw createOcrRequiredError('ocr_execution_failed');
+      }
+      logOcrFallback(filePath, 'ocr-execution-failed', {
+        textual_page_count: textPages.length,
+        message: error?.message || String(error),
+      });
+      return buildTextFallbackResult(textPages, detectedModel);
+    }
   }
 
   if (PLATFORM === 'win32') {
     const availability = getOcrAvailability();
+    const languages = ensureTesseractLanguages();
+    if (!fs.existsSync(TESSDATA_DIR) || !languages.length) {
+      if (detectedModel === 'scanned_pdf_ocr') {
+        logOcrRequired(filePath, 'missing_tessdata', {
+          tessdata_dir: TESSDATA_DIR,
+          available_languages: languages,
+        });
+        throw createOcrRequiredError('missing_tessdata');
+      }
+      logOcrFallback(filePath, 'missing-tessdata-language', {
+        tessdata_dir: TESSDATA_DIR,
+        textual_page_count: textPages.length,
+      });
+      return buildTextFallbackResult(textPages, detectedModel);
+    }
     logPdfImportEvent('extract-mode', {
       file_path: filePath,
       mode: 'tesseract_ocr',
@@ -839,32 +1315,159 @@ async function extractPages(filePath) {
       ocr_path: availability.ocr_path,
       ocr_exists: availability.exists,
       ocr_executable: availability.executable,
+      ocr_languages: languages,
       textual_fallback: false,
     });
-    const ocrPages = await runTesseractOcr(filePath);
-    const arr = [];
-    for (const p of ocrPages) arr[p.pageNumber] = p.items;
-    if (arr.length) {
+    try {
+      logPdfImportEvent('ocr-start', {
+        file_path: filePath,
+        pdf_import_model: detectedModel,
+        ocr_available: true,
+        ocr_enabled: true,
+        tessdata_path: TESSDATA_DIR,
+        tessdata_source: TESSDATA_SOURCE,
+        languages,
+      });
+      const ocrPages = await runTesseractOcr(filePath, { signal, languages });
+      const ocrTextLength = getPagesTextLength(ocrPages);
+      logPdfImportEvent('ocr-success', {
+        file_path: filePath,
+        pdf_import_model: detectedModel,
+        text_length: ocrTextLength,
+        page_count: ocrPages.length,
+        languages,
+      });
+      const arr = [];
+      for (const p of ocrPages) arr[p.pageNumber] = p.items;
+      if (arr.length) {
+        return {
+          pages: arr,
+          detectedModel,
+          diagnostics: buildImportDiagnostics({
+            detected_model: detectedModel,
+            text_length: getPagesTextLength(textPages),
+            ocr_attempted: true,
+            ocr_available: true,
+            ocr_enabled: true,
+            ocr_text_length: ocrTextLength,
+            reason: 'ocr_success',
+            ocr_languages: languages,
+          }),
+        };
+      }
+      logOcrDisabled('ocr-returned-no-pages', {
+        platform: PLATFORM,
+        pdf_import_model: detectedModel,
+        ocr_available: true,
+        ocr_languages: languages,
+      });
+      logOcrFallback(filePath, 'ocr-returned-no-pages', {
+        textual_page_count: textPages.length,
+      });
       return {
-        pages: arr,
-        detectedModel,
+        ...buildTextFallbackResult(textPages, detectedModel),
+        diagnostics: buildImportDiagnostics({
+          detected_model: detectedModel,
+          text_length: getPagesTextLength(textPages),
+          ocr_attempted: true,
+          ocr_available: true,
+          ocr_enabled: true,
+          ocr_text_length: ocrTextLength,
+          fallback_used: true,
+          reason: 'ocr_returned_no_pages',
+          ocr_languages: languages,
+        }),
+      };
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      logPdfImportEvent('ocr-error', {
+        file_path: filePath,
+        pdf_import_model: detectedModel,
+        ocr_available: true,
+        ocr_enabled: true,
+        tessdata_path: TESSDATA_DIR,
+        tessdata_source: TESSDATA_SOURCE,
+        languages,
+        message: error?.message || String(error),
+        stack: error?.stack || '',
+      });
+      logOcrDisabled('ocr-execution-failed', {
+        platform: PLATFORM,
+        pdf_import_model: detectedModel,
+        ocr_available: true,
+        ocr_languages: languages,
+        message: error?.message || String(error),
+      });
+      logOcrFallback(filePath, 'ocr-execution-failed', {
+        textual_page_count: textPages.length,
+        message: error?.message || String(error),
+      });
+      return {
+        ...buildTextFallbackResult(textPages, detectedModel),
+        ocrError: error?.message || String(error),
+        diagnostics: buildImportDiagnostics({
+          detected_model: detectedModel,
+          text_length: getPagesTextLength(textPages),
+          ocr_attempted: true,
+          ocr_available: true,
+          ocr_enabled: true,
+          ocr_error: error?.message || String(error),
+          fallback_used: true,
+          reason: 'ocr_execution_failed',
+          ocr_languages: languages,
+        }),
       };
     }
-    throw new Error('OCR immagini non disponibile su Windows e il PDF non contiene testo estraibile.');
   }
 
   if (PLATFORM === 'linux') {
     const availability = ensureOcrExecutable();
-    throw new Error(
-      `OCR non supportato su Linux. Percorso OCR: ${availability.ocr_path}. ` +
-      `Esiste: ${availability.exists ? 'si' : 'no'}. Eseguibile: ${availability.executable ? 'si' : 'no'}.`
-    );
+    logOcrDisabled('unsupported-platform', {
+      platform: PLATFORM,
+      pdf_import_model: detectedModel,
+      ocr_available: false,
+      ocr_path: availability.ocr_path,
+      ocr_exists: availability.exists,
+      ocr_executable: availability.executable,
+    });
+    if (detectedModel === 'scanned_pdf_ocr') {
+      logOcrRequired(filePath, 'unsupported_platform', {
+        platform: PLATFORM,
+      });
+      throw createOcrRequiredError('unsupported_platform');
+    }
+    logOcrFallback(filePath, 'unsupported-platform', {
+      textual_page_count: textPages.length,
+    });
+    return buildTextFallbackResult(textPages, detectedModel);
   }
 
-  throw new Error('OCR non supportato su questa piattaforma.');
+  logOcrDisabled('unsupported-platform', {
+    platform: PLATFORM,
+    pdf_import_model: detectedModel,
+    ocr_available: false,
+  });
+  if (detectedModel === 'scanned_pdf_ocr') {
+    logOcrRequired(filePath, 'unsupported_platform', {
+      platform: PLATFORM,
+    });
+    throw createOcrRequiredError('unsupported_platform');
+  }
+  logOcrFallback(filePath, 'unsupported-platform', {
+    textual_page_count: textPages.length,
+  });
+  return buildTextFallbackResult(textPages, detectedModel);
 }
 
 function buildReadableParseError(error) {
+  if (error?.code === 'OCR_REQUIRED') {
+    return error.message;
+  }
+
+  if (error?.code === 'OCR_UNAVAILABLE') {
+    return 'OCR non disponibile su questo sistema';
+  }
+
   const message = error?.message || String(error);
   if (message.includes('EACCES')) {
     const availability = getOcrAvailability();
@@ -882,6 +1485,53 @@ function buildReadableParseError(error) {
 
 // Find the text item at the same y-level as `labelText`, within x range [xMin, xMax].
 // Picks the candidate closest in Y to the label (handles rows close together).
+function buildTextFallbackResult(textPages, detectedModel = 'text_pdf') {
+  const arr = [];
+  for (const p of textPages || []) {
+    arr[p.pageNumber] = p.items || [];
+  }
+  return {
+    pages: arr,
+    detectedModel,
+    ocrUnavailable: true,
+  };
+}
+
+function getPagesTextLength(pages = []) {
+  return (pages || []).reduce((sum, page) => {
+    const items = Array.isArray(page?.items) ? page.items : page || [];
+    return sum + items.reduce((itemSum, item) => itemSum + String(item?.t || '').trim().length, 0);
+  }, 0);
+}
+
+function buildImportDiagnostics(overrides = {}) {
+  const languages = getAvailableTesseractLanguages(TESSDATA_DIR);
+  return {
+    detected_model: '',
+    records_length: 0,
+    text_length: 0,
+    ocr_attempted: false,
+    ocr_available: languages.length > 0,
+    ocr_enabled: languages.length > 0,
+    ocr_error: '',
+    ocr_text_length: 0,
+    fallback_used: false,
+    reason: '',
+    tessdata_path: TESSDATA_DIR,
+    tessdata_source: TESSDATA_SOURCE,
+    ocr_languages: languages,
+    ...overrides,
+  };
+}
+
+function logOcrFallback(filePath, reason, details = {}) {
+  logPdfImportEvent('ocr-fallback-text', {
+    file_path: filePath,
+    reason,
+    ...details,
+  });
+}
+
 function findValueAt(items, labelText, xMin, xMax, yTolerance = 0.028) {
   const label = findLabelItem(items, [labelText]);
   if (!label) return null;
@@ -917,8 +1567,10 @@ function parseSingleEmployee(block, pageIndex, documentEmployer, documentEmploye
   const warnings = [];
   const section2Lines = getSectionLines(block.lines, 'section2_worker', ['section4_employment', 'section5_attuatore']);
   const section4Lines = getSectionLines(block.lines, 'section4_employment', ['section5_attuatore']);
-  const workerInfo = parseWorkerSection(section2Lines);
-  const employmentInfo = parseEmploymentSection(section4Lines);
+  const workerLines = section2Lines.length ? section2Lines : block.lines;
+  const employmentLines = section4Lines.length ? section4Lines : block.lines;
+  const workerInfo = parseWorkerSection(workerLines);
+  const employmentInfo = parseEmploymentSection(employmentLines);
   const original_text = block.original_text || normalizeOcrText(block.lines.map((line) => line.text).join(' '));
   const hired_by_detected = documentEmployer || parseDatore(linesToItems(block.lines), documentEmployerInfo);
   const parserUncertainReasons = [];
@@ -926,10 +1578,10 @@ function parseSingleEmployee(block, pageIndex, documentEmployer, documentEmploye
   if (block.used_fallback) {
     parserUncertainReasons.push('Sezione 2 - Lavoratore non riconosciuta con certezza');
   }
-  if (!section2Lines.length) {
+  if (!section2Lines.length && !hasWorkerCandidateSignal(block.lines)) {
     parserUncertainReasons.push('Sezione 2 - Lavoratore non trovata');
   }
-  if (!section4Lines.length) {
+  if (!section4Lines.length && !employmentInfo.hire_date_from) {
     parserUncertainReasons.push('Sezione 4 - Rapporto di lavoro non trovata');
   }
 
@@ -978,6 +1630,7 @@ function parseSingleEmployee(block, pageIndex, documentEmployer, documentEmploye
     page_index: pageIndex,
     page_numbers: block.page_numbers || [],
     parse_model: block.parse_model || '',
+    candidate_source: block.candidate_source || '',
     parse_warnings: warnings,
     parser_uncertain_reason: parserUncertainReasons.join(' · '),
     original_text,
@@ -1001,8 +1654,62 @@ async function parsePdfAssunzioni(filePath) {
   return parsePdfAssunzioniWithProgress(filePath, {});
 }
 
+function buildSyntheticPagesFromText(text = '') {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((line) => normalizeOcrText(line))
+    .filter(Boolean);
+  const items = lines.map((line, index) => ({
+    t: line,
+    x: 0.05,
+    y: Math.max(0.02, 0.95 - (index % 30) * 0.03),
+    w: 0.9,
+    h: 0.025,
+  }));
+  return [items];
+}
+
+function parseOcrTextAssunzioni(text = {}, options = {}) {
+  const pages = buildSyntheticPagesFromText(text);
+  const blockResult = buildScannedWorkerBlocks(pages);
+  const documentLines = buildDocumentLines(pages);
+  const documentEmployerInfo = parseEmployerSection(
+    getSectionLines(documentLines, 'section1_employer', ['section2_worker', 'section5_attuatore'])
+  );
+  const documentEmployer = parseDatore(pages.flat(), documentEmployerInfo);
+  const records = blockResult.blocks.map((block, index) =>
+    parseSingleEmployee(
+      { ...block, parse_model: 'online_ocr_text' },
+      index,
+      documentEmployer,
+      documentEmployerInfo
+    )
+  );
+  Object.defineProperty(records, 'importDiagnostics', {
+    value: {
+      ...buildImportDiagnostics({
+        detected_model: 'online_ocr_text',
+        text_length: String(text || '').length,
+        ocr_attempted: true,
+        ocr_available: true,
+        ocr_enabled: true,
+        ocr_text_length: String(text || '').length,
+        reason: options.reason || 'ocr_online_success',
+      }),
+      pages_ocr_count: pages.length,
+      candidate_blocks_count: blockResult.blocks.length,
+      pages_without_record: blockResult.pages_without_record || [],
+      records_length: records.length,
+    },
+    enumerable: false,
+  });
+  return records;
+}
+
 async function parsePdfAssunzioniWithProgress(filePath, options = {}) {
   const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+  const { signal } = options;
+  throwIfAborted(signal);
   logPdfImportEvent('parse-start', { file_path: filePath });
   onProgress({
     step: 'parsing_pdf',
@@ -1011,8 +1718,12 @@ async function parsePdfAssunzioniWithProgress(filePath, options = {}) {
   });
   let extracted;
   try {
-    extracted = await extractPages(filePath);
+    extracted = await extractPages(filePath, { signal });
   } catch (error) {
+    if (isAbortError(error)) {
+      logPdfImportEvent('parse-cancelled', { file_path: filePath });
+      throw error;
+    }
     const availability = getOcrAvailability();
     logPdfImportEvent('parse-failed', {
       file_path: filePath,
@@ -1022,14 +1733,42 @@ async function parsePdfAssunzioniWithProgress(filePath, options = {}) {
       textual_fallback: false,
       message: error?.message || String(error),
     });
-    throw new Error(buildReadableParseError(error));
+    const readableError = new Error(buildReadableParseError(error));
+    if (error?.code) {
+      readableError.code = error.code;
+    }
+    throw readableError;
   }
+  throwIfAborted(signal);
   const pages = extracted.pages || [];
   const parseModel = extracted.detectedModel || 'text_pdf';
+  const diagnostics = {
+    ...buildImportDiagnostics(extracted.diagnostics || {}),
+    detected_model: parseModel,
+    text_length: Number(extracted.diagnostics?.text_length || 0),
+    ocr_attempted: !!extracted.diagnostics?.ocr_attempted,
+    ocr_available: !!extracted.diagnostics?.ocr_available,
+    ocr_enabled: !!extracted.diagnostics?.ocr_enabled,
+    ocr_error: extracted.diagnostics?.ocr_error || extracted.ocrError || '',
+    ocr_text_length: Number(extracted.diagnostics?.ocr_text_length || 0),
+    fallback_used: !!extracted.diagnostics?.fallback_used || !!extracted.ocrUnavailable,
+    reason: extracted.diagnostics?.reason || '',
+    tessdata_path: TESSDATA_DIR,
+    tessdata_source: TESSDATA_SOURCE,
+  };
+  if (extracted.ocrUnavailable) {
+    onProgress({
+      step: 'parsing_pdf',
+      percent: 42,
+      message: 'OCR non disponibile su questo sistema. Uso parsing testuale.',
+    });
+  }
   logPdfImportEvent('parse-pages-ready', {
     file_path: filePath,
     page_count: pages.length,
     parse_model: parseModel,
+    ocr_unavailable: !!extracted.ocrUnavailable,
+    diagnostics,
   });
   onProgress({
     step: 'parsing_pdf',
@@ -1037,10 +1776,25 @@ async function parsePdfAssunzioniWithProgress(filePath, options = {}) {
     message: `PDF letto. Pagine rilevate: ${pages.length}. Modello: ${parseModel}.`,
   });
 
-  const workerBlocks = buildWorkerBlocks(pages).map((block) => ({
+  const scannedBlockResult = parseModel === 'scanned_pdf_ocr'
+    ? buildScannedWorkerBlocks(pages)
+    : null;
+  const baseWorkerBlocks = scannedBlockResult?.blocks || buildWorkerBlocks(pages);
+  const workerBlocks = baseWorkerBlocks.map((block) => ({
     ...block,
     parse_model: parseModel,
   }));
+  diagnostics.pages_ocr_count = pages.length;
+  diagnostics.candidate_blocks_count = workerBlocks.length;
+  diagnostics.pages_without_record = scannedBlockResult?.pages_without_record || [];
+  logPdfImportEvent('candidate-blocks', {
+    file_path: filePath,
+    parse_model: parseModel,
+    pages_ocr_count: diagnostics.pages_ocr_count,
+    candidate_blocks_count: diagnostics.candidate_blocks_count,
+    pages_without_record: diagnostics.pages_without_record,
+    block_sources: workerBlocks.map((block) => block.candidate_source || 'section'),
+  });
   const documentLines = buildDocumentLines(pages);
   const documentEmployerInfo = parseEmployerSection(
     getSectionLines(documentLines, 'section1_employer', ['section2_worker', 'section5_attuatore'])
@@ -1048,6 +1802,7 @@ async function parsePdfAssunzioniWithProgress(filePath, options = {}) {
   const documentEmployer = parseDatore(pages.flat(), documentEmployerInfo);
   const records = [];
   for (let i = 0; i < workerBlocks.length; i += 1) {
+    throwIfAborted(signal);
     const record = parseSingleEmployee(workerBlocks[i], i, documentEmployer, documentEmployerInfo);
     records.push(record);
     onProgress({
@@ -1060,6 +1815,43 @@ async function parsePdfAssunzioniWithProgress(filePath, options = {}) {
     file_path: filePath,
     record_count: records.length,
     parse_model: parseModel,
+    diagnostics: {
+      ...diagnostics,
+      records_length: records.length,
+      records_ready_count: records.filter((record) =>
+        record.first_name && record.last_name && record.fiscal_code && record.hire_date_from
+      ).length,
+      records_to_fix_count: records.filter((record) =>
+        !record.first_name || !record.last_name || !record.fiscal_code || !record.hire_date_from
+      ).length,
+    },
+  });
+  if (parseModel === 'scanned_pdf_ocr' && diagnostics.ocr_attempted && records.length === 0) {
+    logPdfImportEvent('ocr-no-records', {
+      file_path: filePath,
+      pdf_import_model: parseModel,
+      text_length: diagnostics.text_length,
+      ocr_text_length: diagnostics.ocr_text_length,
+      ocr_items_count: pages.reduce((sum, pageItems) => sum + (Array.isArray(pageItems) ? pageItems.length : 0), 0),
+      records_found: records.length,
+      ocr_error: diagnostics.ocr_error,
+      reason: diagnostics.reason || 'parser_no_records',
+      tessdata_path: TESSDATA_DIR,
+      tessdata_source: TESSDATA_SOURCE,
+    });
+  }
+  Object.defineProperty(records, 'importDiagnostics', {
+    value: {
+      ...diagnostics,
+      records_length: records.length,
+      records_ready_count: records.filter((record) =>
+        record.first_name && record.last_name && record.fiscal_code && record.hire_date_from
+      ).length,
+      records_to_fix_count: records.filter((record) =>
+        !record.first_name || !record.last_name || !record.fiscal_code || !record.hire_date_from
+      ).length,
+    },
+    enumerable: false,
   });
   onProgress({
     step: 'employee_recognition',
@@ -1248,10 +2040,15 @@ async function attachEmployeePages(pdfPath, pageReference, employeeId, firstName
 module.exports = {
   attachEmployeePages,
   checkDuplicates,
+  createAbortError,
+  createOcrUnavailableError,
+  createOcrRequiredError,
   extractYearFromDate,
   init,
+  isAbortError,
   logPdfImportEvent,
   normDateToISO,
+  parseOcrTextAssunzioni,
   parsePdfAssunzioni,
   parsePdfAssunzioniWithProgress,
   getTargetYear,

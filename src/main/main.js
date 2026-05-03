@@ -80,6 +80,150 @@ function hashFile(filePath) {
   return hash.digest('hex');
 }
 
+function getOcrOnlineSettings(settings = {}) {
+  const ocr = settings?.ocr || {};
+  return {
+    provider: 'ocr.space',
+    language: ocr.language === 'eng' ? 'eng' : 'ita',
+    engine: Number(ocr.engine) === 1 ? 1 : 2,
+    apiKey: String(ocr.ocr_space_api_key || process.env.OCR_SPACE_API_KEY || '').trim(),
+    confirmPrivacy: ocr.confirm_privacy_before_online !== false,
+  };
+}
+
+function createOcrOnlineError(message, code = 'OCR_ONLINE_FAILED') {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function normalizeOcrSpaceErrorMessage(message) {
+  const raw = String(message || '').trim() || 'errore sconosciuto';
+  if (/free|limit|maximum|max|size|dimensione|larger|exceed/i.test(raw)) {
+    return 'OCR online non disponibile: il PDF supera i limiti del piano OCR.space configurato.';
+  }
+  return `OCR online fallito: ${raw}`;
+}
+
+function shouldOfferOnlineOcrFallback(records = [], diagnostics = {}) {
+  if (diagnostics.detected_model !== 'scanned_pdf_ocr') return false;
+  if (!diagnostics.ocr_attempted) return false;
+  const recordCount = Array.isArray(records) ? records.length : 0;
+  if (recordCount === 0) return true;
+  const pagesCount = Number(diagnostics.pages_ocr_count || 0);
+  if (pagesCount < 4) return false;
+  const expectedFromPages = Math.max(1, Math.floor(pagesCount / 2));
+  return expectedFromPages >= 2 && recordCount < expectedFromPages;
+}
+
+async function runOcrSpaceFallback(filePath, settings = {}) {
+  const onlineSettings = getOcrOnlineSettings(settings);
+  const startedAt = Date.now();
+  const apiKey = onlineSettings.apiKey;
+  if (!apiKey) {
+    throw createOcrOnlineError('OCR online non configurato.', 'OCR_ONLINE_NOT_CONFIGURED');
+  }
+
+  logMainProcessEvent('ocr_online_started', {
+    provider: onlineSettings.provider,
+    duration_ms: 0,
+    text_length: 0,
+  });
+
+  try {
+    const form = new FormData();
+    form.append('apikey', apiKey);
+    form.append('language', onlineSettings.language);
+    form.append('isOverlayRequired', 'false');
+    form.append('OCREngine', String(onlineSettings.engine));
+    form.append('scale', 'true');
+    form.append('detectOrientation', 'true');
+    const bytes = fs.readFileSync(filePath);
+    form.append('file', new Blob([bytes], { type: 'application/pdf' }), path.basename(filePath));
+
+    const response = await fetch('https://api.ocr.space/parse/image', {
+      method: 'POST',
+      body: form,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.IsErroredOnProcessing) {
+      const message = Array.isArray(payload?.ErrorMessage)
+        ? payload.ErrorMessage.join(' ')
+        : payload?.ErrorMessage || `HTTP ${response.status}`;
+      throw createOcrOnlineError(normalizeOcrSpaceErrorMessage(message));
+    }
+
+    const text = (payload?.ParsedResults || [])
+      .map((item) => String(item?.ParsedText || '').trim())
+      .filter(Boolean)
+      .join('\n\n');
+    logMainProcessEvent('ocr_online_completed', {
+      provider: onlineSettings.provider,
+      duration_ms: Date.now() - startedAt,
+      text_length: text.length,
+    });
+    return { text };
+  } catch (error) {
+    logMainProcessEvent('ocr_online_failed', {
+      provider: onlineSettings.provider,
+      duration_ms: Date.now() - startedAt,
+      text_length: 0,
+    });
+    throw error;
+  }
+}
+
+async function getConfirmedOcrOnlineSettings(settings = {}) {
+  const onlineSettings = getOcrOnlineSettings(settings);
+  if (!onlineSettings.apiKey) {
+    throw createOcrOnlineError('OCR online non configurato.', 'OCR_ONLINE_NOT_CONFIGURED');
+  }
+
+  if (!onlineSettings.confirmPrivacy) {
+    return onlineSettings;
+  }
+
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['Annulla', 'Usa OCR online'],
+    defaultId: 0,
+    cancelId: 0,
+    title: 'Conferma OCR online',
+    message: 'Il PDF verrà inviato a un servizio esterno OCR.',
+    detail: 'Continua solo se hai autorizzazione a inviare questo documento.',
+  });
+
+  return response === 1 ? onlineSettings : null;
+}
+
+async function parseWithOcrSpaceFallback(filePath, settings = {}, operationJobId = '') {
+  const onlineSettings = await getConfirmedOcrOnlineSettings(settings);
+  if (!onlineSettings) return null;
+
+  const onlineResult = await runOcrSpaceFallback(filePath, settings);
+  const onlineRecords = pdfImportService.parseOcrTextAssunzioni(onlineResult.text || '', {
+    reason: 'ocr_online_success',
+  });
+  const onlineDiagnostics = onlineRecords.importDiagnostics || {};
+  logMainProcessEvent('employees:pdf-import:online-parse-result', {
+    job_id: operationJobId,
+    records_length: onlineRecords.length,
+    text_length: onlineDiagnostics.text_length || 0,
+    candidate_blocks_count: onlineDiagnostics.candidate_blocks_count || 0,
+  });
+  Object.assign(onlineDiagnostics, {
+    fallback_used: true,
+    ocr_online_used: true,
+    ocr_online_provider: onlineSettings.provider,
+  });
+
+  return {
+    records: onlineRecords,
+    diagnostics: onlineDiagnostics,
+    text_length: String(onlineResult.text || '').length,
+  };
+}
+
 function getKnownUserDataPaths() {
   const appDataRoot = app.getPath('appData');
   return {
@@ -145,6 +289,10 @@ function getAppIconPath() {
 let mainWindow = null;
 const OPERATION_PROGRESS_CHANNEL = 'operations:progress';
 const activeOperations = new Map();
+const activeOperationControllers = new Map();
+const activeOperationTimeouts = new Map();
+const resetOperationJobIds = new Set();
+const OPERATION_LOCK_TIMEOUT_MS = 180000;
 
 function getActiveOperationsSnapshot() {
   return [...activeOperations.values()];
@@ -182,6 +330,75 @@ function emitOperationProgress(payload) {
   return normalized;
 }
 
+function getOperationLockLogType(type) {
+  return type === 'pdf-import' ? 'import-lock' : `operation-lock:${type}`;
+}
+
+function logOperationLock(type, action, details = {}) {
+  logMainProcessEvent(`${getOperationLockLogType(type)}-${action}`, {
+    type,
+    ...details,
+  });
+}
+
+function releaseOperationLock(type, jobId, reason = 'completed') {
+  const timer = activeOperationTimeouts.get(type);
+  if (timer) {
+    clearTimeout(timer);
+    activeOperationTimeouts.delete(type);
+  }
+
+  const currentController = activeOperationControllers.get(type);
+  if (currentController?.job_id === jobId) {
+    activeOperationControllers.delete(type);
+  }
+  resetOperationJobIds.delete(jobId);
+
+  logOperationLock(type, 'released', {
+    job_id: jobId,
+    reason,
+  });
+}
+
+function resetOperationLock(type, reason = 'manual-reset') {
+  const active = activeOperationControllers.get(type);
+  const current = activeOperations.get(type);
+  const jobId = active?.job_id || current?.job_id || `${type}-reset-${Date.now()}`;
+  resetOperationJobIds.add(jobId);
+
+  if (active?.controller && !active.controller.signal.aborted) {
+    active.controller.abort();
+  }
+
+  const timer = activeOperationTimeouts.get(type);
+  if (timer) {
+    clearTimeout(timer);
+    activeOperationTimeouts.delete(type);
+  }
+
+  activeOperationControllers.delete(type);
+  activeOperations.delete(type);
+
+  logOperationLock(type, 'released', {
+    job_id: jobId,
+    reason,
+  });
+  emitOperationProgress({
+    type,
+    job_id: jobId,
+    status: 'idle',
+    step: 'reset',
+    percent: 0,
+    message: 'Lock importazione PDF resettato.',
+  });
+  logOperationLock(type, 'reset', {
+    job_id: jobId,
+    reason,
+  });
+
+  return { reset: true, job_id: jobId, message: 'Lock importazione PDF resettato.' };
+}
+
 async function runExclusiveOperation({ type, jobId, startMessage, fn }) {
   const running = activeOperations.get(type);
   if (running?.status === 'running') {
@@ -189,11 +406,34 @@ async function runExclusiveOperation({ type, jobId, startMessage, fn }) {
   }
 
   const operationJobId = jobId || `${type}-${Date.now()}`;
-  const progress = (update = {}) => emitOperationProgress({
-    type,
+  const controller = new AbortController();
+  activeOperationControllers.set(type, {
     job_id: operationJobId,
-    ...update,
+    controller,
   });
+  let lockReleased = false;
+  activeOperationTimeouts.set(type, setTimeout(() => {
+    lockReleased = true;
+    resetOperationLock(type, `timeout-${OPERATION_LOCK_TIMEOUT_MS}ms`);
+  }, OPERATION_LOCK_TIMEOUT_MS));
+  logOperationLock(type, 'acquired', {
+    job_id: operationJobId,
+    timeout_ms: OPERATION_LOCK_TIMEOUT_MS,
+  });
+  const progress = (update = {}) => {
+    if (lockReleased || resetOperationJobIds.has(operationJobId)) {
+      logMainProcessEvent(`operation:${type}:ignored-after-lock-reset`, {
+        job_id: operationJobId,
+        update,
+      });
+      return null;
+    }
+    return emitOperationProgress({
+      type,
+      job_id: operationJobId,
+      ...update,
+    });
+  };
 
   progress({
     status: 'running',
@@ -202,11 +442,9 @@ async function runExclusiveOperation({ type, jobId, startMessage, fn }) {
   });
 
   try {
-    const result = await fn(progress, operationJobId);
+    const result = await fn(progress, operationJobId, controller.signal);
     if (result?.canceled) {
-      emitOperationProgress({
-        type,
-        job_id: operationJobId,
+      progress({
         status: 'idle',
       });
       return result;
@@ -219,6 +457,20 @@ async function runExclusiveOperation({ type, jobId, startMessage, fn }) {
     });
     return result;
   } catch (error) {
+    if (controller.signal.aborted || error?.name === 'AbortError' || error?.code === 'PDF_IMPORT_CANCELLED') {
+      progress({
+        status: 'idle',
+        step: 'cancelled',
+        percent: 0,
+        message: 'Importazione annullata',
+      });
+      logMainProcessEvent(`operation:${type}:cancelled`, {
+        type,
+        job_id: operationJobId,
+        message: error?.message || 'Importazione annullata',
+      });
+      return { canceled: true, message: 'Importazione annullata' };
+    }
     progress({
       status: 'error',
       step: 'error',
@@ -226,6 +478,15 @@ async function runExclusiveOperation({ type, jobId, startMessage, fn }) {
       error: error?.message || String(error),
     });
     throw error;
+  } finally {
+    if (resetOperationJobIds.has(operationJobId)) {
+      lockReleased = true;
+      resetOperationJobIds.delete(operationJobId);
+    }
+    if (!lockReleased) {
+      lockReleased = true;
+      releaseOperationLock(type, operationJobId, controller.signal.aborted ? 'cancelled' : 'finished');
+    }
   }
 }
 
@@ -853,6 +1114,32 @@ app.whenReady().then(async () => {
   ipcMain.handle('appRuntime:getInfo', async () => buildAppRuntimeInfo());
   ipcMain.handle('appRuntime:getAvailableYears', async () => buildAvailableYears());
   ipcMain.handle('operations:getActiveJobs', async () => getActiveOperationsSnapshot());
+  ipcMain.handle('operations:cancel', async (_, type) => {
+    const normalizedType = String(type || '').trim();
+    const active = activeOperationControllers.get(normalizedType);
+    if (!active) {
+      return { canceled: false, message: 'Nessuna importazione in corso.' };
+    }
+
+    logMainProcessEvent(`operation:${normalizedType}:cancel-requested`, {
+      type: normalizedType,
+      job_id: active.job_id,
+    });
+    resetOperationLock(normalizedType, 'cancel-request');
+    return { canceled: true, message: 'Importazione annullata' };
+  });
+  ipcMain.handle('operations:reset', async (_, type, reason = 'renderer-reset') => {
+    const normalizedType = String(type || '').trim();
+    if (!normalizedType) {
+      return { reset: false, message: 'Tipo operazione mancante.' };
+    }
+    const running = activeOperations.get(normalizedType);
+    const active = activeOperationControllers.get(normalizedType);
+    if (!running && !active) {
+      return { reset: false, message: 'Nessun lock attivo.' };
+    }
+    return resetOperationLock(normalizedType, reason);
+  });
   if (variantConfig.variant === 'demo') {
     ipcMain.handle('demo:markWelcomeSeen', async () => demoService.markWelcomeSeen());
     ipcMain.handle('demo:reset', async () => demoService.resetDemoData());
@@ -1125,7 +1412,11 @@ app.whenReady().then(async () => {
     return runExclusiveOperation({
       type: 'pdf-import',
       startMessage: 'Preparazione import PDF...',
-      fn: async (progress) => {
+      fn: async (progress, operationJobId, signal) => {
+        logMainProcessEvent('employees:pdf-import:started', {
+          job_id: operationJobId,
+          target_year: getTargetYear(options),
+        });
         progress({
           status: 'running',
           step: 'file_read',
@@ -1139,10 +1430,21 @@ app.whenReady().then(async () => {
           properties: ['openFile'],
         });
         if (canceled || !filePaths[0]) {
+          logMainProcessEvent('employees:pdf-import:cancelled', {
+            job_id: operationJobId,
+            stage: 'file_dialog',
+          });
           emitOperationProgress({
             type: 'pdf-import',
             status: 'idle',
             job_id: `pdf-import-cancel-${Date.now()}`,
+          });
+          return { canceled: true };
+        }
+        if (signal.aborted) {
+          logMainProcessEvent('employees:pdf-import:cancelled', {
+            job_id: operationJobId,
+            stage: 'after_file_dialog',
           });
           return { canceled: true };
         }
@@ -1159,15 +1461,157 @@ app.whenReady().then(async () => {
         try {
           records = await pdfImportService.parsePdfAssunzioniWithProgress(filePaths[0], {
             onProgress: progress,
+            signal,
           });
         } catch (error) {
-          throw new Error(`PDF non leggibile o parsing fallito. ${error?.message || error}`);
+          logMainProcessEvent('employees:pdf-import:parse-result', {
+            job_id: operationJobId,
+            error_code: error?.code || '',
+            detected_model: error?.detected_model || '',
+            records_length: 0,
+            text_length: error?.text_length || 0,
+            ocr_attempted: !!error?.ocr_attempted,
+            ocr_available: !!error?.ocr_available,
+            ocr_enabled: !!error?.ocr_enabled,
+            ocr_error: error?.ocr_error || error?.message || String(error),
+            ocr_text_length: error?.ocr_text_length || 0,
+            fallback_used: !!error?.fallback_used,
+            reason: error?.reason || '',
+            tessdata_path: error?.tessdataPath || '',
+            tessdata_source: error?.tessdata_source || '',
+          });
+          if (pdfImportService.isAbortError(error) || signal.aborted) {
+            logMainProcessEvent('employees:pdf-import:cancelled', {
+              job_id: operationJobId,
+              stage: 'parse_or_ocr',
+            });
+            return { canceled: true };
+          }
+          const canTryOnlineAfterLocalFailure = [
+            'OCR_REQUIRED',
+            'OCR_UNAVAILABLE',
+            'OCR_NO_RECORDS',
+          ].includes(error?.code) || String(error?.message || '').includes('OCR');
+          if (canTryOnlineAfterLocalFailure) {
+            const currentSettings = settingsService.getSettings();
+            if (currentSettings?.ocr?.online_fallback_enabled) {
+              const onlineParse = await parseWithOcrSpaceFallback(filePaths[0], currentSettings, operationJobId);
+              if (onlineParse?.records?.length > 0) {
+                records = onlineParse.records;
+              } else if (onlineParse) {
+                const onlineError = new Error(
+                  onlineParse.text_length > 0
+                    ? 'OCR online eseguito ma nessun lavoratore riconosciuto.'
+                    : 'OCR online completato ma non ha restituito testo leggibile.'
+                );
+                onlineError.code = 'OCR_NO_RECORDS';
+                throw onlineError;
+              }
+            }
+          }
+          if (!Array.isArray(records)) {
+            if (error?.code === 'OCR_REQUIRED' || String(error?.message || '').includes('PDF scansionato')) {
+              const readableError = new Error(
+                error?.message || 'PDF scansionato: per leggerlo serve OCR. Installa/abilita dati OCR oppure inserisci manualmente.'
+              );
+              readableError.code = 'OCR_REQUIRED';
+              throw readableError;
+            }
+            if (error?.code === 'OCR_UNAVAILABLE' || String(error?.message || '').includes('OCR non disponibile')) {
+              throw new Error('OCR non disponibile su questo sistema');
+            }
+            throw new Error(`PDF non leggibile o parsing fallito. ${error?.message || error}`);
+          }
+        }
+        let parseDiagnostics = records?.importDiagnostics || {};
+        logMainProcessEvent('employees:pdf-import:parse-result', {
+          job_id: operationJobId,
+          detected_model: parseDiagnostics.detected_model || '',
+          records_length: Array.isArray(records) ? records.length : 0,
+          text_length: parseDiagnostics.text_length || 0,
+          ocr_attempted: !!parseDiagnostics.ocr_attempted,
+          ocr_available: !!parseDiagnostics.ocr_available,
+          ocr_enabled: !!parseDiagnostics.ocr_enabled,
+          ocr_error: parseDiagnostics.ocr_error || '',
+          ocr_text_length: parseDiagnostics.ocr_text_length || 0,
+          fallback_used: !!parseDiagnostics.fallback_used,
+          reason: parseDiagnostics.reason || '',
+          tessdata_path: parseDiagnostics.tessdata_path || '',
+          tessdata_source: parseDiagnostics.tessdata_source || '',
+        });
+        if (shouldOfferOnlineOcrFallback(records, parseDiagnostics)) {
+          const currentSettings = settingsService.getSettings();
+          if (currentSettings?.ocr?.online_fallback_enabled) {
+            const localRecordCount = Array.isArray(records) ? records.length : 0;
+            try {
+              const onlineParse = await parseWithOcrSpaceFallback(filePaths[0], currentSettings, operationJobId);
+              if (onlineParse) {
+                if (onlineParse.records.length > localRecordCount) {
+                  records = onlineParse.records;
+                  parseDiagnostics = onlineParse.diagnostics;
+                } else if (!Array.isArray(records) || records.length === 0) {
+                  const onlineError = new Error(
+                    onlineParse.text_length > 0
+                      ? 'OCR online eseguito ma nessun lavoratore riconosciuto.'
+                      : 'OCR online completato ma non ha restituito testo leggibile.'
+                  );
+                  onlineError.code = 'OCR_NO_RECORDS';
+                  throw onlineError;
+                }
+              }
+            } catch (error) {
+              if (!Array.isArray(records) || records.length === 0) {
+                throw error;
+              }
+              parseDiagnostics = {
+                ...parseDiagnostics,
+                fallback_used: true,
+                ocr_online_error: error?.message || String(error),
+              };
+            }
+          }
+          if (Array.isArray(records) && records.length === 0) {
+            const message = parseDiagnostics.ocr_text_length > 0
+              ? 'OCR eseguito ma nessun lavoratore riconosciuto.'
+              : parseDiagnostics.ocr_error
+              ? `OCR non riuscito: ${parseDiagnostics.ocr_error}`
+              : 'OCR eseguito ma nessun testo leggibile nel PDF.';
+            const noRecordsError = new Error(message);
+            noRecordsError.code = 'OCR_NO_RECORDS';
+            throw noRecordsError;
+          }
+        }
+        if (signal.aborted) {
+          logMainProcessEvent('employees:pdf-import:ignored-after-cancel', {
+            job_id: operationJobId,
+            stage: 'after_parse',
+            record_count: Array.isArray(records) ? records.length : 0,
+          });
+          return { canceled: true };
         }
 
         const enriched = pdfImportService.checkDuplicates(records, {
           targetYear: getTargetYear(options),
           onProgress: progress,
         });
+        const importDiagnostics = {
+          ...parseDiagnostics,
+          records_length: enriched.length,
+          records_ready_count: enriched.filter((record) =>
+            record.status === 'pronto' || record.status === 'nuovo_rapporto_datore'
+          ).length,
+          records_to_fix_count: enriched.filter((record) =>
+            record.status === 'da_correggere' || record.status === 'duplicato'
+          ).length,
+        };
+        if (signal.aborted) {
+          logMainProcessEvent('employees:pdf-import:ignored-after-cancel', {
+            job_id: operationJobId,
+            stage: 'after_duplicate_check',
+            record_count: enriched.length,
+          });
+          return { canceled: true };
+        }
         const pdfEmployer = enriched.find((record) => record.pdf_employer?.name || record.pdf_employer?.tax_id)?.pdf_employer
           || { name: '', tax_id: '', workplace: '' };
         const employerResolution = settingsService.resolvePdfEmployer(pdfEmployer);
@@ -1190,12 +1634,27 @@ app.whenReady().then(async () => {
           message: 'Controllo duplicati completato.',
           record_count: resolvedRows.length,
         });
+        logMainProcessEvent('employees:pdf-import:completed', {
+          job_id: operationJobId,
+          file_path: filePaths[0],
+          record_count: resolvedRows.length,
+        });
         return {
           canceled: false,
           filePath: filePaths[0],
           records: resolvedRows,
           pdfEmployer,
           employerResolution,
+          importDiagnostics: {
+            ...importDiagnostics,
+            records_length: resolvedRows.length,
+            records_ready_count: resolvedRows.filter((record) =>
+              record.status === 'pronto' || record.status === 'nuovo_rapporto_datore'
+            ).length,
+            records_to_fix_count: resolvedRows.filter((record) =>
+              record.status === 'da_correggere' || record.status === 'duplicato'
+            ).length,
+          },
         };
       },
     });
@@ -1205,6 +1664,74 @@ app.whenReady().then(async () => {
     return pdfImportService.checkDuplicates(Array.isArray(rows) ? rows : [], {
       targetYear: Number(targetYear) || new Date().getFullYear(),
     });
+  });
+
+  ipcMain.handle('employees:runOcrOnlineImport', async (_, payload = {}) => {
+    requireWritableLicense("L'importazione di nuovi dipendenti");
+    const filePath = String(payload.filePath || '').trim();
+    const targetYear = Number(payload.targetYear) || new Date().getFullYear();
+    if (!filePath || !fs.existsSync(filePath)) {
+      const error = new Error('PDF non disponibile per OCR online.');
+      error.code = 'OCR_ONLINE_FILE_MISSING';
+      throw error;
+    }
+
+    const settings = settingsService.getSettings();
+    if (!settings?.ocr?.online_fallback_enabled) {
+      const error = new Error('OCR online non abilitato nelle Impostazioni.');
+      error.code = 'OCR_ONLINE_DISABLED';
+      throw error;
+    }
+
+    const onlineSettings = getOcrOnlineSettings(settings);
+    if (!onlineSettings.apiKey) {
+      throw createOcrOnlineError('OCR online non configurato.', 'OCR_ONLINE_NOT_CONFIGURED');
+    }
+
+    const startedAt = Date.now();
+    logMainProcessEvent('ocr_online_manual_started', {
+      provider: onlineSettings.provider,
+      duration_ms: 0,
+      text_length: 0,
+    });
+
+    try {
+      const onlineResult = await runOcrSpaceFallback(filePath, settings);
+      const onlineRecords = pdfImportService.parseOcrTextAssunzioni(onlineResult.text || '', {
+        reason: 'ocr_online_manual_success',
+      });
+      const enriched = pdfImportService.checkDuplicates(onlineRecords, { targetYear });
+      const diagnostics = {
+        ...(onlineRecords.importDiagnostics || {}),
+        fallback_used: true,
+        ocr_online_used: true,
+        ocr_online_manual: true,
+        ocr_online_provider: onlineSettings.provider,
+        records_length: enriched.length,
+        records_ready_count: enriched.filter((record) =>
+          record.status === 'pronto' || record.status === 'nuovo_rapporto_datore'
+        ).length,
+        records_to_fix_count: enriched.filter((record) =>
+          record.status === 'da_correggere' || record.status === 'duplicato'
+        ).length,
+      };
+      logMainProcessEvent('ocr_online_manual_completed', {
+        provider: onlineSettings.provider,
+        duration_ms: Date.now() - startedAt,
+        text_length: String(onlineResult.text || '').length,
+      });
+      return {
+        records: enriched,
+        importDiagnostics: diagnostics,
+      };
+    } catch (error) {
+      logMainProcessEvent('ocr_online_manual_failed', {
+        provider: onlineSettings.provider,
+        duration_ms: Date.now() - startedAt,
+        text_length: 0,
+      });
+      throw error;
+    }
   });
 
   ipcMain.handle('employees:resolvePdfEmployer', async (_, payload = {}) => {

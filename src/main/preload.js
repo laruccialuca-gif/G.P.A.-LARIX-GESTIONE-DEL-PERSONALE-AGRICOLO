@@ -84,6 +84,8 @@ contextBridge.exposeInMainWorld('api', {
 
   operations: {
     getActiveJobs: () => ipcRenderer.invoke('operations:getActiveJobs'),
+    cancel: (type) => ipcRenderer.invoke('operations:cancel', type),
+    reset: (type, reason) => ipcRenderer.invoke('operations:reset', type, reason),
     onProgress: (handler) => subscribeToChannel('operations:progress', handler),
   },
 
@@ -99,6 +101,7 @@ contextBridge.exposeInMainWorld('api', {
     deletePermanently: (id) => ipcRenderer.invoke('employees:deletePermanently', id),
     bulkDelete: (ids) => ipcRenderer.invoke('employees:bulkDelete', ids),
     parsePdfImport: (options) => ipcRenderer.invoke('employees:parsePdfImport', options),
+    runOcrOnlineImport: (payload) => ipcRenderer.invoke('employees:runOcrOnlineImport', payload),
     evaluatePdfImportRows: (payload) => ipcRenderer.invoke('employees:evaluatePdfImportRows', payload),
     resolvePdfEmployer: (payload) => ipcRenderer.invoke('employees:resolvePdfEmployer', payload),
     confirmPdfImport: (payload) => ipcRenderer.invoke('employees:confirmPdfImport', payload),

@@ -273,6 +273,14 @@ function emptySettings() {
       versioning_strategy: 'timestamped',
       conflict_strategy: 'manual_review',
     },
+    ocr: {
+      online_fallback_enabled: false,
+      provider: 'ocr_space',
+      ocr_space_api_key: '',
+      language: 'ita',
+      engine: 2,
+      confirm_privacy_before_online: true,
+    },
     software: {
       updates: {
         channel: 'stable',
@@ -368,6 +376,16 @@ function normalizeSettingsPayload(input = {}) {
             active: marker?.active !== false,
           }))
         : defaults.general.attendance_markers,
+    },
+    ocr: {
+      ...defaults.ocr,
+      ...(input.ocr || {}),
+      online_fallback_enabled: !!input.ocr?.online_fallback_enabled,
+      provider: 'ocr_space',
+      ocr_space_api_key: String(input.ocr?.ocr_space_api_key || ''),
+      language: input.ocr?.language === 'eng' ? 'eng' : 'ita',
+      engine: Number(input.ocr?.engine) === 1 ? 1 : 2,
+      confirm_privacy_before_online: input.ocr?.confirm_privacy_before_online !== false,
     },
   };
 }
@@ -560,6 +578,11 @@ export default function SettingsPage() {
       key: 'report',
       title: 'Report / PDF',
       subtitle: 'Contenuti da mostrare nelle stampe e nei PDF del gestionale.',
+    },
+    {
+      key: 'ocr',
+      title: 'OCR',
+      subtitle: 'Riconoscimento testo locale e fallback online per PDF scansionati.',
     },
     {
       key: 'comunicazioni',
@@ -763,6 +786,7 @@ export default function SettingsPage() {
         },
         backup: settings.backup,
         cloud: settings.cloud,
+        ocr: settings.ocr,
         software: settings.software,
         licensing: settings.licensing,
       });
@@ -1476,6 +1500,83 @@ export default function SettingsPage() {
               />
               Compensi nelle stampe
             </label>
+          </div>
+        </SettingsBox>
+        </section>
+      ) : null}
+
+      {selectedMacroArea === 'ocr' ? (
+        <section className="settings-grid">
+          <SettingsBox
+          title="OCR"
+          subtitle="Fallback online opzionale per PDF scansionati quando l'OCR locale non basta."
+        >
+          <div className="settings-switch-list">
+            <label className="communication-checkbox">
+              <input
+                type="checkbox"
+                checked={!!settings.ocr?.online_fallback_enabled}
+                disabled={!isAdmin}
+                onChange={(e) => updateSection('ocr', { online_fallback_enabled: e.target.checked })}
+              />
+              Abilita OCR online fallback
+            </label>
+            <label className="communication-checkbox">
+              <input
+                type="checkbox"
+                checked={settings.ocr?.confirm_privacy_before_online !== false}
+                disabled={!isAdmin || !settings.ocr?.online_fallback_enabled}
+                onChange={(e) => updateSection('ocr', { confirm_privacy_before_online: e.target.checked })}
+              />
+              Conferma privacy prima dell'invio
+            </label>
+          </div>
+          <div className="settings-form-grid" style={{ marginTop: 14 }}>
+            <label>
+              <span className="communication-field-label">Provider</span>
+              <select
+                value={settings.ocr?.provider || 'ocr_space'}
+                disabled
+                onChange={() => {}}
+              >
+                <option value="ocr_space">OCR.space</option>
+              </select>
+            </label>
+            <label>
+              <span className="communication-field-label">API key OCR.space</span>
+              <input
+                type="password"
+                value={settings.ocr?.ocr_space_api_key || ''}
+                disabled={!isAdmin || !settings.ocr?.online_fallback_enabled}
+                onChange={(e) => updateSection('ocr', { ocr_space_api_key: e.target.value })}
+                placeholder="Usa OCR_SPACE_API_KEY se vuoto"
+              />
+            </label>
+            <label>
+              <span className="communication-field-label">Lingua</span>
+              <select
+                value={settings.ocr?.language || 'ita'}
+                disabled={!isAdmin || !settings.ocr?.online_fallback_enabled}
+                onChange={(e) => updateSection('ocr', { language: e.target.value })}
+              >
+                <option value="ita">ita</option>
+                <option value="eng">eng</option>
+              </select>
+            </label>
+            <label>
+              <span className="communication-field-label">Engine</span>
+              <select
+                value={Number(settings.ocr?.engine || 2)}
+                disabled={!isAdmin || !settings.ocr?.online_fallback_enabled}
+                onChange={(e) => updateSection('ocr', { engine: Number(e.target.value) })}
+              >
+                <option value={1}>1</option>
+                <option value={2}>2</option>
+              </select>
+            </label>
+          </div>
+          <div className="muted-box">
+            Il PDF viene inviato a OCR.space solo se il fallback e attivo e confermato durante l'importazione. La chiave API non viene scritta nei log.
           </div>
         </SettingsBox>
         </section>

@@ -1,6 +1,5 @@
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import DocumentActions from '../components/DocumentActions';
 import { formatDisplayDateTime } from '../utils/dateFormat';
 import { useYearContext } from '../context/YearContext';
 
@@ -96,6 +95,60 @@ function getIpcRecoveryMessage(error, fallbackMessage) {
     return 'Questa funzione richiede il riavvio completo di Electron per aggiornare il processo principale.';
   }
   return fallbackMessage;
+}
+
+function HistoryPayrollActions({
+  document,
+  busy,
+  onUpload,
+  onOpen,
+  onDelete,
+}) {
+  const hasDocument = !!document;
+  const buttonStyle = { minHeight: 34, padding: '0 12px', fontSize: 12 };
+
+  return (
+    <div
+      onClick={(event) => event.stopPropagation()}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+      }}
+    >
+      <span style={{ fontSize: 12, color: '#667085', minWidth: 132 }}>
+        {hasDocument ? 'Busta paga presente' : 'Nessuna busta paga'}
+      </span>
+      <button
+        type="button"
+        className={hasDocument ? 'button-secondary' : 'button'}
+        style={buttonStyle}
+        onClick={onUpload}
+        disabled={busy}
+      >
+        {busy ? 'Caricamento...' : hasDocument ? 'Sostituisci PDF' : 'Carica PDF'}
+      </button>
+      <button
+        type="button"
+        className="button-secondary"
+        style={buttonStyle}
+        onClick={onOpen}
+        disabled={!hasDocument}
+      >
+        Apri
+      </button>
+      <button
+        type="button"
+        className="button-danger"
+        style={buttonStyle}
+        onClick={onDelete}
+        disabled={!hasDocument}
+      >
+        Elimina
+      </button>
+    </div>
+  );
 }
 
 export default function StoricoOperaioPage() {
@@ -653,14 +706,12 @@ export default function StoricoOperaioPage() {
                                 </button>
                               </div>
 
-                              <DocumentActions
+                              <HistoryPayrollActions
                                 document={record.payroll_document}
+                                busy={busyRecordId === String(record.id)}
                                 onUpload={() => handleUploadDocument(record)}
                                 onOpen={() => handleOpenDocument(record)}
                                 onDelete={() => handleDeleteDocument(record)}
-                                uploadLabel={busyRecordId === String(record.id) ? 'Caricamento...' : 'Carica file'}
-                                openLabel="Apri file"
-                                emptyLabel="Nessuna busta allegata"
                               />
                             </div>
                           </div>

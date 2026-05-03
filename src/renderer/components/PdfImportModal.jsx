@@ -71,6 +71,24 @@ function toIsoDate(value) {
   return raw;
 }
 
+function toDisplayDate(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const iso = raw.split('T')[0];
+  const isoMatch = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
+  }
+  const parts = raw.split(/[\/\-\.]/);
+  if (parts.length === 3 && parts[0].length === 1) {
+    return `0${parts[0]}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+  }
+  if (parts.length === 3 && parts[0].length === 2) {
+    return `${parts[0]}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+  }
+  return raw;
+}
+
 function getHireYear(value) {
   const iso = toIsoDate(value);
   const year = Number(String(iso).slice(0, 4));
@@ -84,9 +102,20 @@ function normalizeRowForEvaluation(row) {
     last_name: String(row.last_name || '').trim(),
     fiscal_code: String(row.fiscal_code || '').replace(/\s+/g, '').toUpperCase(),
     hired_by: String(row.hired_by || '').trim(),
-    hire_date_from: String(row.hire_date_from || '').trim(),
-    hire_date_to: String(row.hire_date_to || '').trim(),
+    hire_date_from: toIsoDate(row.hire_date_from),
+    hire_date_to: toIsoDate(row.hire_date_to),
+    parser_uncertain_reason: row.manual_corrected ? '' : row.parser_uncertain_reason,
+    manual_corrected: !!row.manual_corrected,
   };
+}
+
+function buildRecordMergeKey(row) {
+  const fiscalCode = String(row?.fiscal_code || '').replace(/\s+/g, '').toUpperCase();
+  if (fiscalCode) return `cf:${fiscalCode}`;
+  const nameKey = `${String(row?.last_name || '').trim().toUpperCase()}|${String(row?.first_name || '').trim().toUpperCase()}`;
+  if (nameKey !== '|') return `name:${nameKey}`;
+  const pages = Array.isArray(row?.page_numbers) && row.page_numbers.length ? row.page_numbers.join('-') : String(row?.page_index ?? '');
+  return pages ? `page:${pages}` : '';
 }
 
 export default function PdfImportModal({
@@ -95,11 +124,17 @@ export default function PdfImportModal({
   onConfirm,
   records,
   employerOptions = [],
+  settings = null,
+  filePath = '',
   pdfEmployer = null,
   initialEmployerResolution = null,
+  importDiagnostics = null,
 }) {
   const [rows, setRows] = useState([]);
+  const [currentDiagnostics, setCurrentDiagnostics] = useState(importDiagnostics);
   const [confirming, setConfirming] = useState(false);
+  const [onlineOcrBusy, setOnlineOcrBusy] = useState(false);
+  const [onlineOcrMessage, setOnlineOcrMessage] = useState('');
   const [results, setResults] = useState(null);
   const [evaluating, setEvaluating] = useState(false);
   const [resolvingEmployer, setResolvingEmployer] = useState(false);
@@ -130,8 +165,8 @@ export default function PdfImportModal({
         first_name: r.first_name || '',
         last_name: r.last_name || '',
         fiscal_code: r.fiscal_code || '',
-        hire_date_from: r.hire_date_from || '',
-        hire_date_to: r.hire_date_to || '',
+        hire_date_from: toDisplayDate(r.hire_date_from),
+        hire_date_to: toDisplayDate(r.hire_date_to),
         hired_by: r.hired_by || r.hired_by_detected || '',
         hired_by_detected: r.hired_by_detected || '',
         status: r.status || 'da_verificare',
@@ -150,15 +185,17 @@ export default function PdfImportModal({
         page_numbers: Array.isArray(r.page_numbers) ? r.page_numbers : [],
         parse_model: r.parse_model || '',
         parser_uncertain_reason: r.parser_uncertain_reason || '',
+        manual_corrected: !!r.manual_corrected,
         birth_date: r.birth_date || '',
         tipo_lavorazione: r.tipo_lavorazione || '',
         giornate_previste: r.giornate_previste || '',
         original_text: r.original_text || '',
       }))
     );
+    setCurrentDiagnostics(importDiagnostics);
     setEmployerResolution(initialEmployerResolution || null);
     setSelectedEmployerShortName(initialEmployerResolution?.employer_short_name || employerOptions[0]?.short_name || employerOptions[0]?.value || '');
-  }, [open, records]);
+  }, [open, records, importDiagnostics]);
 
   useEffect(() => {
     setEmployerResolution(initialEmployerResolution || null);
@@ -178,6 +215,9 @@ export default function PdfImportModal({
   const selectedCount = rows.filter((r) => r.selected && (r.status === 'pronto' || r.status === 'nuovo_rapporto_datore')).length;
   const readyCount = rows.filter((r) => r.status === 'pronto' || r.status === 'nuovo_rapporto_datore').length;
   const correctionCount = rows.filter((r) => r.status === 'da_correggere' || r.status === 'duplicato').length;
+  const onlineOcrEnabled = !!settings?.ocr?.online_fallback_enabled;
+  const onlineOcrConfigured = !!settings?.ocr?.online_configured || !!String(settings?.ocr?.ocr_space_api_key || '').trim();
+  const canRunOnlineOcr = onlineOcrEnabled && onlineOcrConfigured && !!filePath && !onlineOcrBusy;
 
   if (!open) return null;
 
@@ -204,16 +244,27 @@ export default function PdfImportModal({
           rows: nextRows.map(normalizeRowForEvaluation),
           targetYear: nextRows[0]?.target_year,
         });
+        setCurrentDiagnostics((current) => current ? ({
+          ...current,
+          records_length: evaluated.length,
+          records_ready_count: evaluated.filter((row) => row.status === 'pronto' || row.status === 'nuovo_rapporto_datore').length,
+          records_to_fix_count: evaluated.filter((row) => row.status === 'da_correggere' || row.status === 'duplicato').length,
+        }) : current);
         setRows((prev) => evaluated.map((row, index) => ({
           ...prev[index],
           ...row,
+          hire_date_from: toDisplayDate(row.hire_date_from),
+          hire_date_to: toDisplayDate(row.hire_date_to),
           hired_by_detected: prev[index]?.hired_by_detected || '',
           original_text: prev[index]?.original_text || '',
+          parser_uncertain_reason: prev[index]?.manual_corrected ? '' : (row.parser_uncertain_reason || prev[index]?.parser_uncertain_reason || ''),
+          correction_reasons: prev[index]?.manual_corrected && (row.status === 'pronto' || row.status === 'nuovo_rapporto_datore') ? [] : row.correction_reasons,
           selected:
             row.status === 'pronto' || row.status === 'nuovo_rapporto_datore'
               ? !!prev[index]?.selected
               : false,
           restored: prev[index]?.restored || false,
+          manual_corrected: prev[index]?.manual_corrected || false,
           _key: prev[index]?._key ?? index,
         })));
       } catch (err) {
@@ -228,7 +279,16 @@ export default function PdfImportModal({
     setRows((prev) => {
       const nextRows = prev.map((r) => {
         if (r._key !== key) return r;
-        const next = { ...r, [field]: value };
+        const isManualField = ['first_name', 'last_name', 'fiscal_code', 'hire_date_from', 'hire_date_to', 'hired_by'].includes(field);
+        const next = {
+          ...r,
+          [field]: field === 'hire_date_from' || field === 'hire_date_to' ? toDisplayDate(value) : value,
+          manual_corrected: isManualField ? true : r.manual_corrected,
+          parser_uncertain_reason: isManualField ? '' : r.parser_uncertain_reason,
+        };
+        if (isManualField) {
+          next.correction_reasons = [];
+        }
         if (field === 'hire_date_from') {
           const hireYear = getHireYear(value);
           const yearMismatch = hireYear !== null && hireYear < next.target_year;
@@ -322,10 +382,108 @@ export default function PdfImportModal({
     }
   }
 
+  async function handleManualOnlineOcr() {
+    if (!onlineOcrEnabled) {
+      setOnlineOcrMessage('Configura OCR online nelle Impostazioni');
+      return;
+    }
+    if (!onlineOcrConfigured) {
+      setOnlineOcrMessage('OCR online non configurato.');
+      return;
+    }
+    if (!filePath) {
+      setOnlineOcrMessage('PDF non disponibile per OCR online.');
+      return;
+    }
+
+    const hasManualCorrections = rows.some((row) => row.manual_corrected);
+    if (hasManualCorrections) {
+      const keepGoing = window.confirm(
+        'Hai gia corretto manualmente alcune righe. OCR online aggiornera la preview mantenendo le correzioni dove possibile. Continuare?'
+      );
+      if (!keepGoing) return;
+    }
+
+    const confirmed = window.confirm('Il PDF verrà inviato a un servizio esterno OCR. Confermi?');
+    if (!confirmed) return;
+
+    setOnlineOcrBusy(true);
+    setOnlineOcrMessage('Lettura OCR online in corso...');
+    try {
+      const result = await window.api.employees.runOcrOnlineImport({
+        filePath,
+        targetYear: rows[0]?.target_year,
+      });
+      const manualRowsByKey = new Map(
+        rows
+          .filter((row) => row.manual_corrected && buildRecordMergeKey(row))
+          .map((row) => [buildRecordMergeKey(row), row])
+      );
+      const usedManualKeys = new Set();
+      const nextRows = (result.records || []).map((record, index) => {
+        const recordKey = buildRecordMergeKey(record);
+        const manualRow = manualRowsByKey.get(recordKey);
+        if (manualRow) usedManualKeys.add(recordKey);
+        return {
+          _key: manualRow?._key ?? `online-${Date.now()}-${index}`,
+          selected: manualRow ? !!manualRow.selected : !!record.selected,
+          first_name: manualRow?.first_name || record.first_name || '',
+          last_name: manualRow?.last_name || record.last_name || '',
+          fiscal_code: manualRow?.fiscal_code || record.fiscal_code || '',
+          hire_date_from: toDisplayDate(manualRow?.hire_date_from || record.hire_date_from),
+          hire_date_to: toDisplayDate(manualRow?.hire_date_to || record.hire_date_to),
+          hired_by: manualRow?.hired_by || record.hired_by || record.hired_by_detected || '',
+          hired_by_detected: record.hired_by_detected || manualRow?.hired_by_detected || '',
+          status: record.status || 'da_correggere',
+          import_action: record.import_action || (record.existing_employee_id ? 'esistente' : 'nuovo'),
+          existing_employee_id: record.existing_employee_id || null,
+          existing_name: record.existing_name || null,
+          existing_is_deleted: record.existing_is_deleted || false,
+          restored: manualRow?.restored || false,
+          parse_warnings: record.parse_warnings || [],
+          correction_reasons: manualRow ? [] : (record.correction_reasons || []),
+          hire_year: record.hire_year || null,
+          target_year: record.target_year || rows[0]?.target_year || new Date().getFullYear(),
+          year_mismatch: !!record.year_mismatch,
+          year_warning: record.year_warning || '',
+          page_index: record.page_index ?? index,
+          page_numbers: Array.isArray(record.page_numbers) ? record.page_numbers : [],
+          parse_model: record.parse_model || 'online_ocr_text',
+          parser_uncertain_reason: manualRow ? '' : (record.parser_uncertain_reason || ''),
+          manual_corrected: !!manualRow,
+          birth_date: record.birth_date || manualRow?.birth_date || '',
+          tipo_lavorazione: record.tipo_lavorazione || manualRow?.tipo_lavorazione || '',
+          giornate_previste: record.giornate_previste || manualRow?.giornate_previste || '',
+          original_text: record.original_text || manualRow?.original_text || '',
+        };
+      });
+
+      for (const row of rows) {
+        const key = buildRecordMergeKey(row);
+        if (row.manual_corrected && key && !usedManualKeys.has(key)) {
+          nextRows.push(row);
+        }
+      }
+
+      setRows(nextRows);
+      setCurrentDiagnostics(result.importDiagnostics || null);
+      setOnlineOcrMessage(
+        nextRows.length > 0
+          ? `OCR online completato: ${nextRows.length} righe in preview.`
+          : 'OCR online completato ma nessun lavoratore riconosciuto.'
+      );
+      scheduleReevaluation(nextRows);
+    } catch (err) {
+      setOnlineOcrMessage(err?.message || 'OCR online fallito.');
+    } finally {
+      setOnlineOcrBusy(false);
+    }
+  }
+
   async function handleConfirm() {
     setConfirming(true);
     try {
-      const res = await onConfirm(rows);
+      const res = await onConfirm(rows.map(normalizeRowForEvaluation));
       setResults(res);
     } catch (err) {
       setResults([{ action: 'errore', error: err.message }]);
@@ -405,8 +563,44 @@ export default function PdfImportModal({
               <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
                 {evaluating ? 'Rivalutazione in corso...' : `Modello: ${[...new Set(rows.map((row) => row.parse_model).filter(Boolean))].join(', ') || 'n/d'}`}
               </span>
+              {currentDiagnostics ? (
+                <>
+                  <span className="soft-chip" style={{ background: 'rgba(99, 102, 241, 0.12)', color: '#3730a3' }}>
+                    Pagine OCR: {currentDiagnostics.pages_ocr_count ?? 'n/d'}
+                  </span>
+                  <span className="soft-chip" style={{ background: 'rgba(14, 116, 144, 0.12)', color: '#155e75' }}>
+                    Blocchi: {currentDiagnostics.candidate_blocks_count ?? rows.length}
+                  </span>
+                  <span className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.12)', color: '#166534' }}>
+                    Pronti: {currentDiagnostics.records_ready_count ?? readyCount}
+                  </span>
+                  <span className="soft-chip" style={{ background: 'rgba(245, 158, 11, 0.14)', color: '#92400e' }}>
+                    Da correggere: {currentDiagnostics.records_to_fix_count ?? correctionCount}
+                  </span>
+                </>
+              ) : null}
+              {onlineOcrMessage ? (
+                <span className="soft-chip" style={{ background: onlineOcrMessage.includes('fallito') || onlineOcrMessage.includes('non configurato') ? '#fee2e2' : '#e0f2fe', color: onlineOcrMessage.includes('fallito') || onlineOcrMessage.includes('non configurato') ? '#b91c1c' : '#0369a1' }}>
+                  {onlineOcrMessage}
+                </span>
+              ) : null}
             </div>
             <div className="toolbar-group pdf-import-toolbar-group">
+              <button
+                type="button"
+                className="button-secondary"
+                style={compactButtonStyle}
+                onClick={handleManualOnlineOcr}
+                disabled={!canRunOnlineOcr}
+                title={canRunOnlineOcr ? 'Leggi il PDF con OCR.space' : 'Configura OCR online nelle Impostazioni'}
+              >
+                {onlineOcrBusy ? (
+                  <>
+                    <span style={{ ...spinnerStyle, borderColor: 'rgba(37,99,235,0.22)', borderTopColor: '#2563eb' }} />
+                    OCR online...
+                  </>
+                ) : 'Leggi con OCR online'}
+              </button>
               <span style={{ fontSize: 12, color: '#667085', fontWeight: 700 }}>Applica datore:</span>
               {[
                 ...currentEmployerOptions.map((option) => option.short_name || option.value),
