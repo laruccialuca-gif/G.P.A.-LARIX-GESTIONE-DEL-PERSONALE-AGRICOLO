@@ -1,6 +1,40 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+function subscribeToChannel(channel, handler) {
+  if (typeof handler !== 'function') {
+    return () => {};
+  }
+
+  const listener = (_, payload) => handler(payload);
+  ipcRenderer.on(channel, listener);
+  return () => {
+    ipcRenderer.removeListener(channel, listener);
+  };
+}
+
 contextBridge.exposeInMainWorld('api', {
+  auth: {
+    hasUsers: () => ipcRenderer.invoke('auth:hasUsers'),
+    getLoginHints: () => ipcRenderer.invoke('auth:getLoginHints'),
+    login: (credentials) => ipcRenderer.invoke('auth:login', credentials),
+    loginSuperAdmin: (password) => ipcRenderer.invoke('auth:loginSuperAdmin', password),
+    logout: () => ipcRenderer.invoke('auth:logout'),
+    getCurrentUser: () => ipcRenderer.invoke('auth:getCurrentUser'),
+    createFirstAdmin: (payload) => ipcRenderer.invoke('auth:createFirstAdmin', payload),
+  },
+
+  users: {
+    list: () => ipcRenderer.invoke('users:list'),
+    create: (payload) => ipcRenderer.invoke('users:create', payload),
+    update: (id, payload) => ipcRenderer.invoke('users:update', id, payload),
+    disable: (id) => ipcRenderer.invoke('users:disable', id),
+    enable: (id) => ipcRenderer.invoke('users:enable', id),
+    resetPassword: (id, newPassword) => ipcRenderer.invoke('users:resetPassword', id, newPassword),
+    changeOwnPassword: (newPassword) => ipcRenderer.invoke('users:changeOwnPassword', newPassword),
+    changeManagedPassword: (id, newPassword) => ipcRenderer.invoke('users:changeManagedPassword', id, newPassword),
+    getAuditLogs: (options) => ipcRenderer.invoke('users:getAuditLogs', options),
+  },
+
   appRuntime: {
     getInfo: () => ipcRenderer.invoke('appRuntime:getInfo'),
     getAvailableYears: () => ipcRenderer.invoke('appRuntime:getAvailableYears'),
@@ -30,6 +64,7 @@ contextBridge.exposeInMainWorld('api', {
   license: {
     getStatus: () => ipcRenderer.invoke('license:getStatus'),
     activate: (activationCode) => ipcRenderer.invoke('license:activate', activationCode),
+    verify: () => ipcRenderer.invoke('license:verify'),
     deactivate: () => ipcRenderer.invoke('license:deactivate'),
     getActivationRequest: () => ipcRenderer.invoke('license:getActivationRequest'),
   },
@@ -37,8 +72,19 @@ contextBridge.exposeInMainWorld('api', {
   backups: {
     list: () => ipcRenderer.invoke('backups:list'),
     create: (type) => ipcRenderer.invoke('backups:create', type),
+    openDirectory: () => ipcRenderer.invoke('backups:openDirectory'),
     chooseRestore: () => ipcRenderer.invoke('backups:chooseRestore'),
     restore: (backupDir) => ipcRenderer.invoke('backups:restore', backupDir),
+  },
+
+  diagnostics: {
+    generateReport: () => ipcRenderer.invoke('diagnostics:generateReport'),
+    logRendererError: (payload) => ipcRenderer.invoke('diagnostics:logRendererError', payload),
+  },
+
+  operations: {
+    getActiveJobs: () => ipcRenderer.invoke('operations:getActiveJobs'),
+    onProgress: (handler) => subscribeToChannel('operations:progress', handler),
   },
 
   employees: {
@@ -48,9 +94,13 @@ contextBridge.exposeInMainWorld('api', {
     create: (payload) => ipcRenderer.invoke('employees:create', payload),
     update: (id, payload) => ipcRenderer.invoke('employees:update', id, payload),
     archive: (id) => ipcRenderer.invoke('employees:archive', id),
+    bulkArchive: (ids) => ipcRenderer.invoke('employees:bulkArchive', ids),
     restore: (id) => ipcRenderer.invoke('employees:restore', id),
     deletePermanently: (id) => ipcRenderer.invoke('employees:deletePermanently', id),
+    bulkDelete: (ids) => ipcRenderer.invoke('employees:bulkDelete', ids),
     parsePdfImport: (options) => ipcRenderer.invoke('employees:parsePdfImport', options),
+    evaluatePdfImportRows: (payload) => ipcRenderer.invoke('employees:evaluatePdfImportRows', payload),
+    resolvePdfEmployer: (payload) => ipcRenderer.invoke('employees:resolvePdfEmployer', payload),
     confirmPdfImport: (payload) => ipcRenderer.invoke('employees:confirmPdfImport', payload),
     uploadHireDocument: (employeeId) => ipcRenderer.invoke('employees:uploadHireDocument', employeeId),
     uploadHireDocumentForPeriod: (employeeId, employmentPeriodId) =>
@@ -85,7 +135,7 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   communications: {
-    list: () => ipcRenderer.invoke('communications:list'),
+    list: (options) => ipcRenderer.invoke('communications:list', options),
     save: (payload) => ipcRenderer.invoke('communications:save', payload),
     delete: (id) => ipcRenderer.invoke('communications:delete', id),
     openFile: (id, type) => ipcRenderer.invoke('communications:openFile', id, type),
@@ -103,7 +153,7 @@ contextBridge.exposeInMainWorld('api', {
   payroll: {
     saveRecord: (payload) => ipcRenderer.invoke('payroll:saveRecord', payload),
     listByEmployee: (employeeId) => ipcRenderer.invoke('payroll:listByEmployee', employeeId),
-    listHistory: () => ipcRenderer.invoke('payroll:listHistory'),
+    listHistory: (options) => ipcRenderer.invoke('payroll:listHistory', options),
     getRecord: (employeeId, month) => ipcRenderer.invoke('payroll:getRecord', employeeId, month),
     getPreviousBalance: (employeeId, month) =>
       ipcRenderer.invoke('payroll:getPreviousBalance', employeeId, month),

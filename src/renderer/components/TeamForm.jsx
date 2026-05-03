@@ -301,7 +301,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
                 </div>
               ) : (
                 <div className="empty-state" style={{ padding: 18 }}>
-                  Nessun componente inserito. Usa “Aggiungi” per comporre la squadra.
+                  Nessun componente inserito. Usa "Aggiungi" per comporre la squadra.
                 </div>
               )}
             </div>

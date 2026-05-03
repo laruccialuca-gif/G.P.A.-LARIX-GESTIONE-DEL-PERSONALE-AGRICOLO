@@ -231,7 +231,7 @@ export default function OperaiAssuntiPage() {
   }
 
   async function handleDelete(employeeId) {
-    const confirmed = window.confirm('Confermi l’eliminazione dell’allegato di assunzione?');
+    const confirmed = window.confirm("Confermi l'eliminazione dell'allegato di assunzione?");
     if (!confirmed) return;
 
     try {
@@ -254,7 +254,7 @@ export default function OperaiAssuntiPage() {
             <span className="page-kicker">Vista stampabile</span>
             <h1 className="page-title">Operai Assunti</h1>
             <p className="page-subtitle">
-              Elenco pronto per l’esportazione con periodo di assunzione, datore e allegato locale.
+              Elenco pronto per l'esportazione con periodo di assunzione, datore e allegato locale.
             </p>
           </div>
 

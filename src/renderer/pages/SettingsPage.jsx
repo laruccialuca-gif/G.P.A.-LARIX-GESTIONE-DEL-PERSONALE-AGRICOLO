@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 
 function slugifyMarkerValue(value) {
   return String(value || '')
@@ -373,6 +374,7 @@ function normalizeSettingsPayload(input = {}) {
 
 export default function SettingsPage() {
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
   const [settings, setSettings] = useState(emptySettings());
   const [backups, setBackups] = useState([]);
   const [licenseStatus, setLicenseStatus] = useState(null);
@@ -382,19 +384,35 @@ export default function SettingsPage() {
   const [unlockPin, setUnlockPin] = useState('');
   const [newMarkerLabel, setNewMarkerLabel] = useState('');
   const [selectedMacroArea, setSelectedMacroArea] = useState(null);
+  const [generatingDiagnostics, setGeneratingDiagnostics] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [ownPassword, setOwnPassword] = useState('');
+  const [ownPasswordConfirm, setOwnPasswordConfirm] = useState('');
+  const [ownPasswordBusy, setOwnPasswordBusy] = useState(false);
+  const [ownPasswordMessage, setOwnPasswordMessage] = useState('');
+  const [managedUserId, setManagedUserId] = useState('');
+  const [managedPassword, setManagedPassword] = useState('');
+  const [managedPasswordConfirm, setManagedPasswordConfirm] = useState('');
+  const [managedPasswordBusy, setManagedPasswordBusy] = useState(false);
+  const [managedPasswordMessage, setManagedPasswordMessage] = useState('');
 
   async function loadData() {
     setLoading(true);
     try {
-      const [settingsData, backupData, licenseData] = await Promise.all([
+      const requests = [
         window.api.settings.get(),
         window.api.backups.list(),
         window.api.license.getStatus(),
-      ]);
+      ];
+      if (currentUser?.role === 'admin' || currentUser?.role === 'super_admin') {
+        requests.push(window.api.users.list());
+      }
+      const [settingsData, backupData, licenseData, usersData] = await Promise.all(requests);
 
       setSettings(normalizeSettingsPayload(settingsData || {}));
       setBackups(backupData || []);
       setLicenseStatus(licenseData || null);
+      setUsers(usersData || []);
     } catch (err) {
       console.error(err);
       alert('Errore caricamento impostazioni');
@@ -405,7 +423,20 @@ export default function SettingsPage() {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [currentUser?.role]);
+
+  async function handleGenerateDiagnosticReport() {
+    setGeneratingDiagnostics(true);
+    try {
+      const result = await window.api.diagnostics.generateReport();
+      alert(`Report generato sul Desktop\n${result.filePath}`);
+    } catch (err) {
+      console.error(err);
+      alert(`Errore generazione report diagnostico: ${err.message}`);
+    } finally {
+      setGeneratingDiagnostics(false);
+    }
+  }
 
   const employerItems = useMemo(() => {
     const mode = settings.employers.mode === 'one' ? 1 : 2;
@@ -418,16 +449,55 @@ export default function SettingsPage() {
   }, [settings.employers]);
 
   const isAdmin = !!settings.is_admin;
+  const isAuthAdmin = currentUser?.role === 'admin' || currentUser?.role === 'super_admin';
+  const manageableUsers = useMemo(() => {
+    if (currentUser?.role === 'super_admin') {
+      return users.filter((user) => user.role !== 'super_admin');
+    }
+    if (currentUser?.role === 'admin') {
+      return users.filter((user) =>
+        Number(user.created_by_user_id || 0) === Number(currentUser?.userId || 0) && Number(user.id) !== Number(currentUser?.userId || 0)
+      );
+    }
+    return [];
+  }, [users, currentUser]);
   const isDevMode = settings.runtime_info?.packaged === false;
   const normalizedLicenseUi = useMemo(() => {
     const rawCode = String(licenseStatus?.code || settings.licensing.activation_status || '').trim().toLowerCase();
-    const isActive = rawCode === 'active';
+    const isActive = rawCode === 'active' || rawCode === 'active_grace';
     const isExpired = rawCode === 'expired' || rawCode === 'license_expired';
+    const isSuspended = rawCode === 'suspended';
+    const isUnverified = rawCode === 'verification_overdue';
+    const offlineDays = Number(licenseStatus?.verification?.offline_days_remaining || 0);
+    const blockReason = licenseStatus?.block_reason || 'nessun motivo registrato';
+    const backendMandatory = !!licenseStatus?.verification?.backend_mandatory;
+    const backendConfigured = !!licenseStatus?.verification?.backend_configured;
+    const fallbackLabel = licenseStatus?.verification?.local_fallback_allowed
+      ? `abilitato (${licenseStatus?.verification?.local_fallback_reason || 'runtime'})`
+      : `disabilitato (${licenseStatus?.verification?.local_fallback_reason || 'runtime'})`;
+    const expiresAt = licenseStatus?.license?.expires_at || settings.licensing.expires_at || '';
+    const validityLabel = expiresAt
+      ? `Licenza valida fino al: ${expiresAt}`
+      : 'Licenza valida fino al: non definita';
+    const verificationLabel = backendConfigured
+      ? `Tempo senza verifica: ${offlineDays} giorni`
+      : 'Modalità offline permanente (nessun controllo remoto)';
+
+    if (rawCode === 'active_grace') {
+      return {
+        statusLabel: 'ATTIVA / GRACE OFFLINE',
+        message: licenseStatus?.message || 'Licenza attiva con tolleranza offline.',
+        detail: `${validityLabel} · Ultima verifica online: ${formatDateTime(licenseStatus?.verification?.last_remote_at)} · ${verificationLabel} · Backend obbligatorio: ${backendMandatory ? 'si' : 'no'}`,
+      };
+    }
 
     if (isActive) {
       return {
         statusLabel: 'ATTIVA',
-        message: licenseStatus?.message || 'Licenza attiva.',
+        message: backendConfigured
+          ? (licenseStatus?.message || 'Licenza attiva.')
+          : 'Licenza attiva. Modalità offline permanente (nessun controllo remoto).',
+        detail: `${validityLabel} · Ultima verifica: ${formatDateTime(licenseStatus?.verification?.last_checked_at)} · ${verificationLabel} · Fallback locale: ${fallbackLabel}`,
       };
     }
 
@@ -435,12 +505,38 @@ export default function SettingsPage() {
       return {
         statusLabel: 'SCADUTA',
         message: licenseStatus?.message || 'Licenza scaduta.',
+        detail: `Ultima verifica valida: ${formatDateTime(licenseStatus?.verification?.last_successful_at)} · Motivo blocco: ${blockReason}`,
+      };
+    }
+
+    if (isSuspended) {
+      return {
+        statusLabel: 'SOSPESA / SOLA LETTURA',
+        message: licenseStatus?.message || 'Licenza sospesa.',
+        detail: `Motivo blocco: ${blockReason} · Ultima verifica online: ${formatDateTime(licenseStatus?.verification?.last_remote_at)}`,
+      };
+    }
+
+    if (isUnverified) {
+      return {
+        statusLabel: 'NON VERIFICATA / SOLA LETTURA',
+        message: licenseStatus?.message || 'Licenza non verificata oltre il periodo di tolleranza.',
+        detail: `${validityLabel} · Tempo senza verifica: ${offlineDays} giorni · Motivo blocco: ${blockReason}`,
+      };
+    }
+
+    if (rawCode === 'unlicensed') {
+      return {
+        statusLabel: 'DA ATTIVARE',
+        message: licenseStatus?.message || 'Licenza non attivata.',
+        detail: `${backendConfigured ? 'Verifica remota configurata' : 'Modalità offline permanente (nessun controllo remoto)'} · Backend obbligatorio: ${backendMandatory ? 'si' : 'no'} · Fallback locale: ${fallbackLabel}`,
       };
     }
 
     return {
       statusLabel: 'DEMO',
       message: licenseStatus?.message || 'Modalita demo attiva.',
+      detail: `Ultima verifica online: ${formatDateTime(licenseStatus?.verification?.last_remote_at)}`,
     };
   }, [licenseStatus, settings.licensing.activation_status]);
   const markerSuggestionSymbol = useMemo(() => suggestMarkerSymbol(newMarkerLabel), [newMarkerLabel]);
@@ -502,6 +598,57 @@ export default function SettingsPage() {
         ),
       },
     }));
+  }
+
+  async function handleChangeOwnPassword() {
+    setOwnPasswordMessage('');
+    if (ownPassword !== ownPasswordConfirm) {
+      setOwnPasswordMessage('Le password non coincidono.');
+      return;
+    }
+    if (ownPassword.length < 4) {
+      setOwnPasswordMessage('La password deve contenere almeno 4 caratteri.');
+      return;
+    }
+    setOwnPasswordBusy(true);
+    try {
+      await window.api.users.changeOwnPassword(ownPassword);
+      setOwnPassword('');
+      setOwnPasswordConfirm('');
+      setOwnPasswordMessage('Password aggiornata con successo.');
+    } catch (err) {
+      setOwnPasswordMessage(err?.message || 'Errore aggiornamento password.');
+    } finally {
+      setOwnPasswordBusy(false);
+    }
+  }
+
+  async function handleChangeManagedPassword() {
+    setManagedPasswordMessage('');
+    if (!managedUserId) {
+      setManagedPasswordMessage('Seleziona un utente.');
+      return;
+    }
+    if (managedPassword !== managedPasswordConfirm) {
+      setManagedPasswordMessage('Le password non coincidono.');
+      return;
+    }
+    if (managedPassword.length < 4) {
+      setManagedPasswordMessage('La password deve contenere almeno 4 caratteri.');
+      return;
+    }
+    setManagedPasswordBusy(true);
+    try {
+      await window.api.users.changeManagedPassword(Number(managedUserId), managedPassword);
+      setManagedPassword('');
+      setManagedPasswordConfirm('');
+      setManagedPasswordMessage('Password utente aggiornata con successo.');
+      await loadData();
+    } catch (err) {
+      setManagedPasswordMessage(err?.message || 'Errore aggiornamento password utente.');
+    } finally {
+      setManagedPasswordBusy(false);
+    }
   }
 
   function updateMarker(index, patch) {
@@ -682,7 +829,7 @@ export default function SettingsPage() {
   async function handleUploadMarkerImage(index) {
     try {
       if (typeof window.api?.settings?.uploadMarkerAsset !== 'function') {
-        throw new Error('Funzione di upload marker non disponibile. Riavvia completamente l’app per aggiornare il processo Electron.');
+        throw new Error("Funzione di upload marker non disponibile. Riavvia completamente l'app per aggiornare il processo Electron.");
       }
 
       const result = await window.api.settings.uploadMarkerAsset();
@@ -740,10 +887,11 @@ export default function SettingsPage() {
   }
 
   async function handleOpenBackupFolder() {
-    const result = await window.api.settings.chooseBackupDirectory();
-    if (!result?.canceled && result.settings) {
-      setSettings(result.settings);
-      setBackups(await window.api.backups.list());
+    try {
+      await window.api.backups.openDirectory();
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || 'Errore apertura cartella backup');
     }
   }
 
@@ -771,6 +919,18 @@ export default function SettingsPage() {
     } catch (err) {
       console.error(err);
       alert(err?.message || 'Errore attivazione licenza');
+    }
+  }
+
+  async function handleVerifyLicense() {
+    try {
+      const next = await window.api.license.verify();
+      setLicenseStatus(next);
+      setSettings(await window.api.settings.get());
+      alert(next?.message || 'Verifica licenza completata.');
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || 'Errore verifica licenza');
     }
   }
 
@@ -873,7 +1033,7 @@ export default function SettingsPage() {
 
       {selectedMacroArea === 'generale' ? (
         <section className="settings-grid">
-          <SettingsBox
+        <SettingsBox
           title="Generale"
           subtitle="Configurazione di base del gestionale e dei datori di lavoro attivi."
         >
@@ -923,6 +1083,98 @@ export default function SettingsPage() {
               </div>
             ))}
           </div>
+        </SettingsBox>
+
+        <SettingsBox
+          title="Cambio password"
+          subtitle="Cambio password locale per l'utente corrente e, se amministratore, per gli utenti gestiti."
+        >
+          <div className="settings-form-grid">
+            <label>
+              <span className="communication-field-label">Nuova password</span>
+              <input
+                type="password"
+                value={ownPassword}
+                onChange={(e) => setOwnPassword(e.target.value)}
+                placeholder="Minimo 4 caratteri"
+              />
+            </label>
+            <label>
+              <span className="communication-field-label">Conferma password</span>
+              <input
+                type="password"
+                value={ownPasswordConfirm}
+                onChange={(e) => setOwnPasswordConfirm(e.target.value)}
+                placeholder="Ripeti password"
+              />
+            </label>
+          </div>
+          {ownPasswordMessage ? (
+            <div className="muted-box" style={{ marginTop: 14, color: ownPasswordMessage.includes('successo') ? '#166534' : '#b91c1c' }}>
+              {ownPasswordMessage}
+            </div>
+          ) : null}
+          <div className="settings-actions-row">
+            <button className="button-secondary" type="button" onClick={handleChangeOwnPassword} disabled={ownPasswordBusy}>
+              {ownPasswordBusy ? 'Aggiornamento...' : 'Cambia la mia password'}
+            </button>
+          </div>
+
+          {isAuthAdmin ? (
+            <>
+              <div className="muted-box" style={{ marginTop: 18 }}>
+                {currentUser?.role === 'super_admin'
+                  ? 'Come assistenza puoi aggiornare la password di qualsiasi admin o operatore.'
+                  : 'Come amministratore puoi aggiornare la password degli utenti creati da te.'}
+              </div>
+              <div className="settings-form-grid" style={{ marginTop: 14 }}>
+                <label style={{ gridColumn: '1 / -1' }}>
+                  <span className="communication-field-label">Utente gestito</span>
+                  <select value={managedUserId} onChange={(e) => setManagedUserId(e.target.value)}>
+                    <option value="">Seleziona utente</option>
+                    {manageableUsers.map((user) => (
+                      <option key={user.id} value={user.id}>
+                        {user.full_name} · {user.username}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span className="communication-field-label">Nuova password utente</span>
+                  <input
+                    type="password"
+                    value={managedPassword}
+                    onChange={(e) => setManagedPassword(e.target.value)}
+                    placeholder="Minimo 4 caratteri"
+                  />
+                </label>
+                <label>
+                  <span className="communication-field-label">Conferma password utente</span>
+                  <input
+                    type="password"
+                    value={managedPasswordConfirm}
+                    onChange={(e) => setManagedPasswordConfirm(e.target.value)}
+                    placeholder="Ripeti password"
+                  />
+                </label>
+              </div>
+              {managedPasswordMessage ? (
+                <div className="muted-box" style={{ marginTop: 14, color: managedPasswordMessage.includes('successo') ? '#166534' : '#b91c1c' }}>
+                  {managedPasswordMessage}
+                </div>
+              ) : null}
+              <div className="settings-actions-row">
+                <button
+                  className="button-secondary"
+                  type="button"
+                  onClick={handleChangeManagedPassword}
+                  disabled={managedPasswordBusy || manageableUsers.length === 0}
+                >
+                  {managedPasswordBusy ? 'Aggiornamento...' : 'Aggiorna password utente'}
+                </button>
+              </div>
+            </>
+          ) : null}
         </SettingsBox>
         </section>
       ) : null}
@@ -1421,7 +1673,7 @@ export default function SettingsPage() {
 
           <div className="muted-box">
             Strategia update: <strong>{settings.update_runtime.strategy || 'program-update-only'}</strong><br />
-            I dati utente, la licenza e l’attivazione restano nella cartella persistente separata dal programma.
+            I dati utente, la licenza e l'attivazione restano nella cartella persistente separata dal programma.
           </div>
 
           {settings.runtime_info.is_demo ? (
@@ -1437,8 +1689,8 @@ export default function SettingsPage() {
         </SettingsBox>
 
           <SettingsBox
-          title="Backup locale"
-          subtitle="Cartella backup, politiche automatiche e azioni di creazione o ripristino."
+          title="Backup e ripristino"
+          subtitle="Cartella backup, copie automatiche giornaliere, creazione manuale e ripristino sicuro."
         >
           <div className="settings-form-grid">
             <label style={{ gridColumn: '1 / -1' }}>
@@ -1452,9 +1704,9 @@ export default function SettingsPage() {
                 disabled={!isAdmin}
                 onChange={(e) => updateSection('backup', { automatic_mode: e.target.value })}
               >
-                <option value="none">Disattivato</option>
-                <option value="daily">Giornaliero</option>
-                <option value="weekly">Settimanale</option>
+                <option value="none">Solo giornaliero obbligatorio</option>
+                <option value="daily">Giornaliero + pianificato</option>
+                <option value="weekly">Giornaliero + settimanale</option>
               </select>
             </label>
             <label className="communication-checkbox" style={{ alignSelf: 'end' }}>
@@ -1472,6 +1724,9 @@ export default function SettingsPage() {
             <button className="button-secondary" onClick={handleChooseBackupDirectory} disabled={!isAdmin}>
               Scegli cartella backup
             </button>
+            <button className="button-secondary" onClick={handleOpenBackupFolder} disabled={!isAdmin}>
+              Apri cartella backup
+            </button>
             <button className="button-secondary" onClick={handleCreateBackup} disabled={!isAdmin}>
               Crea backup adesso
             </button>
@@ -1481,7 +1736,26 @@ export default function SettingsPage() {
           </div>
 
           <div className="muted-box">
-            Ultimo backup automatico: <strong>{formatDateTime(settings.backup.last_auto_backup_at)}</strong>
+            Backup automatico giornaliero al primo avvio del giorno. Ultimo backup automatico: <strong>{formatDateTime(settings.backup.last_auto_backup_at)}</strong>
+          </div>
+        </SettingsBox>
+
+        <SettingsBox
+          title="Assistenza / Diagnostica"
+          subtitle="Genera un file di diagnostica testuale da inviare all'assistenza, senza includere documenti o dati personali completi."
+        >
+          <div className="muted-box" style={{ marginBottom: 14 }}>
+            Il report include versione app, percorsi principali, stato licenza, esito integrity check, backup disponibili, ultime righe del log e conteggi archivio.
+          </div>
+          <div className="settings-actions-row">
+            <button
+              className="button-secondary"
+              type="button"
+              onClick={handleGenerateDiagnosticReport}
+              disabled={generatingDiagnostics}
+            >
+              {generatingDiagnostics ? 'Generazione report...' : 'Genera report diagnostico'}
+            </button>
           </div>
         </SettingsBox>
 
@@ -1596,6 +1870,40 @@ export default function SettingsPage() {
               <span className="communication-field-label">Scadenza</span>
               <input value={licenseStatus?.license?.expires_at || settings.licensing.expires_at || '—'} readOnly />
             </label>
+            <label>
+              <span className="communication-field-label">Ultima verifica online</span>
+              <input value={formatDateTime(licenseStatus?.verification?.last_remote_at)} readOnly />
+            </label>
+            <label>
+              <span className="communication-field-label">Ultima verifica valida</span>
+              <input value={formatDateTime(licenseStatus?.verification?.last_successful_at)} readOnly />
+            </label>
+            <label>
+              <span className="communication-field-label">Tempo senza verifica</span>
+              <input
+                value={licenseStatus?.verification?.backend_configured
+                  ? `${String(licenseStatus?.verification?.offline_days_remaining ?? '—')} giorni`
+                  : 'Modalità offline permanente (nessun controllo remoto)'}
+                readOnly
+              />
+            </label>
+            <label>
+              <span className="communication-field-label">Fallback locale</span>
+              <input
+                value={licenseStatus?.verification?.local_fallback_allowed
+                  ? `Abilitato (${licenseStatus?.verification?.local_fallback_reason || 'runtime'})`
+                  : `Disabilitato (${licenseStatus?.verification?.local_fallback_reason || 'runtime'})`}
+                readOnly
+              />
+            </label>
+            <label>
+              <span className="communication-field-label">Backend obbligatorio</span>
+              <input value={licenseStatus?.verification?.backend_mandatory ? 'Si' : 'No'} readOnly />
+            </label>
+            <label style={{ gridColumn: '1 / -1' }}>
+              <span className="communication-field-label">Motivo del blocco</span>
+              <input value={licenseStatus?.block_reason || '—'} readOnly />
+            </label>
             <label style={{ gridColumn: '1 / -1' }}>
               <span className="communication-field-label">Codice licenza</span>
               <input
@@ -1614,12 +1922,30 @@ export default function SettingsPage() {
                 style={{ resize: 'vertical' }}
               />
             </label>
+            <label style={{ gridColumn: '1 / -1' }}>
+              <span className="communication-field-label">Dettagli verifica</span>
+              <textarea
+                rows={2}
+                value={normalizedLicenseUi.detail || '—'}
+                readOnly
+                style={{ resize: 'vertical' }}
+              />
+            </label>
+            <label style={{ gridColumn: '1 / -1' }}>
+              <span className="communication-field-label">Ultimo errore verifica</span>
+              <textarea
+                rows={2}
+                value={licenseStatus?.verification?.last_error || '—'}
+                readOnly
+                style={{ resize: 'vertical' }}
+              />
+            </label>
             {isDevMode ? (
               <label style={{ gridColumn: '1 / -1' }}>
                 <span className="communication-field-label">Modalita sviluppo</span>
                 <textarea
                   rows={2}
-                  value="Modalita sviluppo attiva – controllo licenza disabilitato"
+                  value="Modalita sviluppo attiva – fallback locale consentito per test senza alterare la demo."
                   readOnly
                   style={{ resize: 'vertical' }}
                 />
@@ -1635,8 +1961,11 @@ export default function SettingsPage() {
             >
               Attiva licenza
             </button>
+            <button className="button-secondary" onClick={handleVerifyLicense}>
+              Verifica licenza
+            </button>
             <button className="button-secondary" onClick={loadData}>
-              Aggiorna stato licenza
+              Ricarica stato
             </button>
             <button
               className="button-danger"

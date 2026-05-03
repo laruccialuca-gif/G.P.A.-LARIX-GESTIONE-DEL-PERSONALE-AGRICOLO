@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import DocumentActions from '../components/DocumentActions';
 import { formatDisplayDateTime } from '../utils/dateFormat';
+import { useYearContext } from '../context/YearContext';
 
 const MONTH_NAMES = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
 
@@ -98,7 +99,9 @@ function getIpcRecoveryMessage(error, fallbackMessage) {
 }
 
 export default function StoricoOperaioPage() {
+  const HISTORY_PAGE_SIZE = 40;
   const navigate = useNavigate();
+  const { selectedYear } = useYearContext();
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyRecordId, setBusyRecordId] = useState('');
@@ -111,6 +114,9 @@ export default function StoricoOperaioPage() {
   const [periodFilter, setPeriodFilter] = useState('');
   const [previewRecord, setPreviewRecord] = useState(null);
   const [showArchivedSlots, setShowArchivedSlots] = useState(false);
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const deferredSearch = useDeferredValue(search);
 
   async function buildFallbackHistory() {
     const employees = await window.api.employees.list({ includeDeleted: true });
@@ -135,6 +141,7 @@ export default function StoricoOperaioPage() {
           },
         }))
       )
+      .filter((record) => String(record.month || '').startsWith(`${selectedYear}-`))
       .sort((a, b) => {
         const monthCompare = String(b.month || '').localeCompare(String(a.month || ''));
         if (monthCompare !== 0) return monthCompare;
@@ -149,18 +156,32 @@ export default function StoricoOperaioPage() {
     try {
       setLoadNotice('');
       const data = typeof window.api.payroll.listHistory === 'function'
-        ? await window.api.payroll.listHistory()
+        ? await window.api.payroll.listHistory({
+            year: selectedYear,
+            month: periodFilter ? periodFilter.slice(0, 7) : '',
+            search: deferredSearch,
+            limit: HISTORY_PAGE_SIZE,
+            offset: historyOffset,
+          })
         : await buildFallbackHistory();
-      setRecords(data || []);
+      if (Array.isArray(data)) {
+        setRecords(data || []);
+        setHistoryTotal((data || []).length);
+      } else {
+        setRecords(data?.items || []);
+        setHistoryTotal(Number(data?.total || 0));
+      }
     } catch (err) {
       console.error('Storico operaio: endpoint principale non disponibile, uso fallback.', err);
       try {
         const fallbackData = await buildFallbackHistory();
         setRecords(fallbackData || []);
+        setHistoryTotal((fallbackData || []).length);
         setLoadNotice('Storico caricato in modalità compatibile.');
       } catch (fallbackErr) {
         console.error(fallbackErr);
         setRecords([]);
+        setHistoryTotal(0);
         setLoadNotice('Errore caricamento storico operaio.');
       }
     } finally {
@@ -170,7 +191,11 @@ export default function StoricoOperaioPage() {
 
   useEffect(() => {
     loadHistory();
-  }, []);
+  }, [selectedYear, deferredSearch, periodFilter, historyOffset]);
+
+  useEffect(() => {
+    setHistoryOffset(0);
+  }, [selectedYear, deferredSearch, periodFilter]);
 
   const teamOptions = useMemo(() => {
     const values = new Set();
@@ -223,10 +248,6 @@ export default function StoricoOperaioPage() {
         return false;
       }
 
-      if (periodFilter && monthToDateValue(record.month) !== periodFilter) {
-        return false;
-      }
-
       if (!showArchivedSlots && record.archived_at) {
         return false;
       }
@@ -250,7 +271,7 @@ export default function StoricoOperaioPage() {
 
       return haystack.includes(query);
     });
-  }, [records, search, statusFilter, teamFilter, roleFilter, employerFilter, periodFilter, showArchivedSlots]);
+  }, [records, search, statusFilter, teamFilter, roleFilter, employerFilter, showArchivedSlots]);
 
   const groupedRecords = useMemo(() => {
     const map = new Map();
@@ -276,6 +297,8 @@ export default function StoricoOperaioPage() {
     const balance = getRecordEffectiveBalance(record);
     return sum + (balance < 0 ? Math.abs(balance) : 0);
   }, 0);
+  const currentPage = Math.floor(historyOffset / HISTORY_PAGE_SIZE) + 1;
+  const totalPages = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
 
   async function handleUploadDocument(record) {
     setBusyRecordId(String(record.id));
@@ -305,7 +328,7 @@ export default function StoricoOperaioPage() {
   }
 
   async function handleDeleteDocument(record) {
-    const confirmed = window.confirm('Confermi l’eliminazione della busta paga allegata?');
+    const confirmed = window.confirm("Confermi l'eliminazione della busta paga allegata?");
     if (!confirmed) return;
 
     try {
@@ -343,7 +366,7 @@ export default function StoricoOperaioPage() {
   }
 
   async function handleArchiveRecord(record) {
-    const confirmed = window.confirm('Confermi l’archiviazione di questo report storico?');
+    const confirmed = window.confirm("Confermi l'archiviazione di questo report storico?");
     if (!confirmed) return;
 
     try {
@@ -366,7 +389,7 @@ export default function StoricoOperaioPage() {
   }
 
   async function handleDeleteRecord(record) {
-    const confirmed = window.confirm('Confermi l’eliminazione definitiva di questo slot storico?');
+    const confirmed = window.confirm("Confermi l'eliminazione definitiva di questo slot storico?");
     if (!confirmed) return;
 
     try {
@@ -390,8 +413,13 @@ export default function StoricoOperaioPage() {
             <span className="page-kicker">Archivio consultabile</span>
             <h1 className="page-title">Storico Operaio</h1>
             <p className="page-subtitle">
-              Archivio mensile già popolato, con ricerca veloce, filtri utili e collegamento diretto al report di origine.
+              Archivio storico filtrato per anno attivo, con ricerca veloce, filtri utili e collegamento diretto al report di origine.
             </p>
+          </div>
+          <div className="page-actions">
+            <span className="soft-chip" style={{ background: 'rgba(31, 41, 55, 0.1)', color: '#1F2937' }}>
+              Anno {selectedYear}
+            </span>
           </div>
         </section>
 
@@ -444,6 +472,9 @@ export default function StoricoOperaioPage() {
               />
               Mostra slot archiviati
             </label>
+            <span className="soft-chip" style={{ background: 'rgba(20, 33, 61, 0.06)', color: '#314762' }}>
+              Pagina {currentPage} / {totalPages}
+            </span>
           </div>
         </div>
       </div>
@@ -459,7 +490,7 @@ export default function StoricoOperaioPage() {
           ) : null}
 
           <div className="stats-grid">
-            <StatCard label="Voci storiche" value={filteredRecords.length} />
+            <StatCard label="Voci storiche" value={historyTotal} />
             <StatCard label="Operai coinvolti" value={uniqueEmployees} />
             <StatCard label="Giornate effettive" value={totalGiornate} />
             <StatCard label="Totale da dare agli operai" value={formatCurrency(totalDaPagare)} color="#dc2626" />
@@ -474,6 +505,29 @@ export default function StoricoOperaioPage() {
             <div className="panel panel-section" style={{ padding: 0 }}>
               <div style={{ padding: 16, borderBottom: '1px solid #f3f4f6', fontWeight: 700 }}>
                 Archivio storico — clic su una voce per aprire l'anteprima del report collegato
+              </div>
+              <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderBottom: '1px solid #f3f4f6' }}>
+                <div style={{ color: '#64748b', fontSize: 13 }}>
+                  Caricati {records.length} record su {historyTotal} totali per i filtri server-side correnti.
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    disabled={historyOffset === 0 || loading}
+                    onClick={() => setHistoryOffset((current) => Math.max(0, current - HISTORY_PAGE_SIZE))}
+                  >
+                    Pagina precedente
+                  </button>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    disabled={historyOffset + HISTORY_PAGE_SIZE >= historyTotal || loading}
+                    onClick={() => setHistoryOffset((current) => current + HISTORY_PAGE_SIZE)}
+                  >
+                    Pagina successiva
+                  </button>
+                </div>
               </div>
 
               <div style={{ display: 'grid', gap: 0 }}>

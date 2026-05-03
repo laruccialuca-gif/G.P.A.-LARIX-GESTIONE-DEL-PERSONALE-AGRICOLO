@@ -36,6 +36,19 @@ export default function LicenseGate() {
     }
   }
 
+  async function handleVerify() {
+    setBusy(true);
+    try {
+      const next = await window.api.license.verify();
+      setStatus(next);
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || 'Errore verifica licenza');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!status) return null;
 
   if (!status.is_blocking) {
@@ -95,8 +108,11 @@ export default function LicenseGate() {
               <button className="button" onClick={handleActivate} disabled={busy || !activationCode.trim()}>
                 {busy ? 'Attivazione...' : 'Attiva software'}
               </button>
-              <button className="button-secondary" onClick={loadStatus}>
-                Aggiorna stato
+              <button className="button-secondary" onClick={handleVerify} disabled={busy}>
+                Verifica licenza
+              </button>
+              <button className="button-secondary" onClick={loadStatus} disabled={busy}>
+                Ricarica stato
               </button>
             </div>
           </div>

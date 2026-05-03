@@ -5,13 +5,13 @@ const { app, dialog } = require('electron');
 const { getConfigDir, getBackupsDir, getStorageLayout, getUpdatesDir } = require('./storagePaths');
 const { getDbPath, getDatabaseRuntimeInfo } = require('./db');
 const { defaultUpdateSettings, normalizeUpdateSettings, buildUpdateRuntimeSummary } = require('./updateService');
-const { getAppVariant, isDemoVariant } = require('./runtimeContext');
+const { getAppVariant, getRuntimeContext, isDemoVariant } = require('./runtimeContext');
 
 const SETTINGS_FILE_NAME = 'settings.json';
 const LOGO_FILE_PREFIX = 'company-logo';
 const MARKER_ASSETS_DIR_NAME = 'markers';
 const MARKER_FILE_PREFIX = 'marker-image';
-const LICENSE_FILE_NAME = 'license.json';
+const LICENSE_FILE_NAME = 'license.dat';
 const DEFAULT_ATTENDANCE_MARKERS = [
   {
     value: 'P',
@@ -64,6 +64,7 @@ function defaultSettings() {
         { key: 'employer_1', name: 'Laruccia Cosimo', short_name: 'LC' },
         { key: 'employer_2', name: 'Laruccia Giuseppe', short_name: 'LG' },
       ],
+      pdf_import_mappings: [],
     },
     general: {
       standard_day_hours: 7,
@@ -151,6 +152,27 @@ function normalizeEmployerItem(item, index) {
     key: item?.key || `employer_${index + 1}`,
     name: String(item?.name || '').trim() || `Datore ${index + 1}`,
     short_name: String(item?.short_name || '').trim().toUpperCase() || fallbackShort,
+    tax_id: String(item?.tax_id || '').trim().toUpperCase(),
+    workplace: String(item?.workplace || '').trim(),
+  };
+}
+
+function normalizeEmployerMatchToken(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function normalizePdfEmployerMapping(mapping, index) {
+  return {
+    id: String(mapping?.id || crypto.randomUUID()),
+    pdf_name: String(mapping?.pdf_name || '').trim(),
+    pdf_tax_id: String(mapping?.pdf_tax_id || '').trim().toUpperCase(),
+    pdf_workplace: String(mapping?.pdf_workplace || '').trim(),
+    employer_short_name: String(mapping?.employer_short_name || '').trim().toUpperCase(),
+    created_at: String(mapping?.created_at || new Date().toISOString()),
   };
 }
 
@@ -204,6 +226,11 @@ function normalizeSettings(input = {}) {
   const minimumItems = mode === 'one' ? 1 : 2;
   const targetItemsCount = mode === 'one' ? 1 : Math.max(sourceItems.length, minimumItems);
   const items = sourceItems.slice(0, targetItemsCount).map(normalizeEmployerItem);
+  const pdfImportMappings = Array.isArray(merged.employers?.pdf_import_mappings)
+    ? merged.employers.pdf_import_mappings
+        .map(normalizePdfEmployerMapping)
+        .filter((item) => item.employer_short_name)
+    : [];
 
   while (items.length < minimumItems) {
     items.push(normalizeEmployerItem({}, items.length));
@@ -226,6 +253,7 @@ function normalizeSettings(input = {}) {
     employers: {
       mode,
       items,
+      pdf_import_mappings: pdfImportMappings,
     },
     general: {
       standard_day_hours: Number(merged.general?.standard_day_hours || 7) || 7,
@@ -335,7 +363,7 @@ function requireAdmin() {
     return settings;
   }
   if (settings.security.current_role !== 'admin') {
-    const error = new Error('Operazione consentita solo all’amministratore.');
+    const error = new Error("Operazione consentita solo all'amministratore.");
     error.code = 'ADMIN_REQUIRED';
     throw error;
   }
@@ -526,7 +554,150 @@ function getEmployerOptions(settings = readSettings()) {
     label: `${item.short_name} · ${item.name}`,
     short_name: item.short_name,
     name: item.name,
+    tax_id: item.tax_id || '',
+    workplace: item.workplace || '',
   }));
+}
+
+function findEmployerByShortName(settings, shortName) {
+  const target = String(shortName || '').trim().toUpperCase();
+  if (!target) return null;
+  return (settings.employers.items || []).find((item) => String(item.short_name || '').trim().toUpperCase() === target) || null;
+}
+
+function resolvePdfEmployer(pdfEmployer = {}, settings = readSettings()) {
+  const normalizedName = normalizeEmployerMatchToken(pdfEmployer.name);
+  const normalizedTaxId = normalizeEmployerMatchToken(pdfEmployer.tax_id);
+  const employerOptions = getEmployerOptions(settings);
+  const mappings = Array.isArray(settings.employers?.pdf_import_mappings) ? settings.employers.pdf_import_mappings : [];
+
+  const mapped = mappings.find((item) => {
+    const sameTaxId = normalizedTaxId && normalizeEmployerMatchToken(item.pdf_tax_id) === normalizedTaxId;
+    const sameName = normalizedName && normalizeEmployerMatchToken(item.pdf_name) === normalizedName;
+    return sameTaxId || sameName;
+  });
+
+  if (mapped) {
+    const employer = findEmployerByShortName(settings, mapped.employer_short_name);
+    if (employer) {
+      return {
+        status: 'mapped',
+        employer_short_name: employer.short_name,
+        employer_name: employer.name,
+        pdf_employer: pdfEmployer,
+        employer_options: employerOptions,
+      };
+    }
+  }
+
+  const matchedEmployer = (settings.employers.items || []).find((item) => {
+    const sameTaxId = normalizedTaxId && normalizeEmployerMatchToken(item.tax_id) === normalizedTaxId;
+    const sameName = normalizedName && normalizeEmployerMatchToken(item.name) === normalizedName;
+    const sameShort = normalizedName && normalizeEmployerMatchToken(item.short_name) === normalizedName;
+    return sameTaxId || sameName || sameShort;
+  });
+
+  if (matchedEmployer) {
+    return {
+      status: 'matched',
+      employer_short_name: matchedEmployer.short_name,
+      employer_name: matchedEmployer.name,
+      pdf_employer: pdfEmployer,
+      employer_options: employerOptions,
+    };
+  }
+
+  return {
+    status: 'mismatch',
+    employer_short_name: '',
+    employer_name: '',
+    pdf_employer: pdfEmployer,
+    employer_options: employerOptions,
+  };
+}
+
+function savePdfEmployerMapping(pdfEmployer = {}, employerShortName) {
+  requireAdmin();
+  const current = readSettings();
+  const normalizedShortName = String(employerShortName || '').trim().toUpperCase();
+  if (!normalizedShortName) {
+    throw new Error('Datore interno non specificato.');
+  }
+
+  const nextMappings = [
+    ...(Array.isArray(current.employers?.pdf_import_mappings) ? current.employers.pdf_import_mappings : []),
+  ];
+  const normalizedName = normalizeEmployerMatchToken(pdfEmployer.name);
+  const normalizedTaxId = normalizeEmployerMatchToken(pdfEmployer.tax_id);
+  const existingIndex = nextMappings.findIndex((item) => {
+    const sameTaxId = normalizedTaxId && normalizeEmployerMatchToken(item.pdf_tax_id) === normalizedTaxId;
+    const sameName = normalizedName && normalizeEmployerMatchToken(item.pdf_name) === normalizedName;
+    return sameTaxId || sameName;
+  });
+
+  const nextMapping = normalizePdfEmployerMapping({
+    ...(existingIndex >= 0 ? nextMappings[existingIndex] : {}),
+    pdf_name: pdfEmployer.name,
+    pdf_tax_id: pdfEmployer.tax_id,
+    pdf_workplace: pdfEmployer.workplace,
+    employer_short_name: normalizedShortName,
+  }, existingIndex >= 0 ? existingIndex : nextMappings.length);
+
+  if (existingIndex >= 0) {
+    nextMappings[existingIndex] = nextMapping;
+  } else {
+    nextMappings.push(nextMapping);
+  }
+
+  const next = saveSettings({
+    employers: {
+      ...current.employers,
+      pdf_import_mappings: nextMappings,
+    },
+  });
+
+  return {
+    settings: next,
+    mapping: nextMapping,
+    employer: findEmployerByShortName(next, normalizedShortName),
+  };
+}
+
+function createEmployerFromPdfEmployer(pdfEmployer = {}) {
+  requireAdmin();
+  const current = readSettings();
+  const baseShortName = `D${(current.employers.items || []).length + 1}`;
+  const usedShortNames = new Set((current.employers.items || []).map((item) => String(item.short_name || '').trim().toUpperCase()));
+  let shortName = baseShortName;
+  let suffix = (current.employers.items || []).length + 1;
+  while (usedShortNames.has(shortName)) {
+    suffix += 1;
+    shortName = `D${suffix}`;
+  }
+
+  const newEmployer = normalizeEmployerItem({
+    key: `employer_${Date.now()}`,
+    name: String(pdfEmployer.name || '').trim() || `Datore ${suffix}`,
+    short_name: shortName,
+    tax_id: String(pdfEmployer.tax_id || '').trim().toUpperCase(),
+    workplace: String(pdfEmployer.workplace || '').trim(),
+  }, (current.employers.items || []).length);
+  newEmployer.tax_id = String(pdfEmployer.tax_id || '').trim().toUpperCase();
+  newEmployer.workplace = String(pdfEmployer.workplace || '').trim();
+
+  const next = saveSettings({
+    employers: {
+      ...current.employers,
+      items: [...(current.employers.items || []), newEmployer],
+    },
+  });
+  const mappingResult = savePdfEmployerMapping(pdfEmployer, newEmployer.short_name);
+
+  return {
+    settings: mappingResult.settings || next,
+    employer: newEmployer,
+    mapping: mappingResult.mapping,
+  };
 }
 
 function buildSettingsSummary(settings = readSettings()) {
@@ -553,6 +724,7 @@ function buildSettingsSummary(settings = readSettings()) {
       attendance_markers: normalizeAttendanceMarkers(normalizedSettings.general?.attendance_markers),
     },
     employer_options: getEmployerOptions(normalizedSettings),
+    pdf_import_employer_mappings: normalizedSettings.employers?.pdf_import_mappings || [],
     is_admin: !isDemoVariant() || normalizedSettings.security.current_role === 'admin',
     backup_directory_effective: normalizedSettings.backup.directory || getBackupsDir(),
     cloud_ready: false,
@@ -560,8 +732,10 @@ function buildSettingsSummary(settings = readSettings()) {
       app_name: app.getName(),
       app_version: app.getVersion(),
       app_variant: getAppVariant(),
-      is_demo: isDemoVariant(),
-      packaged: app.isPackaged,
+      is_demo: getRuntimeContext().isDemo,
+      is_dev: getRuntimeContext().isDev,
+      is_production: getRuntimeContext().isProduction,
+      packaged: getRuntimeContext().isPackaged,
       program_path: app.getAppPath(),
       install_strategy: 'program-files-separated-from-user-data',
     },
@@ -590,6 +764,9 @@ module.exports = {
   DEFAULT_ATTENDANCE_MARKERS,
   getCompanyLogoAbsolutePath,
   getEmployerOptions,
+  resolvePdfEmployer,
+  savePdfEmployerMapping,
+  createEmployerFromPdfEmployer,
   getSettings,
   getSettingsFilePath,
   readSettings,

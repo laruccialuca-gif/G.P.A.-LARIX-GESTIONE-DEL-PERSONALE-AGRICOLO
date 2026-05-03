@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { dialog, shell } = require('electron');
 const { ensureAppStorageStructure, getDocumentsDir } = require('./storagePaths');
 
@@ -11,6 +12,12 @@ const DOCUMENT_FILTERS = [
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function hashFile(filePath) {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
 }
 
 function sanitizeSegment(value) {
@@ -72,6 +79,9 @@ function storeSelectedFile(sourcePath, targetDirSegments, targetBaseName) {
   fs.copyFileSync(sourcePath, absolutePath);
 
   const stats = fs.statSync(absolutePath);
+  const createdAt = stats.birthtime instanceof Date && !Number.isNaN(stats.birthtime.getTime())
+    ? stats.birthtime.toISOString()
+    : new Date().toISOString();
 
   return {
     file_name: sourceName,
@@ -79,6 +89,8 @@ function storeSelectedFile(sourcePath, targetDirSegments, targetBaseName) {
     relative_path: relativePath,
     mime_type: detectMimeType(extension),
     size_bytes: stats.size,
+    sha256: hashFile(absolutePath),
+    file_created_at: createdAt,
   };
 }
 
@@ -104,6 +116,8 @@ function describeStoredFile(documentRow) {
     stored_name: documentRow.stored_name,
     mime_type: documentRow.mime_type,
     size_bytes: documentRow.size_bytes,
+    sha256: documentRow.sha256 || '',
+    file_created_at: documentRow.file_created_at || documentRow.uploaded_at || '',
     uploaded_at: documentRow.uploaded_at,
     updated_at: documentRow.updated_at,
     relative_path: documentRow.relative_path,

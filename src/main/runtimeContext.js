@@ -1,9 +1,16 @@
 const path = require('path');
+let electronApp = null;
+
+try {
+  ({ app: electronApp } = require('electron'));
+} catch {
+  electronApp = null;
+}
 
 const packageJson = require(path.join(__dirname, '../../package.json'));
 
-function getAppVariant() {
-  const variant = String(
+function getRawAppVariant() {
+  return String(
     process.env.APP_VARIANT ||
       process.env.GESTIONALE_APP_VARIANT ||
       packageJson.appVariant ||
@@ -11,12 +18,41 @@ function getAppVariant() {
   )
     .trim()
     .toLowerCase();
+}
+
+function getAppVariant() {
+  const variant = getRawAppVariant();
 
   return variant === 'demo' ? 'demo' : 'standard';
 }
 
+function getRuntimeContext() {
+  const rawVariant = getRawAppVariant();
+  const packaged = Boolean(electronApp?.isPackaged);
+  const devVariant = rawVariant === 'dev';
+  const demoVariant = rawVariant === 'demo';
+  // APP_VARIANT=production forces production mode even when not packaged (dev:production script)
+  const productionVariant = rawVariant === 'production';
+  const isDev = !productionVariant && (!packaged || devVariant);
+  const isDemo = demoVariant;
+  const isProduction = !isDev && !isDemo;
+
+  return {
+    appVariant: rawVariant,
+    packaged,
+    isPackaged: packaged,
+    isDev,
+    isDemo,
+    isProduction,
+  };
+}
+
 function isDemoVariant() {
-  return getAppVariant() === 'demo';
+  return getRuntimeContext().isDemo;
+}
+
+function isDevelopmentVariant() {
+  return getRuntimeContext().isDev;
 }
 
 function getVariantConfig() {
@@ -45,6 +81,9 @@ function getVariantConfig() {
 
 module.exports = {
   getAppVariant,
+  getRuntimeContext,
+  getRawAppVariant,
   getVariantConfig,
+  isDevelopmentVariant,
   isDemoVariant,
 };

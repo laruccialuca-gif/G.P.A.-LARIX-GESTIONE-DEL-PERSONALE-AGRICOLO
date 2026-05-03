@@ -620,6 +620,9 @@ export default function AttendancePage() {
   const isSavingRef = useRef(false);
   const statusTimeoutRef = useRef(null);
   const bulkFeedbackTimeoutRef = useRef(null);
+  const [licenseStatus, setLicenseStatus] = useState(null);
+  const isWriteBlockedRef = useRef(false);
+  const lastLicenseErrorRef = useRef(0);
 
   async function loadData() {
     setLoading(true);
@@ -700,6 +703,38 @@ export default function AttendancePage() {
   useEffect(() => {
     setOpenMarkerMenuKey(null);
   }, [selectedEntity, currentMonthKey]);
+
+  const isWriteBlocked = Boolean(licenseStatus?.is_write_blocked);
+
+  useEffect(() => {
+    isWriteBlockedRef.current = isWriteBlocked;
+  }, [isWriteBlocked]);
+
+  useEffect(() => {
+    if (!isWriteBlocked) return;
+    setPendingChanges({});
+    pendingChangesRef.current = {};
+    setInputDrafts({});
+    setSaveState('idle');
+  }, [isWriteBlocked]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchLicense() {
+      try {
+        const status = await window.api.license.getStatus();
+        if (!cancelled) setLicenseStatus(status || null);
+      } catch {
+        // non-critical
+      }
+    }
+    fetchLicense();
+    const interval = setInterval(fetchLicense, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   const activeEmployees = useMemo(
     () => employees.filter((employee) =>
@@ -819,7 +854,20 @@ export default function AttendancePage() {
     }
   }
 
+  function showLicenseBlockedToast() {
+    const now = Date.now();
+    if (now - lastLicenseErrorRef.current < 10_000) return;
+    lastLicenseErrorRef.current = now;
+    window.dispatchEvent(new CustomEvent('app:toast', {
+      detail: { message: 'Licenza non attiva: le modifiche sono bloccate.', tone: 'error' },
+    }));
+  }
+
   function queuePendingEntry(employeeId, date, nextEntry) {
+    if (isWriteBlockedRef.current) {
+      showLicenseBlockedToast();
+      return;
+    }
     const key = `${employeeId}_${date}`;
     const normalizedEntry = normalizeAttendanceEntry(nextEntry);
     const savedEntry = attendanceMap[key];
@@ -1188,6 +1236,10 @@ export default function AttendancePage() {
       return;
     }
 
+    if (isWriteBlockedRef.current) {
+      return;
+    }
+
     isSavingRef.current = true;
     setSaveState('saving');
 
@@ -1251,13 +1303,25 @@ export default function AttendancePage() {
       setSaveState('saved');
       scheduleSavedBadge();
     } catch (err) {
-      console.error(err);
-      setSaveState('error');
-      alert('Errore salvataggio automatico presenze');
+      const isLicenseBlock =
+        err?.code === 'LICENSE_READ_ONLY' ||
+        String(err?.message || '').includes('sola lettura');
+      if (isLicenseBlock) {
+        isWriteBlockedRef.current = true;
+        setPendingChanges({});
+        pendingChangesRef.current = {};
+        setInputDrafts({});
+        setSaveState('idle');
+        showLicenseBlockedToast();
+      } else {
+        console.error(err);
+        setSaveState('error');
+        alert('Errore salvataggio automatico presenze');
+      }
     } finally {
       isSavingRef.current = false;
 
-      if (Object.keys(pendingChangesRef.current).length > 0) {
+      if (!isWriteBlockedRef.current && Object.keys(pendingChangesRef.current).length > 0) {
         setTimeout(() => {
           flushPendingChanges();
         }, 100);
@@ -1744,6 +1808,14 @@ export default function AttendancePage() {
           </div>
 
           <div className="attendance-action-row">
+            {isWriteBlocked ? (
+              <span
+                className="soft-chip"
+                style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#b91c1c', borderColor: 'rgba(239, 68, 68, 0.25)' }}
+              >
+                Licenza non attiva — sola lettura
+              </span>
+            ) : null}
             <span
               className="soft-chip"
               style={saveState === 'error'
@@ -1956,7 +2028,7 @@ export default function AttendancePage() {
               className="button"
               type="button"
               onClick={handleBulkApply}
-              disabled={isBulkApplyDisabled}
+              disabled={isBulkApplyDisabled || isWriteBlocked}
             >
               Applica
             </button>
@@ -2160,6 +2232,7 @@ export default function AttendancePage() {
                                 onKeyDown={handleGridKeyDown}
                                 data-attendance-focus="true"
                                 placeholder=""
+                                disabled={isWriteBlocked}
                                 title={isSpecial ? specialOpt?.text : 'Inserisci ore decimali oppure F / P / M'}
                               />
                               <input
@@ -2174,7 +2247,7 @@ export default function AttendancePage() {
                                 onKeyDown={handleGridKeyDown}
                                 data-attendance-focus="true"
                                 placeholder="str"
-                                disabled={isSpecial}
+                                disabled={isWriteBlocked || isSpecial}
                                 title="Straordinario decimale separato dalle ore normali"
                               />
                             </>
@@ -2191,6 +2264,7 @@ export default function AttendancePage() {
                                 title={`Marcatore ${markerMeta.text}. Clicca per modificare.`}
                                 className="attendance-marker-button"
                                 style={{ background: markerMeta.background, color: markerMeta.color }}
+                                disabled={isWriteBlocked}
                               >
                                 <MarkerVisual marker={markerMeta} size={16} />
                               </button>
@@ -2212,6 +2286,7 @@ export default function AttendancePage() {
                                   }
                                 }}
                                 title="Seleziona un marcatore grafico"
+                                disabled={isWriteBlocked}
                               >
                                 <option value="">+</option>
                                 {activeMarkers.map((item) => (

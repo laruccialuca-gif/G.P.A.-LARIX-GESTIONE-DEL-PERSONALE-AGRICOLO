@@ -352,7 +352,7 @@ export default function SetupPage() {
                 </select>
               </label>
               <div className="muted-box" style={{ alignSelf: 'end' }}>
-                Questo valore inizializza l’anno attivo globale del gestionale al termine del setup.
+                Questo valore inizializza l'anno attivo globale del gestionale al termine del setup.
               </div>
             </div>
           ) : null}

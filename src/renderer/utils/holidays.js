@@ -51,7 +51,7 @@ function getItalianHolidayMap(year) {
   easterMonday.setDate(easterSunday.getDate() + 1);
 
   holidayMap.set(formatDateKey(easterSunday), 'Pasqua');
-  holidayMap.set(formatDateKey(easterMonday), 'Lunedi dell’Angelo');
+  holidayMap.set(formatDateKey(easterMonday), "Lunedi dell'Angelo");
 
   return holidayMap;
 }

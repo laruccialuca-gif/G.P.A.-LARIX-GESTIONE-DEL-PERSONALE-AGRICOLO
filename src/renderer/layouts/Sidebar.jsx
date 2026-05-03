@@ -1,6 +1,7 @@
 import React from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import larixLogo from '../../assets/larix-logo.png';
+import { useAuth } from '../context/AuthContext';
 
 function PersonIcon() {
   return (
@@ -58,8 +59,17 @@ const links = [
 
 export default function Sidebar() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const { currentUser, logout } = useAuth();
 
   const isActive = (path) => location.pathname === path;
+
+  const visibleLinks = [
+    ...links,
+    ...(currentUser?.role === 'admin' || currentUser?.role === 'super_admin'
+      ? [{ path: '/utenti', label: 'Utenti', icon: <PersonIcon /> }]
+      : []),
+  ];
 
   return (
     <aside className="sidebar-panel">
@@ -73,7 +83,7 @@ export default function Sidebar() {
       </div>
 
       <nav className="sidebar-nav">
-        {links.map((link) => (
+        {visibleLinks.map((link) => (
           <Link
             key={link.path}
             to={link.path}
@@ -89,7 +99,27 @@ export default function Sidebar() {
       </nav>
 
       <div className="sidebar-footer">
-        Vista ottimizzata per desktop e tablet, con focus su leggibilita e azioni rapide.
+        {currentUser ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: '#6b7280', letterSpacing: '0.05em' }}>
+              Accesso come
+            </div>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>{currentUser.fullName}</div>
+            <div style={{ fontSize: 11, color: currentUser.role === 'super_admin' ? '#818cf8' : '#9ca3af' }}>
+              {currentUser.role === 'super_admin' ? 'Amm. Sistema' : currentUser.role === 'admin' ? 'Amministratore' : 'Operatore'}
+            </div>
+            <button
+              type="button"
+              className="button-secondary"
+              style={{ marginTop: 4, padding: '5px 10px', minHeight: 0, fontSize: 12, width: '100%' }}
+              onClick={async () => { await logout(); navigate('/login'); }}
+            >
+              Esci
+            </button>
+          </div>
+        ) : (
+          <span>Vista ottimizzata per desktop e tablet</span>
+        )}
       </div>
     </aside>
   );

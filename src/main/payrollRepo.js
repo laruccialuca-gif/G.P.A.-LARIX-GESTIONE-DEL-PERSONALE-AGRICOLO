@@ -91,6 +91,8 @@ function attachAdvances(records) {
           relative_path: record.payroll_document_relative_path,
           mime_type: record.payroll_document_mime_type,
           size_bytes: record.payroll_document_size_bytes,
+          sha256: record.payroll_document_sha256,
+          file_created_at: record.payroll_document_file_created_at,
           uploaded_at: record.payroll_document_uploaded_at,
           updated_at: record.payroll_document_updated_at,
         })
@@ -108,6 +110,8 @@ function getJoinedRecordSql(whereClause) {
       pd.relative_path AS payroll_document_relative_path,
       pd.mime_type AS payroll_document_mime_type,
       pd.size_bytes AS payroll_document_size_bytes,
+      pd.sha256 AS payroll_document_sha256,
+      pd.file_created_at AS payroll_document_file_created_at,
       pd.uploaded_at AS payroll_document_uploaded_at,
       pd.updated_at AS payroll_document_updated_at
     FROM payroll_records pr
@@ -460,8 +464,56 @@ function listPayrollRecordsByEmployee(employeeId) {
   }));
 }
 
-function listPayrollHistory() {
+function listPayrollHistory(options = {}) {
   const db = getDb();
+  const conditions = [];
+  const params = [];
+  const requestedLimit = Number(options.limit || 0) || 0;
+  const limit = requestedLimit > 0 ? Math.max(1, Math.min(requestedLimit, 200)) : 0;
+  const offset = Math.max(0, Number(options.offset || 0) || 0);
+  const search = String(options.search || '').trim().toLowerCase();
+
+  if (options.year) {
+    conditions.push(`substr(history_rows.month, 1, 4) = ?`);
+    params.push(String(options.year));
+  }
+
+  if (options.month) {
+    conditions.push(`history_rows.month = ?`);
+    params.push(String(options.month).slice(0, 7));
+  }
+
+  if (options.employee_id) {
+    conditions.push(`history_rows.employee_id = ?`);
+    params.push(Number(options.employee_id));
+  }
+
+  if (search) {
+    conditions.push(`
+      LOWER(
+        COALESCE(e.first_name, '') || ' ' ||
+        COALESCE(e.last_name, '') || ' ' ||
+        COALESCE(e.role, '') || ' ' ||
+        COALESCE(e.fiscal_code, '') || ' ' ||
+        COALESCE(history_rows.datore, '') || ' ' ||
+        COALESCE(history_rows.month, '')
+      ) LIKE ?
+    `);
+    params.push(`%${search}%`);
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const totalRow = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM (
+      ${getJoinedRecordSql('')}
+    ) AS history_rows
+    JOIN employees e ON e.id = history_rows.employee_id
+    ${whereClause}
+  `).get(...params);
+  const total = Number(totalRow?.total || 0);
+  const paginationSql = limit ? 'LIMIT ? OFFSET ?' : '';
+  const queryParams = limit ? [...params, limit, offset] : params;
   const rows = db.prepare(`
     SELECT
       history_rows.*,
@@ -484,10 +536,12 @@ function listPayrollHistory() {
       JOIN teams t ON t.id = tm.team_id
       GROUP BY tm.employee_id
     ) AS team_lookup ON team_lookup.employee_id = history_rows.employee_id
+    ${whereClause}
     ORDER BY history_rows.archived_at IS NOT NULL ASC, history_rows.month DESC, e.last_name COLLATE NOCASE ASC, e.first_name COLLATE NOCASE ASC
-  `).all();
+    ${paginationSql}
+  `).all(...queryParams);
 
-  return attachAdvances(rows).map((record) => ({
+  const items = attachAdvances(rows).map((record) => ({
     ...record,
     employee: {
       id: record.employee_id,
@@ -506,6 +560,18 @@ function listPayrollHistory() {
     },
     debt_plans: getDebtPlansByEmployee(record.employee_id, { includeArchived: true }),
   }));
+
+  if (!limit) {
+    return items;
+  }
+
+  return {
+    items,
+    total,
+    limit,
+    offset,
+    has_more: offset + items.length < total,
+  };
 }
 
 function listPayrollYears() {
@@ -733,6 +799,8 @@ async function uploadPayrollDocument(browserWindow, employeeId, month) {
           relative_path = @relative_path,
           mime_type = @mime_type,
           size_bytes = @size_bytes,
+          sha256 = @sha256,
+          file_created_at = @file_created_at,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = @id
     `).run({
@@ -742,9 +810,9 @@ async function uploadPayrollDocument(browserWindow, employeeId, month) {
   } else {
     db.prepare(`
       INSERT INTO payroll_documents (
-        payroll_record_id, category, file_name, stored_name, relative_path, mime_type, size_bytes
+        payroll_record_id, category, file_name, stored_name, relative_path, mime_type, size_bytes, sha256, file_created_at
       ) VALUES (
-        @payroll_record_id, @category, @file_name, @stored_name, @relative_path, @mime_type, @size_bytes
+        @payroll_record_id, @category, @file_name, @stored_name, @relative_path, @mime_type, @size_bytes, @sha256, @file_created_at
       )
     `).run({
       payroll_record_id: record.id,

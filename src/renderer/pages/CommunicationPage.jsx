@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { useYearContext } from '../context/YearContext';
@@ -231,14 +231,18 @@ function getDraftReferenceYear(draft, effectivePeriod, fallbackYear) {
 }
 
 export default function CommunicationPage() {
+  const COMMUNICATION_PAGE_SIZE = 24;
   const navigate = useNavigate();
   const { selectedYear } = useYearContext();
   const [employees, setEmployees] = useState([]);
   const [communications, setCommunications] = useState([]);
+  const [communicationTotal, setCommunicationTotal] = useState(0);
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [emailing, setEmailing] = useState(false);
+  const [historySearch, setHistorySearch] = useState('');
+  const [historyOffset, setHistoryOffset] = useState(0);
   const [includeExcelInEmail, setIncludeExcelInEmail] = useState(true);
   const [draft, setDraft] = useState(blankDraft([]));
   const [payrollByEmployee, setPayrollByEmployee] = useState({});
@@ -246,20 +250,32 @@ export default function CommunicationPage() {
   const [lockedCompensationKey, setLockedCompensationKey] = useState(null);
   const [compensationPopoverPosition, setCompensationPopoverPosition] = useState({ left: 12, top: 12 });
   const compensationCloseTimerRef = useRef(null);
+  const deferredHistorySearch = useDeferredValue(historySearch);
 
   async function loadData() {
     setLoading(true);
     try {
       const [employeeData, communicationData, settingsData] = await Promise.all([
         window.api.employees.list(),
-        window.api.communications.list(),
+        window.api.communications.list({
+          year: selectedYear,
+          search: deferredHistorySearch,
+          limit: COMMUNICATION_PAGE_SIZE,
+          offset: historyOffset,
+        }),
         window.api.settings.get(),
       ]);
 
       const employeeList = employeeData || [];
       setSettings(settingsData || null);
       setEmployees(employeeList);
-      setCommunications(communicationData || []);
+      if (Array.isArray(communicationData)) {
+        setCommunications(communicationData || []);
+        setCommunicationTotal((communicationData || []).length);
+      } else {
+        setCommunications(communicationData?.items || []);
+        setCommunicationTotal(Number(communicationData?.total || 0));
+      }
       setDraft((current) => ({
         ...current,
         company_name: current.id ? current.company_name : settingsData?.company?.document_header || settingsData?.company?.name || current.company_name,
@@ -278,7 +294,11 @@ export default function CommunicationPage() {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [selectedYear, deferredHistorySearch, historyOffset]);
+
+  useEffect(() => {
+    setHistoryOffset(0);
+  }, [selectedYear, deferredHistorySearch]);
 
   useEffect(() => {
     setDraft((current) => {
@@ -342,13 +362,9 @@ export default function CommunicationPage() {
     () => employees.filter((employee) => employeeIsActiveInYear(employee, communicationYear)),
     [employees, communicationYear]
   );
-  const visibleCommunications = useMemo(
-    () => communications.filter((communication) => {
-      const range = getCommunicationReferenceRange(communication);
-      return isDateRangeActiveInYear(range.start, range.end, selectedYear);
-    }),
-    [communications, selectedYear]
-  );
+  const visibleCommunications = communications;
+  const communicationCurrentPage = Math.floor(historyOffset / COMMUNICATION_PAGE_SIZE) + 1;
+  const communicationTotalPages = Math.max(1, Math.ceil(communicationTotal / COMMUNICATION_PAGE_SIZE));
   const communicationEmployeeIdsKey = useMemo(
     () => draft.details.map((row) => row.employee_id).filter(Boolean).join('|'),
     [draft.details]
@@ -496,7 +512,7 @@ export default function CommunicationPage() {
         ...current,
         id: saved.id,
       }));
-      setCommunications(await window.api.communications.list());
+      await loadData();
       return saved;
     } catch (err) {
       console.error(err);
@@ -642,7 +658,7 @@ export default function CommunicationPage() {
   }
 
   async function handleDeleteCommunication(communication) {
-    const confirmed = window.confirm('Confermi l’eliminazione di questa comunicazione?');
+    const confirmed = window.confirm("Confermi l'eliminazione di questa comunicazione?");
     if (!confirmed) return;
 
     try {
@@ -654,7 +670,7 @@ export default function CommunicationPage() {
       if (draft.id === communication.id) {
         resetDraft();
       }
-      setCommunications(await window.api.communications.list());
+      await loadData();
     } catch (err) {
       console.error(err);
       alert('Errore eliminazione comunicazione');
@@ -954,13 +970,45 @@ export default function CommunicationPage() {
             <h2 style={{ margin: 0, fontSize: 24 }}>Comunicazioni salvate</h2>
           </div>
           <span className="soft-chip" style={softInfoStyle}>
-            {visibleCommunications.length} documenti archiviati
+            {communicationTotal} documenti archiviati
           </span>
+        </div>
+
+        <div className="toolbar" style={{ marginBottom: 16 }}>
+          <div className="toolbar-group" style={{ flex: 1 }}>
+            <input
+              className="search-input"
+              placeholder="Cerca per oggetto, azienda, periodo, file..."
+              value={historySearch}
+              onChange={(event) => setHistorySearch(event.target.value)}
+            />
+          </div>
+          <div className="toolbar-group">
+            <span className="soft-chip" style={softInfoStyle}>
+              Pagina {communicationCurrentPage} / {communicationTotalPages}
+            </span>
+            <button
+              type="button"
+              className="button-secondary"
+              disabled={historyOffset === 0 || loading}
+              onClick={() => setHistoryOffset((current) => Math.max(0, current - COMMUNICATION_PAGE_SIZE))}
+            >
+              Pagina precedente
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              disabled={historyOffset + COMMUNICATION_PAGE_SIZE >= communicationTotal || loading}
+              onClick={() => setHistoryOffset((current) => current + COMMUNICATION_PAGE_SIZE)}
+            >
+              Pagina successiva
+            </button>
+          </div>
         </div>
 
         {!visibleCommunications.length ? (
           <div className="empty-state">
-            Nessuna comunicazione salvata per l’anno {selectedYear}. Compila la tabella e usa “Salva nello storico”.
+            Nessuna comunicazione salvata per l'anno {selectedYear}. Compila la tabella e usa "Salva nello storico".
           </div>
         ) : (
           <div className="communication-history-list">

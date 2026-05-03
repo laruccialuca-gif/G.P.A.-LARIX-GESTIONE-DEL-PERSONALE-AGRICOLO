@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 const { app } = require('electron');
 const {
   ensureAppStorageStructure,
+  getBackupsDir,
   getDataDir,
   getLegacyElectronUserDataRoot,
   getUserDataRoot,
@@ -11,9 +12,23 @@ const {
 
 let db;
 const DB_SCHEMA_VERSION = '1.0.0';
+let logWriter = () => {};
+let integrityCheckTimer = null;
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function setLogger(logger) {
+  logWriter = typeof logger === 'function' ? logger : () => {};
+}
+
+function logDbEvent(event, details = {}) {
+  try {
+    logWriter(`db:${event}`, details);
+  } catch {
+    // Best effort only.
+  }
 }
 
 function ensureColumn(database, tableName, columnName, definition) {
@@ -22,7 +37,36 @@ function ensureColumn(database, tableName, columnName, definition) {
 
   if (!exists) {
     database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition};`);
+    return true;
   }
+
+  return false;
+}
+
+function ensureColumnsWithLogging(database, tableName, columns) {
+  const existingColumns = database.prepare(`PRAGMA table_info(${tableName})`).all();
+  const existingNames = new Set(existingColumns.map((column) => column.name));
+  const missingColumns = columns.filter((column) => !existingNames.has(column.name));
+
+  if (!missingColumns.length) {
+    logDbEvent('schema-migration-skipped', {
+      table_name: tableName,
+      reason: 'all-columns-present',
+      checked_columns: columns.map((column) => column.name),
+    });
+    return [];
+  }
+
+  for (const column of missingColumns) {
+    database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${column.name} ${column.definition};`);
+  }
+
+  logDbEvent('schema-table-updated', {
+    table_name: tableName,
+    columns_added: missingColumns.map((column) => column.name),
+  });
+
+  return missingColumns.map((column) => column.name);
 }
 
 function ensureMigrationInfrastructure(database) {
@@ -173,6 +217,8 @@ function runCoreSchemaMigration(database) {
       relative_path TEXT NOT NULL,
       mime_type TEXT,
       size_bytes INTEGER DEFAULT 0,
+      sha256 TEXT,
+      file_created_at TEXT,
       uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (employee_id) REFERENCES employees(id),
@@ -188,6 +234,8 @@ function runCoreSchemaMigration(database) {
       relative_path TEXT NOT NULL,
       mime_type TEXT,
       size_bytes INTEGER DEFAULT 0,
+      sha256 TEXT,
+      file_created_at TEXT,
       uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (payroll_record_id) REFERENCES payroll_records(id),
@@ -237,6 +285,7 @@ function runCoreSchemaMigration(database) {
       hire_date_from TEXT,
       hire_date_to TEXT,
       hired_by TEXT,
+      source_document_id TEXT,
       status TEXT DEFAULT 'attivo',
       is_current INTEGER DEFAULT 1,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -263,7 +312,11 @@ function runCoreSchemaMigration(database) {
       recipient_email TEXT,
       notes TEXT,
       pdf_relative_path TEXT,
+      pdf_sha256 TEXT,
+      pdf_created_at TEXT,
       excel_relative_path TEXT,
+      excel_sha256 TEXT,
+      excel_created_at TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -346,6 +399,15 @@ function runCoreSchemaMigration(database) {
   ensureColumn(database, 'attendance', 'entry_code', 'TEXT');
   ensureColumn(database, 'teams', 'is_archived', 'INTEGER DEFAULT 0');
   ensureColumn(database, 'teams', 'archived_at', 'TEXT');
+  ensureColumn(database, 'employee_employment_periods', 'source_document_id', 'TEXT');
+  ensureColumn(database, 'employee_documents', 'sha256', 'TEXT');
+  ensureColumn(database, 'employee_documents', 'file_created_at', 'TEXT');
+  ensureColumn(database, 'payroll_documents', 'sha256', 'TEXT');
+  ensureColumn(database, 'payroll_documents', 'file_created_at', 'TEXT');
+  ensureColumn(database, 'communications', 'pdf_sha256', 'TEXT');
+  ensureColumn(database, 'communications', 'pdf_created_at', 'TEXT');
+  ensureColumn(database, 'communications', 'excel_sha256', 'TEXT');
+  ensureColumn(database, 'communications', 'excel_created_at', 'TEXT');
 
   ensureColumn(database, 'payroll_records', 'datore', 'TEXT');
   ensureColumn(database, 'payroll_records', 'acconti_details', 'TEXT');
@@ -365,9 +427,13 @@ function runCoreSchemaMigration(database) {
 
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_attendance_employee_date ON attendance(employee_id, date);
+    CREATE INDEX IF NOT EXISTS idx_attendance_employee_month ON attendance(employee_id, substr(date, 1, 7));
+    CREATE INDEX IF NOT EXISTS idx_attendance_year_month ON attendance(substr(date, 1, 4), substr(date, 1, 7));
     CREATE INDEX IF NOT EXISTS idx_occupations_name ON occupations(name);
+    CREATE INDEX IF NOT EXISTS idx_employees_fiscal_code ON employees(fiscal_code);
     CREATE INDEX IF NOT EXISTS idx_employees_status ON employees(status, is_deleted);
     CREATE INDEX IF NOT EXISTS idx_payroll_employee_month ON payroll_records(employee_id, month);
+    CREATE INDEX IF NOT EXISTS idx_payroll_employee_year ON payroll_records(employee_id, substr(month, 1, 4));
     CREATE INDEX IF NOT EXISTS idx_payroll_archived ON payroll_records(archived_at, processed_at, month);
     CREATE INDEX IF NOT EXISTS idx_employee_documents_employee ON employee_documents(employee_id, category);
     CREATE INDEX IF NOT EXISTS idx_payroll_documents_record ON payroll_documents(payroll_record_id, category);
@@ -378,6 +444,7 @@ function runCoreSchemaMigration(database) {
     CREATE INDEX IF NOT EXISTS idx_team_members_employee ON team_members(employee_id);
     CREATE INDEX IF NOT EXISTS idx_teams_archived ON teams(is_archived, name);
     CREATE INDEX IF NOT EXISTS idx_employee_periods_employee ON employee_employment_periods(employee_id, is_current, id);
+    CREATE INDEX IF NOT EXISTS idx_employee_periods_range ON employee_employment_periods(employee_id, hire_date_from, hire_date_to);
     CREATE INDEX IF NOT EXISTS idx_communications_period ON communications(period_start, period_end, created_at);
     CREATE INDEX IF NOT EXISTS idx_communication_details_comm ON communication_details(communication_id, sort_order, id);
   `);
@@ -451,6 +518,110 @@ function runEmployeeOvertimeRateMigration(database) {
   ensureColumn(database, 'employees', 'overtime_hourly_rate', 'REAL');
 }
 
+function runDocumentArtifactMetadataMigration(database) {
+  ensureColumnsWithLogging(database, 'employee_documents', [
+    { name: 'sha256', definition: 'TEXT' },
+    { name: 'file_created_at', definition: 'TEXT' },
+  ]);
+  ensureColumnsWithLogging(database, 'payroll_documents', [
+    { name: 'sha256', definition: 'TEXT' },
+    { name: 'file_created_at', definition: 'TEXT' },
+  ]);
+  ensureColumnsWithLogging(database, 'communications', [
+    { name: 'pdf_sha256', definition: 'TEXT' },
+    { name: 'pdf_created_at', definition: 'TEXT' },
+    { name: 'excel_sha256', definition: 'TEXT' },
+    { name: 'excel_created_at', definition: 'TEXT' },
+  ]);
+}
+
+function runEmploymentPeriodSourceDocumentMigration(database) {
+  logDbEvent('migration-started', {
+    migration_id: '2026-05-02-employee-period-source-document',
+    table_name: 'employee_employment_periods',
+    column_name: 'source_document_id',
+  });
+
+  const columns = database.prepare("PRAGMA table_info('employee_employment_periods')").all();
+  const hasSourceDocumentId = columns.some((column) => column.name === 'source_document_id');
+
+  if (hasSourceDocumentId) {
+    logDbEvent('schema-migration-skipped', {
+      table_name: 'employee_employment_periods',
+      column_name: 'source_document_id',
+      reason: 'column-already-present',
+    });
+    return;
+  }
+
+  database.exec('ALTER TABLE employee_employment_periods ADD COLUMN source_document_id TEXT;');
+  logDbEvent('schema-table-updated', {
+    table_name: 'employee_employment_periods',
+    columns_added: ['source_document_id'],
+  });
+}
+
+function runUsersAndAuditMigration(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      full_name TEXT NOT NULL,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'operatore',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_by_user_id INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      last_login_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      username_snapshot TEXT,
+      action TEXT NOT NULL,
+      entity_type TEXT,
+      entity_id TEXT,
+      details_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+    CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
+    CREATE INDEX IF NOT EXISTS idx_users_created_by_user_id ON users(created_by_user_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action, created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_entity ON audit_logs(entity_type, entity_id, created_at);
+  `);
+}
+
+function runUsersCreatedByMigration(database) {
+  logDbEvent('schema-migration-started', {
+    migration_id: '2026-05-02-users-created-by-user-id',
+    table_name: 'users',
+    column_name: 'created_by_user_id',
+  });
+
+  const userColumns = database.prepare("PRAGMA table_info('users')").all();
+  const hasCreatedByUserId = userColumns.some((column) => column.name === 'created_by_user_id');
+  if (hasCreatedByUserId) {
+    logDbEvent('schema-migration-skipped', {
+      table_name: 'users',
+      column_name: 'created_by_user_id',
+      reason: 'column-already-present',
+    });
+    return;
+  }
+
+  database.exec('ALTER TABLE users ADD COLUMN created_by_user_id INTEGER;');
+  database.exec('CREATE INDEX IF NOT EXISTS idx_users_created_by_user_id ON users(created_by_user_id);');
+  logDbEvent('schema-table-updated', {
+    table_name: 'users',
+    columns_added: ['created_by_user_id'],
+  });
+}
+
 const MIGRATIONS = [
   {
     id: '2026-04-20-core-schema',
@@ -476,19 +647,107 @@ const MIGRATIONS = [
     id: '2026-04-23-employee-overtime-rate',
     run: runEmployeeOvertimeRateMigration,
   },
+  {
+    id: '2026-05-01-document-artifact-metadata',
+    run: runDocumentArtifactMetadataMigration,
+  },
+  {
+    id: '2026-05-02-employee-period-source-document',
+    run: runEmploymentPeriodSourceDocumentMigration,
+  },
+  {
+    id: '2026-05-02-users-and-audit',
+    run: runUsersAndAuditMigration,
+  },
+  {
+    id: '2026-05-02-users-created-by-user-id',
+    run: runUsersCreatedByMigration,
+  },
 ];
+
+function escapeSqlitePath(filePath) {
+  return String(filePath).replace(/'/g, "''");
+}
+
+function createPreMigrationBackup(databasePath) {
+  if (!fs.existsSync(databasePath)) {
+    return null;
+  }
+
+  const backupRoot = path.join(getBackupsDir(), 'migration-safety');
+  ensureDir(backupRoot);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const targetPath = path.join(backupRoot, `pre-migration-${stamp}.sqlite`);
+  const sourceDb = new Database(databasePath, { readonly: true });
+  try {
+    sourceDb.exec(`VACUUM INTO '${escapeSqlitePath(targetPath)}'`);
+  } finally {
+    sourceDb.close();
+  }
+
+  logDbEvent('migration-backup-created', {
+    source_db: databasePath,
+    backup_path: targetPath,
+  });
+  return targetPath;
+}
+
+function executeIntegrityCheck(database, context = 'manual') {
+  const checkedAt = new Date().toISOString();
+  const rows = database.prepare('PRAGMA integrity_check').all();
+  const messages = rows.map((row) => row.integrity_check || Object.values(row)[0]).filter(Boolean);
+  const success = messages.length === 1 && messages[0] === 'ok';
+
+  setMetadata(database, 'last_integrity_check_at', checkedAt);
+  setMetadata(database, 'last_integrity_check_result', success ? 'ok' : messages.join(' | '));
+
+  if (!success) {
+    logDbEvent('integrity-failed', {
+      context,
+      checked_at: checkedAt,
+      messages,
+    });
+  } else {
+    logDbEvent('integrity-ok', {
+      context,
+      checked_at: checkedAt,
+    });
+  }
+
+  return {
+    ok: success,
+    checked_at: checkedAt,
+    messages,
+  };
+}
 
 function runMigrations(database) {
   ensureMigrationInfrastructure(database);
+  const pendingMigrations = MIGRATIONS.filter((migration) => !hasMigration(database, migration.id));
+
+  if (pendingMigrations.length) {
+    createPreMigrationBackup(getDbPath());
+  }
 
   const tx = database.transaction((migration) => {
     migration.run(database);
     recordMigration(database, migration.id);
+    logDbEvent('migration-applied', {
+      migration_id: migration.id,
+      app_version: app.getVersion(),
+    });
   });
 
-  for (const migration of MIGRATIONS) {
+  for (const migration of pendingMigrations) {
     if (!hasMigration(database, migration.id)) {
       tx(migration);
+    }
+  }
+
+  if (pendingMigrations.length) {
+    const integrity = executeIntegrityCheck(database, 'post-migration');
+    if (!integrity.ok) {
+      throw new Error(`Integrity check fallito dopo la migrazione: ${integrity.messages.join(' | ')}`);
     }
   }
 
@@ -673,6 +932,8 @@ function getDb() {
   db = new Database(getDbPath());
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('busy_timeout = 5000');
   runMigrations(db);
   return db;
 }
@@ -707,10 +968,65 @@ function getDatabaseRuntimeInfo() {
   };
 }
 
+function runIntegrityCheck() {
+  const database = getDb();
+
+  try {
+    return executeIntegrityCheck(database, 'manual');
+  } catch (error) {
+    logDbEvent('error', {
+      context: 'integrity_check',
+      message: error?.message || String(error),
+    });
+    throw error;
+  }
+}
+
+function bootstrapIntegrityChecks(onFailure = () => {}) {
+  try {
+    const result = runIntegrityCheck();
+    if (!result.ok) {
+      onFailure(result);
+    }
+  } catch (error) {
+    onFailure({
+      ok: false,
+      checked_at: new Date().toISOString(),
+      messages: [error?.message || String(error)],
+    });
+  }
+
+  if (integrityCheckTimer) {
+    clearInterval(integrityCheckTimer);
+  }
+
+  integrityCheckTimer = setInterval(() => {
+    try {
+      const result = runIntegrityCheck();
+      if (!result.ok) {
+        onFailure(result);
+      }
+    } catch (error) {
+      onFailure({
+        ok: false,
+        checked_at: new Date().toISOString(),
+        messages: [error?.message || String(error)],
+      });
+    }
+  }, 12 * 60 * 60 * 1000);
+
+  if (typeof integrityCheckTimer.unref === 'function') {
+    integrityCheckTimer.unref();
+  }
+}
+
 module.exports = {
   DB_SCHEMA_VERSION,
+  bootstrapIntegrityChecks,
   closeDb,
   getDb,
   getDatabaseRuntimeInfo,
   getDbPath,
+  runIntegrityCheck,
+  setLogger,
 };

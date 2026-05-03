@@ -1,17 +1,30 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { dialog, app } = require('electron');
+const { dialog, app, shell } = require('electron');
 const { getDataDir, getConfigDir, getDocumentsDir, getBackupsDir, getUserDataRoot } = require('./storagePaths');
 const settingsService = require('./settingsService');
 const { getDb, getDbPath } = require('./db');
 
 const MAX_MANUAL_BACKUPS = 10;
-const MAX_AUTO_BACKUPS = 14;
+const MAX_AUTO_BACKUPS = 30;
+let logWriter = () => {};
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
   return dirPath;
+}
+
+function setLogger(logger) {
+  logWriter = typeof logger === 'function' ? logger : () => {};
+}
+
+function logBackupEvent(event, details = {}) {
+  try {
+    logWriter(`backup:${event}`, details);
+  } catch {
+    // Best effort.
+  }
 }
 
 async function withRetry(fn, { attempts = 4, delayMs = 250 } = {}) {
@@ -248,11 +261,34 @@ function createBackup(type = 'manual') {
   const manifest = buildManifest({ type, folderName, files });
   fs.writeFileSync(getManifestPath(backupDir), JSON.stringify(manifest, null, 2), 'utf8');
 
-  const validation = validateBackup(backupDir);
+  let validation;
+  try {
+    validation = validateBackup(backupDir);
+  } catch (error) {
+    logBackupEvent('failed', {
+      type,
+      folder_name: folderName,
+      backup_dir: backupDir,
+      message: error?.message || String(error),
+    });
+    throw error;
+  }
+
   if (validation.valid) {
-    console.info(`Backup ${folderName} validato correttamente.`);
+    logBackupEvent('created', {
+      type,
+      folder_name: folderName,
+      backup_dir: backupDir,
+      file_count: files.length,
+      created_at: manifest.created_at,
+    });
   } else {
-    console.error(`Validazione backup fallita per ${folderName}: ${validation.message}`);
+    logBackupEvent('failed', {
+      type,
+      folder_name: folderName,
+      backup_dir: backupDir,
+      message: validation.message,
+    });
   }
 
   if (type === 'automatic' && validation.valid) {
@@ -353,6 +389,19 @@ function chooseRestoreBackup(browserWindow) {
     properties: ['openDirectory'],
     defaultPath: getEffectiveBackupDir(),
   });
+}
+
+async function openBackupDirectory() {
+  const targetDir = getEffectiveBackupDir();
+  const result = await shell.openPath(targetDir);
+  if (result) {
+    throw new Error(result);
+  }
+
+  return {
+    success: true,
+    backup_dir: targetDir,
+  };
 }
 
 async function restoreBackup(backupDir) {
@@ -459,32 +508,26 @@ async function restoreBackup(backupDir) {
   try { fs.rmSync(tombstoneRoot, { recursive: true, force: true }); } catch {}
   try { fs.rmSync(stagingRoot, { recursive: true, force: true }); } catch {}
 
+  logBackupEvent('restored', {
+    backup_dir: backupDir,
+    restored_at: new Date().toISOString(),
+    manifest_type: validation.manifest?.type || '',
+  });
+
   return {
     success: true,
     backup_dir: backupDir,
     manifest: validation.manifest,
+    pre_restore_backup_dir: preRestoreStats?.backup_dir || '',
   };
 }
 
 function shouldRunScheduledBackup(settings, now = new Date()) {
-  const mode = settings.backup.automatic_mode;
-  if (mode === 'none') return false;
-
   const last = settings.backup.last_auto_backup_at ? new Date(settings.backup.last_auto_backup_at) : null;
   if (!last || Number.isNaN(last.getTime())) return true;
-
-  const diffMs = now.getTime() - last.getTime();
-  const oneDay = 24 * 60 * 60 * 1000;
-
-  if (mode === 'daily') {
-    return diffMs >= oneDay;
-  }
-
-  if (mode === 'weekly') {
-    return diffMs >= oneDay * 7;
-  }
-
-  return false;
+  const todayKey = now.toISOString().slice(0, 10);
+  const lastKey = last.toISOString().slice(0, 10);
+  return todayKey !== lastKey;
 }
 
 function maybeRunAutomaticBackup() {
@@ -496,7 +539,10 @@ function maybeRunAutomaticBackup() {
   try {
     return createBackup('automatic');
   } catch (error) {
-    console.error('Backup automatico fallito:', error);
+    logBackupEvent('failed', {
+      type: 'automatic',
+      message: error?.message || String(error),
+    });
     return null;
   }
 }
@@ -510,9 +556,17 @@ function maybeRunExitBackup() {
   try {
     return createBackup('automatic');
   } catch (error) {
-    console.error('Backup automatico in uscita fallito:', error);
+    logBackupEvent('failed', {
+      type: 'automatic-exit',
+      message: error?.message || String(error),
+    });
     return null;
   }
+}
+
+function createOperationSafetyBackup(reason = 'operazione_critica') {
+  const normalizedReason = String(reason || 'operazione_critica').trim().replace(/\s+/g, '_').toLowerCase();
+  return createBackup(`pre-operation-${normalizedReason}`);
 }
 
 async function checkAndHandleIncompleteRestore() {
@@ -647,10 +701,13 @@ module.exports = {
   checkAndHandleIncompleteRestore,
   chooseRestoreBackup,
   createBackup,
+  createOperationSafetyBackup,
   getEffectiveBackupDir,
   listBackups,
   maybeRunAutomaticBackup,
   maybeRunExitBackup,
+  openBackupDirectory,
   restoreBackup,
+  setLogger,
   validateBackup,
 };

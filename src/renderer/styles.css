@@ -36,6 +36,8 @@
   --radius-xl: 28px;
   --radius-lg: 20px;
   --radius-md: 14px;
+  --sidebar-width: 288px;
+  --app-content-padding: 32px;
 }
 
 @keyframes spin {
@@ -138,7 +140,7 @@ textarea {
 
 .app-main-inner {
   min-height: 100%;
-  padding: 32px;
+  padding: var(--app-content-padding);
   display: flex;
   flex-direction: column;
 }
@@ -202,7 +204,8 @@ textarea {
 
 .app-sidebar {
   flex-shrink: 0;
-  width: 288px;
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
   padding: 18px 0 18px 18px;
   overflow: hidden;
 }
@@ -357,6 +360,7 @@ textarea {
 .page {
   display: grid;
   gap: 24px;
+  min-width: 0;
 }
 
 .page-sticky-stack {
@@ -365,6 +369,7 @@ textarea {
   z-index: 14;
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .page-sticky-stack > .page-hero,
@@ -477,6 +482,7 @@ textarea {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .button,
@@ -545,6 +551,7 @@ textarea {
   gap: 12px;
   flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
 }
 
 .global-year-toolbar {
@@ -568,6 +575,19 @@ textarea {
 .search-input {
   max-width: 360px;
   background: rgba(255, 255, 255, 0.92);
+}
+
+.page-actions > *,
+.toolbar-group > *,
+.soft-chip,
+.status-chip {
+  max-width: 100%;
+}
+
+.soft-chip,
+.status-chip {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .history-toolbar {
@@ -961,6 +981,7 @@ textarea {
 .attendance-toolbar-group {
   gap: 6px;
   flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .attendance-month-nav {
@@ -983,6 +1004,7 @@ textarea {
 .attendance-month-input {
   width: 160px;
   padding: 9px 12px;
+  max-width: 100%;
 }
 
 .attendance-entity-select {
@@ -1012,6 +1034,19 @@ textarea {
 .attendance-table td {
   overflow: hidden;
   white-space: nowrap;
+}
+
+.attendance-table thead th:first-child,
+.attendance-table tbody td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: inherit;
+}
+
+.attendance-table thead th:first-child {
+  z-index: 4;
+  background: #f9fafb;
 }
 
 .attendance-bulk-bar {
@@ -1195,6 +1230,7 @@ textarea {
 
 .table-scroll {
   overflow-x: auto;
+  min-width: 0;
 }
 
 .table {
@@ -1212,6 +1248,7 @@ textarea {
   padding: 14px 16px;
   text-align: left;
   border-bottom: 1px solid rgba(20, 33, 61, 0.06);
+  vertical-align: top;
 }
 
 .table tbody tr:nth-child(even) {
@@ -1271,6 +1308,7 @@ textarea {
   border: 1px solid rgba(255, 255, 255, 0.7);
   box-shadow: 0 28px 80px rgba(11, 18, 32, 0.3);
   padding: 24px;
+  min-width: 0;
 }
 
 .modal-header {
@@ -1578,6 +1616,123 @@ textarea {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.employee-directory-head,
+.employee-directory-row,
+.employee-archived-row {
+  min-width: 0;
+}
+
+.employee-col {
+  min-width: 0;
+}
+
+.employee-col--name {
+  flex: 1 1 240px;
+}
+
+.employee-col--contract {
+  width: 130px;
+}
+
+.employee-col--date-from,
+.employee-col--date-to {
+  width: 90px;
+}
+
+.employee-col--expiry {
+  width: 160px;
+}
+
+.employee-col--pay {
+  width: 110px;
+}
+
+.employee-col--checks {
+  width: 150px;
+  flex-wrap: wrap;
+}
+
+.employee-col--state {
+  width: 162px;
+}
+
+.employee-col--actions {
+  width: 92px;
+  margin-left: auto;
+}
+
+.employee-primary-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.employee-secondary-text {
+  min-width: 0;
+}
+
+.employee-archived-main {
+  min-width: 0;
+}
+
+.employee-archived-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pdf-import-dialog {
+  min-width: 0;
+  max-height: 90vh !important;
+  overflow: hidden !important;
+  display: flex;
+  flex-direction: column;
+}
+
+.pdf-import-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pdf-import-table-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pdf-import-toolbar {
+  gap: 10px;
+}
+
+.pdf-import-toolbar-group {
+  flex: 1 1 320px;
+}
+
+.pdf-import-table {
+  width: 100%;
+}
+
+.pdf-import-table td,
+.pdf-import-table th {
+  word-break: break-word;
+}
+
+.pdf-import-table-scroll {
+  display: block;
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  overflow-x: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.pdf-import-footer {
+  padding-top: 4px;
+}
+
 .settings-actions-row {
   display: flex;
   gap: 10px;
@@ -1705,8 +1860,90 @@ textarea {
 }
 
 @media (max-width: 1100px) {
+  :root {
+    --sidebar-width: 248px;
+    --app-content-padding: 20px;
+  }
+
   .app-main-inner {
     padding: 20px;
+  }
+
+  .page-hero {
+    padding: 22px;
+  }
+
+  .toolbar {
+    padding: 14px 16px;
+  }
+
+  .report-entity-select,
+  .attendance-entity-select {
+    min-width: 220px;
+    max-width: 100%;
+  }
+
+  .attendance-month-label,
+  .report-month-label {
+    min-width: 126px;
+  }
+
+  .settings-inline-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .employee-directory-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .employee-col--name {
+    flex-basis: calc(100% - 84px);
+    min-width: 220px;
+  }
+
+  .employee-col--contract,
+  .employee-col--date-from,
+  .employee-col--date-to,
+  .employee-col--expiry,
+  .employee-col--pay,
+  .employee-col--checks,
+  .employee-col--state {
+    width: auto;
+    flex: 1 1 140px;
+  }
+
+  .employee-col--checks {
+    flex-basis: 220px;
+  }
+
+  .employee-col--actions {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-start !important;
+    flex: 1 1 100%;
+  }
+
+  .employee-directory-head {
+    display: none !important;
+  }
+
+  .employee-archived-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .employee-archived-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .pdf-import-toolbar-group {
+    flex-basis: 100%;
+  }
+
+  .pdf-import-table {
+    min-width: 1180px !important;
   }
 }
 
@@ -1744,6 +1981,10 @@ textarea {
     padding: 18px;
   }
 
+  .demo-banner {
+    align-items: flex-start;
+  }
+
   .attendance-hero {
     padding: 18px;
   }
@@ -1754,7 +1995,8 @@ textarea {
 
   .attendance-toolbar-group {
     width: 100%;
-    justify-content: space-between;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .attendance-month-label,
@@ -1812,7 +2054,8 @@ textarea {
   .stats-grid,
   .dashboard-grid,
   .communication-editor-grid,
-  .directory-columns {
+  .directory-columns,
+  .settings-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1829,6 +2072,97 @@ textarea {
 
   .directory-panel-head {
     position: static;
+  }
+
+  .pdf-import-table {
+    min-width: 1040px !important;
+  }
+}
+
+@media (max-width: 760px) {
+  :root {
+    --sidebar-width: 100%;
+    --app-content-padding: 14px;
+  }
+
+  .app-shell {
+    height: auto;
+    min-height: 100vh;
+    overflow: auto;
+    flex-direction: column;
+  }
+
+  .app-sidebar {
+    width: 100%;
+    min-width: 0;
+    padding: 12px 12px 0;
+  }
+
+  .sidebar-panel {
+    height: auto;
+    max-height: none;
+    border-radius: 22px;
+    padding: 16px 14px;
+  }
+
+  .sidebar-brand {
+    padding: 12px 8px 16px;
+  }
+
+  .sidebar-logo-wrap {
+    min-height: auto;
+    padding: 10px 0;
+  }
+
+  .sidebar-subtitle,
+  .sidebar-footer {
+    display: none;
+  }
+
+  .sidebar-nav {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+
+  .app-main {
+    overflow: visible;
+  }
+
+  .page-sticky-stack {
+    position: static;
+  }
+
+  .page-actions,
+  .toolbar-group,
+  .history-toolbar-main,
+  .history-toolbar-filters,
+  .attendance-action-row {
+    width: 100%;
+  }
+
+  .page-actions > *,
+  .toolbar-group > *,
+  .attendance-action-row > * {
+    flex: 1 1 180px;
+  }
+
+  .button,
+  .button-secondary,
+  .button-warning,
+  .button-danger {
+    min-height: 40px;
+    padding: 0 14px;
+  }
+
+  .modal-dialog,
+  .license-dialog {
+    width: min(100%, 94vw);
+    padding: 18px;
+  }
+
+  .table th,
+  .table td {
+    padding: 12px 10px;
+    font-size: 13px;
   }
 }
 

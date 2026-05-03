@@ -44,8 +44,100 @@ function normalizeString(value) {
   return String(value || '').trim();
 }
 
+function normalizeLabelToken(value) {
+  return normalizeString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function isInvalidImportedNamePart(value, expectedField) {
+  const token = normalizeLabelToken(value);
+  if (!token) return true;
+  const invalidByField = {
+    first_name: ['nome', 'cognome', 'codicefiscale', 'cf'],
+    last_name: ['cognome', 'nome', 'codicefiscale', 'cf'],
+  };
+  return (invalidByField[expectedField] || []).includes(token);
+}
+
+function normalizeEmployeeIds(ids = []) {
+  return [...new Set(
+    (Array.isArray(ids) ? ids : [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0)
+  )];
+}
+
 function normalizeFiscalCode(value) {
-  return normalizeString(value).toUpperCase() || null;
+  return normalizeString(value).replace(/\s+/g, '').toUpperCase() || null;
+}
+
+function normalizeEmployerCode(value) {
+  const normalized = normalizeString(value).toUpperCase();
+  return normalized || null;
+}
+
+function normalizeDateValue(value) {
+  const raw = normalizeString(value);
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const parts = raw.split(/[\/\-.]/);
+  if (parts.length === 3 && parts[0].length === 2) {
+    return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  }
+  return raw;
+}
+
+function isValidFiscalCode(value) {
+  return /^[A-Z0-9]{16}$/.test(normalizeFiscalCode(value) || '');
+}
+
+function buildEmployerCodes(value) {
+  if (String(value || '').trim().toLowerCase() === 'entrambi') {
+    return ['LC', 'LG'];
+  }
+
+  const normalized = normalizeEmployerCode(value);
+  return normalized ? [normalized] : [];
+}
+
+function summarizeEmployerCodes(periods = []) {
+  const codes = [...new Set(
+    periods
+      .map((period) => normalizeEmployerCode(period.hired_by))
+      .filter(Boolean)
+  )];
+  return {
+    employer_codes: codes,
+    has_multiple_employers: codes.length > 1,
+    has_both_employers: codes.includes('LC') && codes.includes('LG'),
+  };
+}
+
+function validateImportedEmployeeRecord(record = {}) {
+  const reasons = [];
+  if (!normalizeFiscalCode(record.fiscal_code)) {
+    reasons.push('CF mancante');
+  } else if (!isValidFiscalCode(record.fiscal_code)) {
+    reasons.push('CF non valido');
+  }
+  if (!normalizeString(record.first_name)) {
+    reasons.push('nome mancante');
+  } else if (isInvalidImportedNamePart(record.first_name, 'first_name')) {
+    reasons.push('nome non valido');
+  }
+  if (!normalizeString(record.last_name)) {
+    reasons.push('cognome mancante');
+  } else if (isInvalidImportedNamePart(record.last_name, 'last_name')) {
+    reasons.push('cognome non valido');
+  }
+  if (!normalizeDateValue(record.hire_date_from)) {
+    reasons.push('data mancante');
+  }
+  if (!buildEmployerCodes(record.hired_by).length) {
+    reasons.push('datore mancante');
+  }
+  return reasons;
 }
 
 function mapEmployeeInput(employee) {
@@ -97,7 +189,7 @@ function loadEmploymentPeriods(employeeIds) {
 
   const placeholders = employeeIds.map(() => '?').join(', ');
   const rows = db.prepare(`
-    SELECT id, employee_id, hire_date_from, hire_date_to, hired_by, status, is_current, created_at, updated_at
+    SELECT id, employee_id, hire_date_from, hire_date_to, hired_by, source_document_id, status, is_current, created_at, updated_at
     FROM employee_employment_periods
     WHERE employee_id IN (${placeholders})
     ORDER BY employee_id ASC, is_current DESC, COALESCE(hire_date_from, created_at) DESC, id DESC
@@ -111,6 +203,7 @@ function loadEmploymentPeriods(employeeIds) {
       hire_date_from: row.hire_date_from || null,
       hire_date_to: row.hire_date_to || null,
       hired_by: row.hired_by || null,
+      source_document_id: row.source_document_id || null,
       status: row.status || 'attivo',
       is_current: !!row.is_current,
       created_at: row.created_at,
@@ -195,6 +288,7 @@ function attachEmployeeRelations(rows) {
       ...period,
       hire_document: periodDocsMap.get(period.id) || null,
     }));
+    const employerSummary = summarizeEmployerCodes(employmentPeriods);
     const legacyHireDocument = buildDocumentFromRow(row, 'hire_document');
     const currentPeriodHireDocument =
       employmentPeriods.find((period) => period.is_current && period.hire_document)?.hire_document ||
@@ -210,6 +304,9 @@ function attachEmployeeRelations(rows) {
           ? Number(row.overtime_hourly_rate)
           : null,
       employment_periods: employmentPeriods,
+      employer_codes: employerSummary.employer_codes,
+      has_multiple_employers: employerSummary.has_multiple_employers,
+      has_both_employers: employerSummary.has_both_employers,
       team_history: teamsMap.get(row.id) || [],
       hire_document: legacyHireDocument || currentPeriodHireDocument,
       legacy_hire_document: legacyHireDocument,
@@ -228,6 +325,8 @@ function buildDocumentFromRow(row, prefix) {
         relative_path: row[`${prefix}_relative_path`],
         mime_type: row[`${prefix}_mime_type`],
         size_bytes: row[`${prefix}_size_bytes`],
+        sha256: row[`${prefix}_sha256`],
+        file_created_at: row[`${prefix}_file_created_at`],
         uploaded_at: row[`${prefix}_uploaded_at`],
         updated_at: row[`${prefix}_updated_at`],
       })
@@ -244,6 +343,8 @@ function getEmployeeBaseSql(whereClause) {
       hire_doc.relative_path AS hire_document_relative_path,
       hire_doc.mime_type AS hire_document_mime_type,
       hire_doc.size_bytes AS hire_document_size_bytes,
+      hire_doc.sha256 AS hire_document_sha256,
+      hire_doc.file_created_at AS hire_document_file_created_at,
       hire_doc.uploaded_at AS hire_document_uploaded_at,
       hire_doc.updated_at AS hire_document_updated_at,
       art37_doc.id AS art37_document_id,
@@ -252,6 +353,8 @@ function getEmployeeBaseSql(whereClause) {
       art37_doc.relative_path AS art37_document_relative_path,
       art37_doc.mime_type AS art37_document_mime_type,
       art37_doc.size_bytes AS art37_document_size_bytes,
+      art37_doc.sha256 AS art37_document_sha256,
+      art37_doc.file_created_at AS art37_document_file_created_at,
       art37_doc.uploaded_at AS art37_document_uploaded_at,
       art37_doc.updated_at AS art37_document_updated_at,
       medical_doc.id AS medical_visit_document_id,
@@ -260,6 +363,8 @@ function getEmployeeBaseSql(whereClause) {
       medical_doc.relative_path AS medical_visit_document_relative_path,
       medical_doc.mime_type AS medical_visit_document_mime_type,
       medical_doc.size_bytes AS medical_visit_document_size_bytes,
+      medical_doc.sha256 AS medical_visit_document_sha256,
+      medical_doc.file_created_at AS medical_visit_document_file_created_at,
       medical_doc.uploaded_at AS medical_visit_document_uploaded_at,
       medical_doc.updated_at AS medical_visit_document_updated_at
     FROM employees e
@@ -312,6 +417,25 @@ function setCurrentPeriodsInactive(employeeId) {
     WHERE employee_id = ?
       AND is_current = 1
   `).run(employeeId);
+}
+
+function setCurrentPeriodsInactiveBulk(employeeIds) {
+  const db = getDb();
+  const normalizedIds = normalizeEmployeeIds(employeeIds);
+  if (!normalizedIds.length) {
+    return 0;
+  }
+
+  const placeholders = normalizedIds.map(() => '?').join(', ');
+  const result = db.prepare(`
+    UPDATE employee_employment_periods
+    SET is_current = 0,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE employee_id IN (${placeholders})
+      AND is_current = 1
+  `).run(...normalizedIds);
+
+  return result.changes || 0;
 }
 
 function upsertCurrentEmploymentPeriod(employeeId, employeeData, { forceNewPeriod = false } = {}) {
@@ -418,6 +542,119 @@ function findEmployeeHistoryMatches(criteria = {}) {
     employment_periods: employee.employment_periods,
     team_history: employee.team_history,
   }));
+}
+
+function findEmploymentPeriodMatch(periods = [], { hire_date_from, hire_date_to, hired_by }) {
+  const normalizedFrom = normalizeDateValue(hire_date_from);
+  const normalizedTo = normalizeDateValue(hire_date_to);
+  const employerCode = normalizeEmployerCode(hired_by);
+  const sameEmployer = periods.filter((period) => normalizeEmployerCode(period.hired_by) === employerCode);
+  const exact = sameEmployer.find(
+    (period) =>
+      normalizeDateValue(period.hire_date_from) === normalizedFrom &&
+      normalizeDateValue(period.hire_date_to) === normalizedTo
+  );
+  const sameStart = sameEmployer.find(
+    (period) => normalizeDateValue(period.hire_date_from) === normalizedFrom
+  );
+
+  return {
+    sameEmployer,
+    exact: exact || null,
+    sameStart: sameStart || null,
+  };
+}
+
+function classifyImportedEmployeeRecord(record = {}) {
+  const normalized = {
+    ...record,
+    first_name: normalizeString(record.first_name),
+    last_name: normalizeString(record.last_name),
+    fiscal_code: normalizeFiscalCode(record.fiscal_code),
+    hire_date_from: normalizeDateValue(record.hire_date_from),
+    hire_date_to: normalizeDateValue(record.hire_date_to),
+    hired_by: normalizeString(record.hired_by || record.hired_by_detected),
+  };
+  const correctionReasons = validateImportedEmployeeRecord(normalized);
+  const matches = normalized.fiscal_code
+    ? findEmployeeHistoryMatches({ fiscal_code: normalized.fiscal_code })
+    : [];
+  const exactDuplicateKey = [
+    normalized.fiscal_code,
+    normalized.hired_by,
+    normalized.hire_date_from,
+    normalized.hire_date_to,
+  ].join('|');
+
+  if (correctionReasons.length) {
+    return {
+      ...normalized,
+      status: 'da_correggere',
+      import_action: 'scartato',
+      selected: false,
+      existing_employee_id: null,
+      existing_name: null,
+      existing_is_deleted: false,
+      correction_reasons: correctionReasons,
+      exact_duplicate_key: exactDuplicateKey,
+      decision: 'scartato',
+    };
+  }
+
+  if (!matches.length) {
+    return {
+      ...normalized,
+      status: 'pronto',
+      import_action: 'nuovo',
+      selected: true,
+      existing_employee_id: null,
+      existing_name: null,
+      existing_is_deleted: false,
+      correction_reasons: [],
+      exact_duplicate_key: exactDuplicateKey,
+      decision: 'crea-dipendente',
+    };
+  }
+
+  const activeMatch = matches.find((item) => !item.is_deleted) || matches[0];
+  const employerCodes = buildEmployerCodes(normalized.hired_by);
+  const periodChecks = employerCodes.map((code) =>
+    findEmploymentPeriodMatch(activeMatch.employment_periods || [], {
+      hire_date_from: normalized.hire_date_from,
+      hire_date_to: normalized.hire_date_to,
+      hired_by: code,
+    })
+  );
+  const allExact = periodChecks.every((check) => !!check.exact);
+  const hasNewEmployer = periodChecks.some((check) => check.sameEmployer.length === 0);
+
+  if (allExact) {
+    return {
+      ...normalized,
+      status: 'già_presente',
+      import_action: 'già_presente',
+      selected: false,
+      existing_employee_id: activeMatch.id,
+      existing_name: `${activeMatch.first_name} ${activeMatch.last_name}`.trim(),
+      existing_is_deleted: !!activeMatch.is_deleted,
+      correction_reasons: [],
+      exact_duplicate_key: exactDuplicateKey,
+      decision: 'nessuna-modifica',
+    };
+  }
+
+  return {
+    ...normalized,
+    status: hasNewEmployer ? 'nuovo_rapporto_datore' : 'pronto',
+    import_action: hasNewEmployer ? 'nuovo_rapporto_datore' : 'esistente_periodo',
+    selected: true,
+    existing_employee_id: activeMatch.id,
+    existing_name: `${activeMatch.first_name} ${activeMatch.last_name}`.trim(),
+    existing_is_deleted: !!activeMatch.is_deleted,
+    correction_reasons: [],
+    exact_duplicate_key: exactDuplicateKey,
+    decision: hasNewEmployer ? 'aggiungi-datore' : 'aggiorna-o-aggiungi-periodo',
+  };
 }
 
 function ensureNoDuplicateActiveEmployee(employeeData, excludedId = null) {
@@ -552,6 +789,36 @@ function archiveEmployee(id) {
   return getEmployeeById(id, { includeDeleted: true });
 }
 
+function bulkArchiveEmployees(ids = []) {
+  const db = getDb();
+  const normalizedIds = normalizeEmployeeIds(ids);
+  if (!normalizedIds.length) {
+    return {
+      archived_count: 0,
+      archived_ids: [],
+    };
+  }
+
+  const placeholders = normalizedIds.map(() => '?').join(', ');
+  const tx = db.transaction(() => {
+    const result = db.prepare(`
+      UPDATE employees
+      SET is_deleted = 1,
+          deleted_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id IN (${placeholders})
+    `).run(...normalizedIds);
+
+    setCurrentPeriodsInactiveBulk(normalizedIds);
+    return result.changes || 0;
+  });
+
+  return {
+    archived_count: tx(),
+    archived_ids: normalizedIds,
+  };
+}
+
 function restoreEmployee(id) {
   const db = getDb();
   db.prepare(`
@@ -658,6 +925,8 @@ async function uploadEmployeeDocumentByCategory(browserWindow, employeeId, categ
           relative_path = @relative_path,
           mime_type = @mime_type,
           size_bytes = @size_bytes,
+          sha256 = @sha256,
+          file_created_at = @file_created_at,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = @id
     `).run({
@@ -667,9 +936,9 @@ async function uploadEmployeeDocumentByCategory(browserWindow, employeeId, categ
   } else {
     db.prepare(`
       INSERT INTO employee_documents (
-        employee_id, category, file_name, stored_name, relative_path, mime_type, size_bytes
+        employee_id, category, file_name, stored_name, relative_path, mime_type, size_bytes, sha256, file_created_at
       ) VALUES (
-        @employee_id, @category, @file_name, @stored_name, @relative_path, @mime_type, @size_bytes
+        @employee_id, @category, @file_name, @stored_name, @relative_path, @mime_type, @size_bytes, @sha256, @file_created_at
       )
     `).run({
       employee_id: employeeId,
@@ -720,6 +989,8 @@ function upsertEmploymentPeriodHireDocument(employeeId, employmentPeriodId, stor
           relative_path = @relative_path,
           mime_type = @mime_type,
           size_bytes = @size_bytes,
+          sha256 = @sha256,
+          file_created_at = @file_created_at,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = @id
     `).run({
@@ -729,9 +1000,9 @@ function upsertEmploymentPeriodHireDocument(employeeId, employmentPeriodId, stor
   } else {
     db.prepare(`
       INSERT INTO employee_documents (
-        employee_id, category, file_name, stored_name, relative_path, mime_type, size_bytes
+        employee_id, category, file_name, stored_name, relative_path, mime_type, size_bytes, sha256, file_created_at
       ) VALUES (
-        @employee_id, @category, @file_name, @stored_name, @relative_path, @mime_type, @size_bytes
+        @employee_id, @category, @file_name, @stored_name, @relative_path, @mime_type, @size_bytes, @sha256, @file_created_at
       )
     `).run({
       employee_id: employeeId,
@@ -741,6 +1012,82 @@ function upsertEmploymentPeriodHireDocument(employeeId, employmentPeriodId, stor
   }
 
   return getEmploymentPeriodHireDocument(employeeId, employmentPeriodId);
+}
+
+function upsertImportedEmploymentPeriod(employeeId, { hire_date_from, hire_date_to, hired_by, source_document_id }) {
+  const db = getDb();
+  const normalized = {
+    hire_date_from: normalizeDateValue(hire_date_from),
+    hire_date_to: normalizeDateValue(hire_date_to),
+    hired_by: normalizeEmployerCode(hired_by),
+    source_document_id: normalizeString(source_document_id) || null,
+  };
+  const employee = getEmployeeById(employeeId, { includeDeleted: true });
+  const periods = employee?.employment_periods || [];
+  const match = findEmploymentPeriodMatch(periods, normalized);
+
+  if (match.exact) {
+    if (normalized.source_document_id) {
+      db.prepare(`
+        UPDATE employee_employment_periods
+        SET source_document_id = COALESCE(?, source_document_id),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(normalized.source_document_id, match.exact.id);
+    }
+    return {
+      action: 'already_present',
+      period: {
+        ...match.exact,
+        source_document_id: normalized.source_document_id || match.exact.source_document_id || null,
+      },
+    };
+  }
+
+  if (match.sameStart) {
+    db.prepare(`
+      UPDATE employee_employment_periods
+      SET hire_date_to = ?,
+          source_document_id = COALESCE(?, source_document_id),
+          status = 'attivo',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(normalized.hire_date_to, normalized.source_document_id, match.sameStart.id);
+    return {
+      action: 'updated_period',
+      period: {
+        ...match.sameStart,
+        hire_date_to: normalized.hire_date_to,
+        source_document_id: normalized.source_document_id || match.sameStart.source_document_id || null,
+      },
+    };
+  }
+
+  const result = db.prepare(`
+    INSERT INTO employee_employment_periods
+      (employee_id, hire_date_from, hire_date_to, hired_by, source_document_id, status, is_current)
+    VALUES (?, ?, ?, ?, ?, 'attivo', 0)
+  `).run(
+    Number(employeeId),
+    normalized.hire_date_from,
+    normalized.hire_date_to,
+    normalized.hired_by,
+    normalized.source_document_id
+  );
+
+  return {
+    action: 'created_period',
+    period: {
+      id: Number(result.lastInsertRowid),
+      employee_id: Number(employeeId),
+      hire_date_from: normalized.hire_date_from,
+      hire_date_to: normalized.hire_date_to,
+      hired_by: normalized.hired_by,
+      source_document_id: normalized.source_document_id,
+      status: 'attivo',
+      is_current: false,
+    },
+  };
 }
 
 async function openEmployeeDocumentByCategory(employeeId, category) {
@@ -850,23 +1197,8 @@ async function openMedicalVisitDocument(employeeId) {
   return openEmployeeDocumentByCategory(employeeId, DOCUMENT_CATEGORIES.medicalVisit);
 }
 
-function addEmploymentPeriodToEmployee(employeeId, { hire_date_from, hire_date_to, hired_by }) {
-  const db = getDb();
-  const result = db.prepare(`
-    INSERT INTO employee_employment_periods
-      (employee_id, hire_date_from, hire_date_to, hired_by, status, is_current)
-    VALUES (?, ?, ?, ?, 'attivo', 0)
-  `).run(Number(employeeId), hire_date_from || null, hire_date_to || null, hired_by || null);
-
-  return {
-    id: Number(result.lastInsertRowid),
-    employee_id: Number(employeeId),
-    hire_date_from: hire_date_from || null,
-    hire_date_to: hire_date_to || null,
-    hired_by: hired_by || null,
-    status: 'attivo',
-    is_current: false,
-  };
+function addEmploymentPeriodToEmployee(employeeId, payload) {
+  return upsertImportedEmploymentPeriod(employeeId, payload).period;
 }
 
 function listEmploymentYears() {
@@ -955,9 +1287,104 @@ function deleteEmployeePermanently(id) {
   tx();
 }
 
+function bulkDeleteEmployees(ids = []) {
+  const db = getDb();
+  const employeeIds = normalizeEmployeeIds(ids);
+  if (!employeeIds.length) {
+    return {
+      deleted_count: 0,
+      deleted_ids: [],
+    };
+  }
+
+  const placeholders = employeeIds.map(() => '?').join(', ');
+  const archivedEmployees = db.prepare(`
+    SELECT id
+    FROM employees
+    WHERE id IN (${placeholders})
+      AND is_deleted = 1
+  `).all(...employeeIds);
+  const archivedIdSet = new Set(archivedEmployees.map((row) => Number(row.id)));
+  const nonArchivedIds = employeeIds.filter((id) => !archivedIdSet.has(id));
+
+  if (nonArchivedIds.length) {
+    const error = new Error('Puoi eliminare solo dipendenti gia archiviati');
+    error.code = 'EMPLOYEE_DELETE_REQUIRES_ARCHIVED';
+    error.employeeIds = nonArchivedIds;
+    throw error;
+  }
+
+  const employeeDocs = db.prepare(`
+    SELECT relative_path
+    FROM employee_documents
+    WHERE employee_id IN (${placeholders})
+  `).all(...employeeIds);
+  const payrollDocuments = db.prepare(`
+    SELECT pd.relative_path
+    FROM payroll_documents pd
+    JOIN payroll_records pr ON pr.id = pd.payroll_record_id
+    WHERE pr.employee_id IN (${placeholders})
+  `).all(...employeeIds);
+
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE payroll_debt_installments
+      SET is_paid = 0,
+          paid_record_id = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE paid_record_id IN (
+        SELECT id
+        FROM payroll_records
+        WHERE employee_id IN (${placeholders})
+      )
+    `).run(...employeeIds);
+
+    db.prepare(`
+      DELETE FROM payroll_documents
+      WHERE payroll_record_id IN (
+        SELECT id
+        FROM payroll_records
+        WHERE employee_id IN (${placeholders})
+      )
+    `).run(...employeeIds);
+
+    db.prepare(`
+      DELETE FROM payroll_advances
+      WHERE payroll_record_id IN (
+        SELECT id
+        FROM payroll_records
+        WHERE employee_id IN (${placeholders})
+      )
+    `).run(...employeeIds);
+
+    db.prepare(`DELETE FROM communication_details WHERE employee_id IN (${placeholders})`).run(...employeeIds);
+    db.prepare(`DELETE FROM payroll_debt_installments WHERE employee_id IN (${placeholders})`).run(...employeeIds);
+    db.prepare(`DELETE FROM payroll_debt_plans WHERE employee_id IN (${placeholders})`).run(...employeeIds);
+    db.prepare(`DELETE FROM attendance WHERE employee_id IN (${placeholders})`).run(...employeeIds);
+    db.prepare(`DELETE FROM team_members WHERE employee_id IN (${placeholders})`).run(...employeeIds);
+    db.prepare(`DELETE FROM employee_employment_periods WHERE employee_id IN (${placeholders})`).run(...employeeIds);
+    db.prepare(`DELETE FROM employee_documents WHERE employee_id IN (${placeholders})`).run(...employeeIds);
+    db.prepare(`DELETE FROM payroll_records WHERE employee_id IN (${placeholders})`).run(...employeeIds);
+    return db.prepare(`DELETE FROM employees WHERE id IN (${placeholders})`).run(...employeeIds).changes || 0;
+  });
+
+  const deletedCount = tx();
+
+  for (const doc of [...employeeDocs, ...payrollDocuments]) {
+    removeStoredFile(doc.relative_path);
+  }
+
+  return {
+    deleted_count: deletedCount,
+    deleted_ids: employeeIds,
+  };
+}
+
 module.exports = {
   addEmploymentPeriodToEmployee,
   archiveEmployee,
+  bulkArchiveEmployees,
+  bulkDeleteEmployees,
   deleteArt37Document,
   createEmployee,
   deleteEmployeePermanently,
@@ -982,5 +1409,11 @@ module.exports = {
   uploadMedicalVisitDocument,
   deleteHireDocumentForEmploymentPeriod,
   buildEmploymentPeriodDocumentCategory,
+  classifyImportedEmployeeRecord,
+  isValidFiscalCode,
+  normalizeEmployerCode,
+  normalizeFiscalCode,
+  summarizeEmployerCodes,
+  upsertImportedEmploymentPeriod,
   upsertEmploymentPeriodHireDocument,
 };

@@ -851,7 +851,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                               onDelete={() =>
                                 handleDocumentAction(
                                   async () => {
-                                    if (!window.confirm('Confermi l’eliminazione dell’allegato assunzione per questo rapporto?')) {
+                                    if (!window.confirm("Confermi l'eliminazione dell'allegato assunzione per questo rapporto?")) {
                                       return { canceled: true };
                                     }
                                     return window.api.employees.deleteHireDocumentForPeriod(employee.id, period.id);
@@ -887,7 +887,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                   onDelete={() =>
                     handleDocumentAction(
                       async () => {
-                        if (!window.confirm('Confermi l’eliminazione dell’allegato assunzione legacy?')) {
+                        if (!window.confirm("Confermi l'eliminazione dell'allegato assunzione legacy?")) {
                           return { canceled: true };
                         }
                         return window.api.employees.deleteHireDocument(employee.id);
@@ -916,7 +916,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                 onDelete={() =>
                   handleDocumentAction(
                     async () => {
-                      if (!window.confirm('Confermi l’eliminazione dell’allegato formazione art. 37?')) {
+                      if (!window.confirm("Confermi l'eliminazione dell'allegato formazione art. 37?")) {
                         return { canceled: true };
                       }
                       return window.api.employees.deleteArt37Document(employee.id);
@@ -944,7 +944,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                 onDelete={() =>
                   handleDocumentAction(
                     async () => {
-                      if (!window.confirm('Confermi l’eliminazione dell’allegato visita medica?')) {
+                      if (!window.confirm("Confermi l'eliminazione dell'allegato visita medica?")) {
                         return { canceled: true };
                       }
                       return window.api.employees.deleteMedicalVisitDocument(employee.id);

@@ -13,9 +13,11 @@
   "asar": true,
   "asarUnpack": [
     "node_modules/**/*.node",
+    "node_modules/@napi-rs/canvas/**/*",
     "node_modules/better-sqlite3/**/*",
     "src/main/pdf-ocr"
   ],
+  "afterPack": "tools/fix-pdf-ocr-perms.cjs",
   "npmRebuild": false,
   "extraMetadata": {
     "name": "gestionale",

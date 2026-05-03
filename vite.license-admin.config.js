@@ -6,12 +6,14 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   server: {
-    port: 5173,
+    port: 5176,
     strictPort: true,
   },
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src/renderer')
-    }
-  }
+  build: {
+    outDir: 'dist-license-admin',
+    emptyOutDir: true,
+    rollupOptions: {
+      input: path.resolve(__dirname, 'index-license-admin.html'),
+    },
+  },
 });

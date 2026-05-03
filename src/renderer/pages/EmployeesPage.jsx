@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import EmployeeForm from '../components/EmployeeForm';
 import TeamForm from '../components/TeamForm';
 import PdfImportModal from '../components/PdfImportModal';
+import { ModalErrorBoundary } from '../components/ErrorBoundary';
 import { useYearContext } from '../context/YearContext';
 import { employeeIsActiveInYear, getEmployeePeriodsActiveInYear, getEmployeePrimaryPeriodInYear } from '../utils/yearScope';
 
@@ -99,6 +100,28 @@ function SortHeader({ label, field, sortField, sortDirection, onToggle, width, f
   );
 }
 
+function SelectAllCheckbox({ checked, indeterminate, disabled, onChange, title }) {
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (inputRef.current) {
+      inputRef.current.indeterminate = !!indeterminate;
+    }
+  }, [indeterminate]);
+
+  return (
+    <input
+      ref={inputRef}
+      type="checkbox"
+      checked={!!checked}
+      disabled={!!disabled}
+      onChange={onChange}
+      title={title}
+      style={{ width: 16, height: 16 }}
+    />
+  );
+}
+
 function getExpiryInfo(dateStr) {
   if (!dateStr) {
     return {
@@ -185,63 +208,80 @@ function MiniCheckBadge({ label, required, done }) {
   );
 }
 
-function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected, selectionMode }) {
+function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected, selectionEnabled, actionsDisabled }) {
   const expiryInfo = getExpiryInfo(employee.hire_date_to);
-  const selectedBg = selectionMode && selected ? 'rgba(15,118,110,0.07)' : '';
+  const selectedBg = selectionEnabled && selected ? 'rgba(15,118,110,0.07)' : '';
+  const employerCodes = employee.employer_codes || [];
 
   return (
     <div
+      className="employee-directory-row"
       style={{
         display: 'flex', alignItems: 'center', gap: 12,
         padding: '10px 16px', borderBottom: '1px solid #f3f4f6',
         cursor: 'pointer', background: selectedBg,
       }}
-      onMouseEnter={e => { e.currentTarget.style.background = selectionMode && selected ? 'rgba(15,118,110,0.13)' : '#f9fafb'; }}
+      onMouseEnter={e => { e.currentTarget.style.background = selectionEnabled && selected ? 'rgba(15,118,110,0.13)' : '#f9fafb'; }}
       onMouseLeave={e => { e.currentTarget.style.background = selectedBg; }}
     >
-      {selectionMode && (
-        <div style={{ width: 26, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
-          <input
-            type="checkbox"
-            checked={!!selected}
-            onChange={(event) => {
-              event.stopPropagation();
-              onToggleSelected(employee.id, event.target.checked);
-            }}
-            onClick={(event) => event.stopPropagation()}
-            style={{ width: 16, height: 16 }}
-          />
-        </div>
-      )}
+      <div className="employee-col employee-col--checkbox" style={{ width: 26, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
+        <input
+          type="checkbox"
+          checked={!!selected}
+          disabled={!selectionEnabled}
+          onChange={(event) => {
+            event.stopPropagation();
+            onToggleSelected(employee.id, event.target.checked);
+          }}
+          onClick={(event) => event.stopPropagation()}
+          style={{ width: 16, height: 16 }}
+        />
+      </div>
 
       <div
-        className="avatar"
+        className="avatar employee-col employee-col--avatar"
         style={{ width: 34, height: 34, fontSize: 13, flexShrink: 0 }}
         onClick={() => onClick(employee)}
       >
         {(employee.first_name?.[0] || '') + (employee.last_name?.[0] || '')}
       </div>
 
-      <div style={{ flex: 1, minWidth: 0 }} onClick={() => onClick(employee)}>
-        <div style={{ fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <div className="employee-col employee-col--name" style={{ flex: 1, minWidth: 0 }} onClick={() => onClick(employee)}>
+        <div
+          className="employee-primary-text"
+          title={getEmployeeDisplayName(employee)}
+          style={{ fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+        >
           {getEmployeeDisplayName(employee)}
         </div>
-        <div style={{ fontSize: 12, color: '#667085' }}>{employee.role || 'Nessuna mansione'}</div>
+        <div className="employee-secondary-text" style={{ fontSize: 12, color: '#667085', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span title={employee.role || 'Nessuna mansione'}>{employee.role || 'Nessuna mansione'}</span>
+          {employee.has_both_employers ? (
+            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#dbeafe', color: '#1d4ed8' }}>
+              Assunto da entrambi i datori
+            </span>
+          ) : null}
+          {employerCodes.map((code) => (
+            <span key={code} style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999, background: '#eef5f4', color: '#314762' }}>
+              {code}
+            </span>
+          ))}
+        </div>
       </div>
 
-      <div style={{ fontSize: 12, color: '#374151', width: 130, flexShrink: 0 }} onClick={() => onClick(employee)}>
+      <div className="employee-col employee-col--contract" style={{ fontSize: 12, color: '#374151', width: 130, flexShrink: 0 }} onClick={() => onClick(employee)} title={getContractLabel(employee.contract_type)}>
         {getContractLabel(employee.contract_type)}
       </div>
 
-      <div style={{ fontSize: 12, color: '#374151', width: 90, flexShrink: 0 }} onClick={() => onClick(employee)}>
+      <div className="employee-col employee-col--date-from" style={{ fontSize: 12, color: '#374151', width: 90, flexShrink: 0 }} onClick={() => onClick(employee)} title={formatDate(employee.hire_date_from)}>
         {formatDate(employee.hire_date_from)}
       </div>
 
-      <div style={{ fontSize: 12, color: '#374151', width: 90, flexShrink: 0 }} onClick={() => onClick(employee)}>
+      <div className="employee-col employee-col--date-to" style={{ fontSize: 12, color: '#374151', width: 90, flexShrink: 0 }} onClick={() => onClick(employee)} title={employee.hire_date_to ? formatDate(employee.hire_date_to) : 'attivo'}>
         {employee.hire_date_to ? formatDate(employee.hire_date_to) : 'attivo'}
       </div>
 
-      <div style={{ width: 160, flexShrink: 0 }} onClick={() => onClick(employee)}>
+      <div className="employee-col employee-col--expiry" style={{ width: 160, flexShrink: 0 }} onClick={() => onClick(employee)} title={expiryInfo.label}>
         <span
           style={{
             display: 'inline-flex',
@@ -259,18 +299,18 @@ function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected,
         </span>
       </div>
 
-      <div style={{ fontSize: 12, color: '#374151', width: 110, flexShrink: 0 }} onClick={() => onClick(employee)}>
+      <div className="employee-col employee-col--pay" style={{ fontSize: 12, color: '#374151', width: 110, flexShrink: 0 }} onClick={() => onClick(employee)}>
         {employee.daily_pay !== null && employee.daily_pay !== undefined && employee.daily_pay !== ''
           ? `${formatCurrency(employee.daily_pay)}/gg`
           : '—'}
       </div>
 
-      <div style={{ display: 'flex', gap: 5, flexShrink: 0, width: 150 }} onClick={() => onClick(employee)}>
+      <div className="employee-col employee-col--checks" style={{ display: 'flex', gap: 5, flexShrink: 0, width: 150 }} onClick={() => onClick(employee)}>
         <MiniCheckBadge label="Visita" required={!!employee.medical_visit_required} done={!!employee.medical_visit_done} />
         <MiniCheckBadge label="Form." required={!!employee.art37_required} done={!!employee.art37_done} />
       </div>
 
-      <div style={{ width: 162, flexShrink: 0, display: 'flex', justifyContent: 'flex-end' }}>
+      <div className="employee-col employee-col--state" style={{ width: 162, flexShrink: 0, display: 'flex', justifyContent: 'flex-end' }}>
         {employee.status !== 'attivo' ? (
           <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#fef3c7', color: '#92400e', whiteSpace: 'nowrap' }}>
             Inattivo
@@ -278,11 +318,12 @@ function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected,
         ) : null}
       </div>
 
-      <div style={{ width: 92, flexShrink: 0, display: 'flex', justifyContent: 'flex-end' }}>
+      <div className="employee-col employee-col--actions" style={{ width: 92, flexShrink: 0, display: 'flex', justifyContent: 'flex-end' }}>
         <button
           type="button"
           onClick={e => { e.stopPropagation(); onArchive(employee.id); }}
           title="Archivia dipendente"
+          disabled={!!actionsDisabled}
           style={{
             width: '100%',
             flexShrink: 0,
@@ -293,7 +334,8 @@ function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected,
             border: '1px solid rgba(239,68,68,0.25)',
             background: 'rgba(239,68,68,0.07)',
             color: '#b91c1c',
-            cursor: 'pointer',
+            cursor: actionsDisabled ? 'not-allowed' : 'pointer',
+            opacity: actionsDisabled ? 0.55 : 1,
           }}
         >
           Archivia
@@ -388,38 +430,42 @@ function TeamRow({ team, onClick, onArchive }) {
   );
 }
 
-function ArchivedEmployeeRow({ employee, onRestore, onDelete, selected, onToggleSelected, selectionMode }) {
+function ArchivedEmployeeRow({ employee, onRestore, onDelete, selected, onToggleSelected, selectionEnabled, actionsDisabled }) {
   return (
-    <div style={{
+    <div className="employee-archived-row" style={{
       display: 'flex', alignItems: 'center', gap: 12,
       padding: '10px 16px', borderBottom: '1px solid #f3f4f6',
-      background: selectionMode && selected ? 'rgba(15,118,110,0.07)' : '#fff',
+      background: selectionEnabled && selected ? 'rgba(15,118,110,0.07)' : '#fff',
     }}>
-      {selectionMode && (
-        <div style={{ width: 26, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
-          <input
-            type="checkbox"
-            checked={!!selected}
-            onChange={(event) => onToggleSelected(employee.id, event.target.checked)}
-            style={{ width: 16, height: 16 }}
-          />
-        </div>
-      )}
-      <div className="avatar" style={{ width: 34, height: 34, fontSize: 13, flexShrink: 0, opacity: 0.45 }}>
+      <div className="employee-col employee-col--checkbox" style={{ width: 26, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
+        <input
+          type="checkbox"
+          checked={!!selected}
+          disabled={!selectionEnabled}
+          onChange={(event) => onToggleSelected(employee.id, event.target.checked)}
+          style={{ width: 16, height: 16 }}
+        />
+      </div>
+      <div className="avatar employee-col employee-col--avatar" style={{ width: 34, height: 34, fontSize: 13, flexShrink: 0, opacity: 0.45 }}>
         {(employee.first_name?.[0] || '') + (employee.last_name?.[0] || '')}
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 700, fontSize: 14, color: '#6b7280' }}>
+      <div className="employee-archived-main" style={{ flex: 1, minWidth: 0 }}>
+        <div
+          className="employee-primary-text"
+          title={`${employee.first_name} ${employee.last_name}`.trim()}
+          style={{ fontWeight: 700, fontSize: 14, color: '#6b7280' }}
+        >
           {employee.first_name} {employee.last_name}
         </div>
-        <div style={{ fontSize: 12, color: '#9ca3af' }}>
+        <div className="employee-secondary-text" style={{ fontSize: 12, color: '#9ca3af' }}>
           {employee.role || 'Nessuna mansione'} · archiviato il {formatDate(employee.deleted_at)}
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+      <div className="employee-archived-actions" style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
         <button
           className="button-secondary"
           style={{ padding: '4px 12px', fontSize: 12 }}
+          disabled={!!actionsDisabled}
           onClick={() => onRestore(employee.id)}
         >
           Ripristina
@@ -427,6 +473,7 @@ function ArchivedEmployeeRow({ employee, onRestore, onDelete, selected, onToggle
         <button
           className="button-danger"
           style={{ padding: '4px 12px', fontSize: 12 }}
+          disabled={!!actionsDisabled}
           onClick={() => onDelete(employee.id)}
         >
           Elimina definitivamente
@@ -528,6 +575,8 @@ export default function EmployeesPage() {
   const [archiveTab, setArchiveTab] = useState('dipendenti');
   const [showPdfImport, setShowPdfImport] = useState(false);
   const [pdfImportData, setPdfImportData] = useState(null);
+  const [licenseStatus, setLicenseStatus] = useState(null);
+  const [settings, setSettings] = useState(null);
   const [employeeFilters, setEmployeeFilters] = useState({
     expiry: 'tutti',
     datore: 'tutti',
@@ -535,21 +584,23 @@ export default function EmployeesPage() {
     trainingMissing: false,
   });
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
-  const [selectionMode, setSelectionMode] = useState(false);
   const [selectedArchivedEmployeeIds, setSelectedArchivedEmployeeIds] = useState([]);
-  const [archiveSelectionMode, setArchiveSelectionMode] = useState(false);
   const [sortField, setSortField] = useState('name');
   const [sortDirection, setSortDirection] = useState('asc');
 
   async function loadData() {
     setLoading(true);
     try {
-      const [employeeData, teamData] = await Promise.all([
+      const [employeeData, teamData, nextLicenseStatus, nextSettings] = await Promise.all([
         window.api.employees.list({ includeDeleted: true }),
         window.api.teams.list({ includeArchived: true }),
+        window.api.license.getStatus(),
+        window.api.settings.get(),
       ]);
       setEmployees(employeeData || []);
       setTeams(teamData || []);
+      setLicenseStatus(nextLicenseStatus || null);
+      setSettings(nextSettings || null);
     } catch (err) {
       console.error(err);
       alert('Errore caricamento archivio');
@@ -600,25 +651,21 @@ export default function EmployeesPage() {
   }
 
   function exitSelectionMode() {
-    setSelectionMode(false);
     setSelectedEmployeeIds([]);
   }
 
   function exitArchiveSelectionMode() {
-    setArchiveSelectionMode(false);
     setSelectedArchivedEmployeeIds([]);
   }
 
   async function handleArchiveSelectedEmployees() {
     if (!selectedEmployeeIds.length) return;
 
-    const ok = window.confirm(`Archiviare ${selectedEmployeeIds.length} dipendenti selezionati?`);
+    const ok = window.confirm(`Stai per archiviare ${selectedEmployeeIds.length} dipendenti. Confermi?`);
     if (!ok) return;
 
     try {
-      for (const employeeId of selectedEmployeeIds) {
-        await window.api.employees.archive(employeeId);
-      }
+      await window.api.employees.bulkArchive(selectedEmployeeIds);
       exitSelectionMode();
       await loadData();
     } catch (err) {
@@ -647,7 +694,11 @@ export default function EmployeesPage() {
       await loadData();
     } catch (err) {
       console.error(err);
-      alert('Errore eliminazione definitiva dipendente');
+      if (err?.code === 'EMPLOYEE_DELETE_REQUIRES_ARCHIVED') {
+        alert('Puoi eliminare solo dipendenti già archiviati');
+      } else {
+        alert('Errore eliminazione definitiva dipendente');
+      }
     }
   }
 
@@ -672,25 +723,22 @@ export default function EmployeesPage() {
   async function handleDeleteSelectedArchivedEmployees() {
     if (!selectedArchivedEmployeeIds.length) return;
 
-    const firstConfirm = window.confirm(
-      `Eliminare definitivamente ${selectedArchivedEmployeeIds.length} dipendenti archiviati selezionati?`
+    const ok = window.confirm(
+      `ATTENZIONE: eliminazione definitiva.\nStai per eliminare ${selectedArchivedEmployeeIds.length} dipendenti. Operazione irreversibile.`
     );
-    if (!firstConfirm) return;
-
-    const secondConfirm = window.confirm(
-      'Conferma finale: verranno cancellati definitivamente tutti i dati collegati ai dipendenti selezionati. Continuare?'
-    );
-    if (!secondConfirm) return;
+    if (!ok) return;
 
     try {
-      for (const employeeId of selectedArchivedEmployeeIds) {
-        await window.api.employees.deletePermanently(employeeId);
-      }
+      await window.api.employees.bulkDelete(selectedArchivedEmployeeIds);
       exitArchiveSelectionMode();
       await loadData();
     } catch (err) {
       console.error(err);
-      alert('Errore eliminazione multipla dipendenti archiviati');
+      if (err?.code === 'EMPLOYEE_DELETE_REQUIRES_ARCHIVED') {
+        alert('Puoi eliminare solo dipendenti già archiviati');
+      } else {
+        alert('Errore eliminazione multipla dipendenti archiviati');
+      }
     }
   }
 
@@ -889,10 +937,14 @@ export default function EmployeesPage() {
   const inactiveEmployees = sortedVisibleEmployees.filter(e => e.status !== 'attivo');
   const renderedEmployees = sortedVisibleEmployees;
   const archivedEmployees = filtered.employees.filter((employee) => employee.is_deleted && employeeIsActiveInYear(employee, selectedYear));
+  const isWriteBlocked = Boolean(licenseStatus?.is_write_blocked);
   const allVisibleEmployeeIds = sortedVisibleEmployees.map((employee) => employee.id);
   const visibleSelectedCount = allVisibleEmployeeIds.filter((id) => selectedEmployeeIds.includes(id)).length;
+  const allVisibleSelected = allVisibleEmployeeIds.length > 0 && visibleSelectedCount === allVisibleEmployeeIds.length;
   const archivedVisibleEmployeeIds = archivedEmployees.map((employee) => employee.id);
   const archivedVisibleSelectedCount = archivedVisibleEmployeeIds.filter((id) => selectedArchivedEmployeeIds.includes(id)).length;
+  const allArchivedVisibleSelected =
+    archivedVisibleEmployeeIds.length > 0 && archivedVisibleSelectedCount === archivedVisibleEmployeeIds.length;
 
   function handleToggleSort(field) {
     if (sortField !== field) {
@@ -923,6 +975,13 @@ export default function EmployeesPage() {
       exitArchiveSelectionMode();
     }
   }, [archiveOpen, archiveTab]);
+
+  useEffect(() => {
+    if (isWriteBlocked) {
+      exitSelectionMode();
+      exitArchiveSelectionMode();
+    }
+  }, [isWriteBlocked]);
 
   const teamBuckets = useMemo(() => {
     const active = [], inactive = [], archived = [];
@@ -1066,43 +1125,17 @@ export default function EmployeesPage() {
                   {filteredVisibleEmployees.length} visibili
                 </span>
 
-                {!selectionMode ? (
-                  <button
-                    type="button"
-                    className="button-secondary"
-                    style={compactFilterButtonStyle}
-                    onClick={() => setSelectionMode(true)}
-                  >
-                    Seleziona
-                  </button>
-                ) : (
+                {visibleSelectedCount > 0 ? (
                   <>
                     <span className="soft-chip" style={{ background: 'rgba(15,118,110,0.12)', color: '#115e59', minHeight: 32, padding: '0 10px', fontSize: 12, fontWeight: 700 }}>
-                      {visibleSelectedCount} selezionati
+                      {visibleSelectedCount} dipendenti selezionati
                     </span>
-                    <button
-                      type="button"
-                      className="button-secondary"
-                      style={compactFilterButtonStyle}
-                      onClick={() => {
-                        const allVisibleSelected = allVisibleEmployeeIds.length > 0 && allVisibleEmployeeIds.every((id) => selectedEmployeeIds.includes(id));
-                        setSelectedEmployeeIds((current) => {
-                          if (allVisibleSelected) return current.filter((id) => !allVisibleEmployeeIds.includes(id));
-                          return Array.from(new Set([...current, ...allVisibleEmployeeIds]));
-                        });
-                      }}
-                      disabled={!allVisibleEmployeeIds.length}
-                    >
-                      {allVisibleEmployeeIds.length > 0 && allVisibleEmployeeIds.every((id) => selectedEmployeeIds.includes(id))
-                        ? 'Deseleziona tutto'
-                        : 'Seleziona tutto'}
-                    </button>
                     <button
                       type="button"
                       className="button-danger"
                       style={compactFilterButtonStyle}
                       onClick={handleArchiveSelectedEmployees}
-                      disabled={!visibleSelectedCount}
+                      disabled={isWriteBlocked}
                     >
                       Archivia selezionati
                     </button>
@@ -1112,31 +1145,58 @@ export default function EmployeesPage() {
                       style={compactFilterButtonStyle}
                       onClick={exitSelectionMode}
                     >
-                      Annulla
+                      Deseleziona
                     </button>
                   </>
+                ) : (
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    style={compactFilterButtonStyle}
+                    onClick={() => {
+                      if (isWriteBlocked || !allVisibleEmployeeIds.length) return;
+                      setSelectedEmployeeIds(allVisibleEmployeeIds);
+                    }}
+                    disabled={isWriteBlocked || !allVisibleEmployeeIds.length}
+                  >
+                    Seleziona tutti
+                  </button>
                 )}
               </div>
             </div>
 
             {/* Intestazione colonne */}
-            <div style={{
+            <div className="employee-directory-head" style={{
               display: 'flex', gap: 12, padding: '8px 16px',
               background: '#f9fafb', borderBottom: '1px solid #e5e7eb',
               fontSize: 11, fontWeight: 700, color: '#9ca3af',
               textTransform: 'uppercase', letterSpacing: '0.05em',
             }}>
-              {selectionMode && <div style={{ width: 26 }} />}
-              <div style={{ width: 34, flexShrink: 0 }} />
-              <SortHeader label="Nome" field="name" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} flex={1} />
-              <SortHeader label="Tipo assunzione" field="contract_type" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={130} />
-              <SortHeader label="Data assunzione" field="hire_date_from" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={90} />
-              <SortHeader label="Data chiusura" field="hire_date_to" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={90} />
-              <SortHeader label="Scadenza" field="expiry" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={160} />
-              <SortHeader label="Retribuzione" field="daily_pay" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={110} />
-              <div style={{ width: 150 }}>Compliance</div>
-              <div style={{ width: 162, flexShrink: 0 }}>Stato</div>
-              <div style={{ width: 92, flexShrink: 0, textAlign: 'right' }}>Azioni</div>
+              <div className="employee-col employee-col--checkbox" style={{ width: 26, display: 'flex', justifyContent: 'center' }}>
+                <SelectAllCheckbox
+                  checked={allVisibleSelected}
+                  indeterminate={visibleSelectedCount > 0 && !allVisibleSelected}
+                  disabled={isWriteBlocked || !allVisibleEmployeeIds.length}
+                  onChange={() => {
+                    setSelectedEmployeeIds((current) => (
+                      allVisibleSelected
+                        ? current.filter((id) => !allVisibleEmployeeIds.includes(id))
+                        : Array.from(new Set([...current, ...allVisibleEmployeeIds]))
+                    ));
+                  }}
+                  title="Seleziona tutti i dipendenti visibili"
+                />
+              </div>
+              <div className="employee-col employee-col--avatar" style={{ width: 34, flexShrink: 0 }} />
+              <SortHeader label="Nome" field="name" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} flex={1} extraStyle={{ minWidth: 0 }} />
+              <SortHeader label="Tipo assunzione" field="contract_type" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={130} extraStyle={{ minWidth: 0 }} />
+              <SortHeader label="Data assunzione" field="hire_date_from" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={90} extraStyle={{ minWidth: 0 }} />
+              <SortHeader label="Data chiusura" field="hire_date_to" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={90} extraStyle={{ minWidth: 0 }} />
+              <SortHeader label="Scadenza" field="expiry" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={160} extraStyle={{ minWidth: 0 }} />
+              <SortHeader label="Retribuzione" field="daily_pay" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={110} extraStyle={{ minWidth: 0 }} />
+              <div className="employee-col employee-col--checks" style={{ width: 150 }}>Compliance</div>
+              <div className="employee-col employee-col--state" style={{ width: 162, flexShrink: 0 }}>Stato</div>
+              <div className="employee-col employee-col--actions" style={{ width: 92, flexShrink: 0, textAlign: 'right' }}>Azioni</div>
             </div>
 
             {renderedEmployees.length === 0 ? (
@@ -1151,7 +1211,8 @@ export default function EmployeesPage() {
                     employee={employee}
                     onClick={setEditing}
                     onArchive={handleArchive}
-                    selectionMode={selectionMode}
+                    selectionEnabled={!isWriteBlocked}
+                    actionsDisabled={isWriteBlocked}
                     selected={selectedEmployeeIds.includes(employee.id)}
                     onToggleSelected={(employeeId, checked) =>
                       setSelectedEmployeeIds((current) =>
@@ -1272,56 +1333,28 @@ export default function EmployeesPage() {
                       {archivedEmployees.length} archiviati visibili
                     </span>
 
-                    {!archiveSelectionMode ? (
-                      <button
-                        type="button"
-                        className="button-secondary"
-                        style={compactFilterButtonStyle}
-                        onClick={() => setArchiveSelectionMode(true)}
-                        disabled={!archivedVisibleEmployeeIds.length}
-                      >
-                        Seleziona
-                      </button>
-                    ) : (
+                    {archivedVisibleSelectedCount > 0 ? (
                       <>
                         <span className="soft-chip" style={{ background: 'rgba(107,114,128,0.12)', color: '#374151', minHeight: 32, padding: '0 10px', fontSize: 12, fontWeight: 700 }}>
-                          {archivedVisibleSelectedCount} selezionati
+                          {archivedVisibleSelectedCount} dipendenti selezionati
                         </span>
                         <button
                           type="button"
-                          className="button-secondary"
+                          className="button-danger"
                           style={compactFilterButtonStyle}
-                          onClick={() => setSelectedArchivedEmployeeIds(Array.from(new Set([...selectedArchivedEmployeeIds, ...archivedVisibleEmployeeIds])))}
-                          disabled={!archivedVisibleEmployeeIds.length}
+                          onClick={handleDeleteSelectedArchivedEmployees}
+                          disabled={isWriteBlocked}
                         >
-                          Seleziona tutto
-                        </button>
-                        <button
-                          type="button"
-                          className="button-secondary"
-                          style={compactFilterButtonStyle}
-                          onClick={() => setSelectedArchivedEmployeeIds((current) => current.filter((id) => !archivedVisibleEmployeeIds.includes(id)))}
-                          disabled={!archivedVisibleSelectedCount}
-                        >
-                          Deseleziona tutto
+                          Elimina selezionati
                         </button>
                         <button
                           type="button"
                           className="button-secondary"
                           style={compactFilterButtonStyle}
                           onClick={handleRestoreSelectedArchivedEmployees}
-                          disabled={!archivedVisibleSelectedCount}
+                          disabled={isWriteBlocked}
                         >
                           Ripristina selezionati
-                        </button>
-                        <button
-                          type="button"
-                          className="button-danger"
-                          style={compactFilterButtonStyle}
-                          onClick={handleDeleteSelectedArchivedEmployees}
-                          disabled={!archivedVisibleSelectedCount}
-                        >
-                          Elimina definitivamente selezionati
                         </button>
                         <button
                           type="button"
@@ -1329,11 +1362,50 @@ export default function EmployeesPage() {
                           style={compactFilterButtonStyle}
                           onClick={exitArchiveSelectionMode}
                         >
-                          Annulla
+                          Deseleziona
                         </button>
                       </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        style={compactFilterButtonStyle}
+                        onClick={() => {
+                          if (isWriteBlocked || !archivedVisibleEmployeeIds.length) return;
+                          setSelectedArchivedEmployeeIds(archivedVisibleEmployeeIds);
+                        }}
+                        disabled={isWriteBlocked || !archivedVisibleEmployeeIds.length}
+                      >
+                        Seleziona tutti
+                      </button>
                     )}
                   </div>
+                </div>
+
+                <div style={{
+                  display: 'flex', gap: 12, padding: '8px 16px',
+                  background: '#f9fafb', borderBottom: '1px solid #e5e7eb',
+                  fontSize: 11, fontWeight: 700, color: '#9ca3af',
+                  textTransform: 'uppercase', letterSpacing: '0.05em',
+                }}>
+                  <div style={{ width: 26, display: 'flex', justifyContent: 'center' }}>
+                    <SelectAllCheckbox
+                      checked={allArchivedVisibleSelected}
+                      indeterminate={archivedVisibleSelectedCount > 0 && !allArchivedVisibleSelected}
+                      disabled={isWriteBlocked || !archivedVisibleEmployeeIds.length}
+                      onChange={() => {
+                        setSelectedArchivedEmployeeIds((current) => (
+                          allArchivedVisibleSelected
+                            ? current.filter((id) => !archivedVisibleEmployeeIds.includes(id))
+                            : Array.from(new Set([...current, ...archivedVisibleEmployeeIds]))
+                        ));
+                      }}
+                      title="Seleziona tutti i dipendenti archiviati visibili"
+                    />
+                  </div>
+                  <div style={{ width: 34, flexShrink: 0 }} />
+                  <div style={{ flex: 1 }}>Dipendente</div>
+                  <div style={{ width: 220, flexShrink: 0, textAlign: 'right' }}>Azioni</div>
                 </div>
 
                 {archivedEmployees.length ? (
@@ -1343,7 +1415,8 @@ export default function EmployeesPage() {
                     employee={e}
                     onRestore={handleRestore}
                     onDelete={handleDeleteEmployee}
-                    selectionMode={archiveSelectionMode}
+                    selectionEnabled={!isWriteBlocked}
+                    actionsDisabled={isWriteBlocked}
                     selected={selectedArchivedEmployeeIds.includes(e.id)}
                     onToggleSelected={(employeeId, checked) =>
                       setSelectedArchivedEmployeeIds((current) =>
@@ -1412,12 +1485,17 @@ export default function EmployeesPage() {
         />
       )}
 
-      <PdfImportModal
-        open={showPdfImport}
-        onClose={handleClosePdfImport}
-        onConfirm={handleConfirmPdfImport}
-        records={pdfImportData?.records || []}
-      />
+      <ModalErrorBoundary boundaryName="pdf-import-modal" onClose={handleClosePdfImport}>
+        <PdfImportModal
+          open={showPdfImport}
+          onClose={handleClosePdfImport}
+          onConfirm={handleConfirmPdfImport}
+          records={pdfImportData?.records || []}
+          employerOptions={settings?.employer_options || []}
+          pdfEmployer={pdfImportData?.pdfEmployer || null}
+          initialEmployerResolution={pdfImportData?.employerResolution || null}
+        />
+      </ModalErrorBoundary>
     </div>
   );
 }

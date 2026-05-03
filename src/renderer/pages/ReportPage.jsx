@@ -1214,7 +1214,7 @@ export default function ReportPage() {
       return;
     }
 
-    const confirmed = window.confirm('Confermi l’eliminazione della busta paga allegata?');
+    const confirmed = window.confirm("Confermi l'eliminazione della busta paga allegata?");
     if (!confirmed) return;
 
     try {

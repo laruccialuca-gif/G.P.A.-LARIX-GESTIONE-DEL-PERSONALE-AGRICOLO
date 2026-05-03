@@ -188,6 +188,8 @@ function mapCommunicationRow(row, details = []) {
           relative_path: row.pdf_relative_path,
           mime_type: 'application/pdf',
           size_bytes: 0,
+          sha256: row.pdf_sha256 || '',
+          file_created_at: row.pdf_created_at || row.updated_at,
           uploaded_at: row.updated_at,
           updated_at: row.updated_at,
         })
@@ -200,6 +202,8 @@ function mapCommunicationRow(row, details = []) {
           relative_path: row.excel_relative_path,
           mime_type: 'application/vnd.ms-excel',
           size_bytes: 0,
+          sha256: row.excel_sha256 || '',
+          file_created_at: row.excel_created_at || row.updated_at,
           uploaded_at: row.updated_at,
           updated_at: row.updated_at,
         })
@@ -245,13 +249,57 @@ function getCommunicationById(id) {
   return mapCommunicationRow(row, getCommunicationDetails(id));
 }
 
-function listCommunications() {
+function listCommunications(options = {}) {
   const db = getDb();
+  const conditions = [];
+  const params = [];
+  const requestedLimit = Number(options.limit || 0) || 0;
+  const limit = requestedLimit > 0 ? Math.max(1, Math.min(requestedLimit, 200)) : 0;
+  const offset = Math.max(0, Number(options.offset || 0) || 0);
+  const search = String(options.search || '').trim().toLowerCase();
+
+  if (options.year) {
+    conditions.push(`
+      (
+        substr(COALESCE(c.month_reference, ''), 1, 4) = ?
+        OR substr(COALESCE(c.period_start, ''), 1, 4) = ?
+        OR substr(COALESCE(c.period_end, ''), 1, 4) = ?
+      )
+    `);
+    params.push(String(options.year), String(options.year), String(options.year));
+  }
+
+  if (search) {
+    conditions.push(`
+      LOWER(
+        COALESCE(c.company_name, '') || ' ' ||
+        COALESCE(c.subject, '') || ' ' ||
+        COALESCE(c.month_reference, '') || ' ' ||
+        COALESCE(c.period_start, '') || ' ' ||
+        COALESCE(c.period_end, '') || ' ' ||
+        COALESCE(c.file_name_pdf, '') || ' ' ||
+        COALESCE(c.file_name_excel, '')
+      ) LIKE ?
+    `);
+    params.push(`%${search}%`);
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const totalRow = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM communications c
+    ${whereClause}
+  `).get(...params);
+  const total = Number(totalRow?.total || 0);
+  const paginationSql = limit ? 'LIMIT ? OFFSET ?' : '';
+  const queryParams = limit ? [...params, limit, offset] : params;
   const rows = db.prepare(`
     ${getCommunicationBaseSelect()}
+    ${whereClause}
     GROUP BY c.id
     ORDER BY COALESCE(c.month_reference, substr(c.period_start, 1, 7)) DESC, c.created_at DESC, c.id DESC
-  `).all();
+    ${paginationSql}
+  `).all(...queryParams);
 
   const detailsMap = new Map();
   if (rows.length) {
@@ -285,7 +333,19 @@ function listCommunications() {
     }
   }
 
-  return rows.map((row) => mapCommunicationRow(row, detailsMap.get(row.id) || []));
+  const items = rows.map((row) => mapCommunicationRow(row, detailsMap.get(row.id) || []));
+
+  if (!limit) {
+    return items;
+  }
+
+  return {
+    items,
+    total,
+    limit,
+    offset,
+    has_more: offset + items.length < total,
+  };
 }
 
 function listCommunicationYears() {
@@ -478,13 +538,21 @@ function updateCommunicationFiles(id, files = {}) {
   db.prepare(`
     UPDATE communications
     SET pdf_relative_path = COALESCE(@pdf_relative_path, pdf_relative_path),
+        pdf_sha256 = COALESCE(@pdf_sha256, pdf_sha256),
+        pdf_created_at = COALESCE(@pdf_created_at, pdf_created_at),
         excel_relative_path = COALESCE(@excel_relative_path, excel_relative_path),
+        excel_sha256 = COALESCE(@excel_sha256, excel_sha256),
+        excel_created_at = COALESCE(@excel_created_at, excel_created_at),
         updated_at = CURRENT_TIMESTAMP
     WHERE id = @id
   `).run({
     id,
     pdf_relative_path: files.pdf_relative_path || null,
+    pdf_sha256: files.pdf_sha256 || null,
+    pdf_created_at: files.pdf_created_at || null,
     excel_relative_path: files.excel_relative_path || null,
+    excel_sha256: files.excel_sha256 || null,
+    excel_created_at: files.excel_created_at || null,
   });
 
   return getCommunicationById(id);
@@ -766,7 +834,7 @@ async function openCommunicationEmail(id, options = {}) {
     attachmentPaths,
     draftPath,
     method: 'eml',
-    senderNotice: 'Verifica il client email predefinito e l’account mittente configurato.',
+    senderNotice: "Verifica il client email predefinito e l'account mittente configurato.",
   };
 }
 

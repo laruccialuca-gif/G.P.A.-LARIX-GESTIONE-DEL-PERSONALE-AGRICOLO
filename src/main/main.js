@@ -1,7 +1,14 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { getAppVariant, getVariantConfig } = require('./runtimeContext');
+const crypto = require('crypto');
+const { getAppVariant, getRuntimeContext, getVariantConfig } = require('./runtimeContext');
+
+if (!app || typeof app.whenReady !== 'function') {
+  throw new Error(
+    "Electron main process non disponibile. Verifica che ELECTRON_RUN_AS_NODE non sia attivo durante l'avvio dell'app."
+  );
+}
 
 const variantConfig = getVariantConfig();
 const APP_ERROR_TITLE = variantConfig.variant === 'demo'
@@ -67,6 +74,12 @@ function logMainProcessEvent(context, details) {
   appendMainProcessLog(context, JSON.stringify(details, null, 2));
 }
 
+function hashFile(filePath) {
+  const hash = crypto.createHash('sha256');
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest('hex');
+}
+
 function getKnownUserDataPaths() {
   const appDataRoot = app.getPath('appData');
   return {
@@ -79,8 +92,14 @@ function getKnownUserDataPaths() {
 }
 
 function buildAppIdentitySnapshot() {
+  const runtime = getRuntimeContext();
   return {
     variant: getAppVariant(),
+    app_version: app.getVersion(),
+    app_variant: runtime.appVariant,
+    is_dev: runtime.isDev,
+    is_demo: runtime.isDemo,
+    is_production: runtime.isProduction,
     product_name: variantConfig.productName,
     app_name: app.getName(),
     user_data_path: app.getPath('userData'),
@@ -88,11 +107,12 @@ function buildAppIdentitySnapshot() {
     executable_path: app.getPath('exe'),
     app_path: app.getAppPath(),
     cwd: process.cwd(),
-    packaged: app.isPackaged,
+    packaged: runtime.isPackaged,
     known_user_data_paths: getKnownUserDataPaths(),
   };
 }
 
+const authService = require('./authService');
 const employeeRepo = require('./employeeRepo');
 const pdfImportService = require('./pdfImportService');
 const attendanceRepo = require('./attendanceRepo');
@@ -103,21 +123,111 @@ const communicationRepo = require('./communicationRepo');
 const occupationRepo = require('./occupationRepo');
 const settingsService = require('./settingsService');
 const backupService = require('./backupService');
+const diagnosticsService = require('./diagnosticsService');
 const licenseService = require('./licenseService');
 const demoService = require('./demoService');
 const { getDb, getDbPath, closeDb } = require('./db');
 const { ensureAppStorageStructure } = require('./storagePaths');
 
-const isDev = !app.isPackaged;
+const runtime = getRuntimeContext();
 
 function requireWritableLicense(actionLabel) {
-  return licenseService.requireWritableLicense(actionLabel);
+  if (authService.isSuperAdmin()) {
+    logMainProcessEvent('sa:license-bypass', { action: actionLabel });
+    return;
+  }
+  return licenseService.enforceLicenseGuard(actionLabel);
 }
 
 function getAppIconPath() {
   return path.join(__dirname, '..', 'assets', 'larix-icon.png');
 }
 let mainWindow = null;
+const OPERATION_PROGRESS_CHANNEL = 'operations:progress';
+const activeOperations = new Map();
+
+function getActiveOperationsSnapshot() {
+  return [...activeOperations.values()];
+}
+
+function emitOperationProgress(payload) {
+  const normalized = {
+    updated_at: new Date().toISOString(),
+    percent: 0,
+    status: 'running',
+    ...payload,
+  };
+
+  if (normalized.status === 'idle' || normalized.status === 'completed' || normalized.status === 'error') {
+    if (normalized.status === 'idle') {
+      activeOperations.delete(normalized.type);
+    } else {
+      activeOperations.set(normalized.type, normalized);
+      setTimeout(() => {
+        const current = activeOperations.get(normalized.type);
+        if (current?.job_id === normalized.job_id && current?.status === normalized.status) {
+          activeOperations.delete(normalized.type);
+        }
+      }, 5000).unref?.();
+    }
+  } else {
+    activeOperations.set(normalized.type, normalized);
+  }
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(OPERATION_PROGRESS_CHANNEL, normalized);
+  }
+
+  logMainProcessEvent(`operation:${normalized.type}:${normalized.status}`, normalized);
+  return normalized;
+}
+
+async function runExclusiveOperation({ type, jobId, startMessage, fn }) {
+  const running = activeOperations.get(type);
+  if (running?.status === 'running') {
+    throw new Error(running.concurrent_error_message || 'Operazione già in corso. Attendi il completamento.');
+  }
+
+  const operationJobId = jobId || `${type}-${Date.now()}`;
+  const progress = (update = {}) => emitOperationProgress({
+    type,
+    job_id: operationJobId,
+    ...update,
+  });
+
+  progress({
+    status: 'running',
+    percent: 1,
+    message: startMessage || 'Operazione avviata...',
+  });
+
+  try {
+    const result = await fn(progress, operationJobId);
+    if (result?.canceled) {
+      emitOperationProgress({
+        type,
+        job_id: operationJobId,
+        status: 'idle',
+      });
+      return result;
+    }
+    progress({
+      status: 'completed',
+      percent: 100,
+      step: 'completed',
+      message: 'Operazione completata.',
+    });
+    return result;
+  } catch (error) {
+    progress({
+      status: 'error',
+      step: 'error',
+      message: error?.message || 'Operazione fallita.',
+      error: error?.message || String(error),
+    });
+    throw error;
+  }
+}
 
 function removePathIfExists(targetPath) {
   if (!fs.existsSync(targetPath)) return false;
@@ -296,7 +406,7 @@ async function createWindow() {
     renderer_entry_exists: fs.existsSync(rendererEntryPath),
   });
 
-  if (isDev) {
+  if (!app.isPackaged) {
     const devUrl = 'http://localhost:5173';
     logMainProcessEvent('renderer:load-url', { target: devUrl });
     await mainWindow.loadURL(devUrl);
@@ -422,9 +532,19 @@ async function createPrintWindow({ html, landscape = false, show = false }) {
   return printWindow;
 }
 
-async function renderPdfToFile({ html, filePath, landscape = false }) {
+async function renderPdfToFile({ html, filePath, landscape = false, onProgress = () => {} }) {
+  onProgress({
+    step: 'document_generation',
+    percent: 45,
+    message: 'Preparazione finestra di stampa...',
+  });
   const pdfWindow = await createPrintWindow({ html, landscape, show: false });
 
+  onProgress({
+    step: 'document_generation',
+    percent: 72,
+    message: 'Generazione PDF in corso...',
+  });
   const pdfBuffer = await pdfWindow.webContents.printToPDF({
     printBackground: true,
     pageSize: 'A4',
@@ -438,6 +558,11 @@ async function renderPdfToFile({ html, filePath, landscape = false }) {
     preferCSSPageSize: true,
   });
 
+  onProgress({
+    step: 'file_save',
+    percent: 90,
+    message: 'Salvataggio file in corso...',
+  });
   fs.writeFileSync(filePath, pdfBuffer);
   pdfWindow.close();
 }
@@ -456,14 +581,20 @@ function buildTempPdfPath(fileName = 'stampa.pdf') {
   return path.join(tempDir, `${Date.now()}-${finalFileName}`);
 }
 
-async function printHtmlDocument({ html, landscape = false, fileName }) {
+async function printHtmlDocument({ html, landscape = false, fileName, onProgress = () => {} }) {
   const tempPdfPath = buildTempPdfPath(fileName);
   await renderPdfToFile({
     html,
     filePath: tempPdfPath,
     landscape,
+    onProgress,
   });
 
+  onProgress({
+    step: 'file_save',
+    percent: 96,
+    message: 'Apertura file generato...',
+  });
   const openResult = await shell.openPath(tempPdfPath);
   if (openResult) {
     throw new Error(openResult);
@@ -496,7 +627,11 @@ async function persistCommunicationArtifacts(communicationId) {
 
   return communicationRepo.updateCommunicationFiles(communication.id, {
     pdf_relative_path: fileTargets.pdf.relativePath,
+    pdf_sha256: hashFile(fileTargets.pdf.absolutePath),
+    pdf_created_at: new Date().toISOString(),
     excel_relative_path: fileTargets.excel.relativePath,
+    excel_sha256: hashFile(fileTargets.excel.absolutePath),
+    excel_created_at: new Date().toISOString(),
   });
 }
 
@@ -507,53 +642,275 @@ app.whenReady().then(async () => {
   await backupService.checkAndHandleIncompleteRestore();
   getDb();
   pdfImportService.init({ userDataDir: app.getPath('userData') });
+  const bootRuntime = getRuntimeContext();
   logMainProcessEvent('bootstrap:runtime-info', {
     ...buildAppIdentitySnapshot(),
+    runtime_context: bootRuntime,
     resolved_user_data_path: getResolvedUserDataPath(),
     storage_layout: storageLayout,
     database_path: getDbPath(),
+    backup_path: backupService.getEffectiveBackupDir(),
+    license_path: licenseService.getLicenseFilePath(),
     preload_path: getPreloadPath(),
     preload_exists: fs.existsSync(getPreloadPath()),
     renderer: getRendererAssetInfo(),
   });
+  if (bootRuntime.isDev && !bootRuntime.isDemo) {
+    logMainProcessEvent('bootstrap:dev-license-bypass', {
+      appVariant: bootRuntime.appVariant,
+      isDev: bootRuntime.isDev,
+      isDemo: bootRuntime.isDemo,
+      isProduction: bootRuntime.isProduction,
+      message: 'DEV MODE - license bypass attivo',
+    });
+  }
   if (variantConfig.variant === 'demo') {
     demoService.ensureDemoInitialized();
   }
+  backupService.setLogger(logMainProcessEvent);
+  diagnosticsService.setLogger(logMainProcessEvent);
+  pdfImportService.setLogger(logMainProcessEvent);
+  const dbModule = require('./db');
+  dbModule.setLogger(logMainProcessEvent);
+  dbModule.bootstrapIntegrityChecks(async (result) => {
+    logMainProcessEvent('db:integrity-warning', result);
+    const detail = [
+      'Il controllo integrita del database ha rilevato possibili problemi.',
+      '',
+      ...(result.messages || []).map((message) => `- ${message}`),
+      '',
+      `Database: ${getDbPath()}`,
+      `Backup: ${backupService.getEffectiveBackupDir()}`,
+      '',
+      'Si consiglia di ripristinare un backup valido prima di proseguire.',
+    ].join('\n');
+
+    const response = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Controllo integrita database',
+      message: 'Possibile corruzione del database rilevata',
+      detail,
+      buttons: ['Apri cartella backup', 'Continua'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+
+    if (response.response === 0) {
+      try {
+        await backupService.openBackupDirectory();
+      } catch (error) {
+        logMainProcessEvent('db:integrity-warning-open-backup-failed', {
+          message: error?.message || String(error),
+        });
+      }
+    }
+  });
   backupService.maybeRunAutomaticBackup();
+  licenseService.setLogger(logMainProcessEvent);
+  logMainProcessEvent('bootstrap:license-config', licenseService.getPublicKeyInfo());
+  await licenseService.bootstrapLicenseMonitoring();
 
   ipcMain.handle('dashboard:summary', async () => dashboardRepo.getDashboardSummary());
   ipcMain.handle('license:getStatus', async () => licenseService.getLicenseStatus());
-  ipcMain.handle('license:activate', async (_, activationCode) => licenseService.activate(activationCode));
-  ipcMain.handle('license:deactivate', async () => licenseService.deactivate());
+  ipcMain.handle('license:activate', async (_, activationCode) => {
+    const result = licenseService.activate(activationCode);
+    try { authService.audit('license:activate', 'license', null, {}); } catch {}
+    return result;
+  });
+  ipcMain.handle('license:verify', async () => licenseService.verifyLicense({ reason: 'manual-ipc' }));
+  ipcMain.handle('license:deactivate', async () => {
+    const result = licenseService.deactivate();
+    try { authService.audit('license:deactivate', 'license', null, {}); } catch {}
+    return result;
+  });
   ipcMain.handle('license:getActivationRequest', async () => licenseService.createActivationRequest());
+
+  // Auth
+  ipcMain.handle('auth:hasUsers', async () => {
+    const hasUsers = authService.getUserCount() > 0;
+    logMainProcessEvent('auth:hasUsers', { hasUsers });
+    return hasUsers;
+  });
+  ipcMain.handle('auth:getLoginHints', async () => {
+    const hints = authService.getLoginHints();
+    logMainProcessEvent('auth:getLoginHints', {
+      activeUsersCount: Array.isArray(hints?.active_users) ? hints.active_users.length : 0,
+      hasLastUsername: Boolean(hints?.last_username),
+      superAdminEnabled: Boolean(hints?.super_admin_enabled),
+    });
+    return hints;
+  });
+  ipcMain.handle('auth:login', async (_, credentials) => {
+    logMainProcessEvent('auth:login:start', {
+      username: credentials?.username || null,
+    });
+    const user = authService.login(credentials.username, credentials.password);
+    logMainProcessEvent('auth:login:end', {
+      username: user?.username || null,
+      currentUserPresent: Boolean(user),
+    });
+    return user;
+  });
+  ipcMain.handle('auth:loginSuperAdmin', async (_, password) => {
+    logMainProcessEvent('auth:loginSuperAdmin:start', {});
+    const user = authService.loginSuperAdmin(password);
+    logMainProcessEvent('auth:loginSuperAdmin:end', {
+      currentUserPresent: Boolean(user),
+    });
+    return user;
+  });
+  ipcMain.handle('auth:logout', async () => {
+    logMainProcessEvent('auth:logout:start', {
+      currentUserPresent: Boolean(authService.getCurrentUser()),
+    });
+    authService.logout();
+    logMainProcessEvent('auth:logout:end', {
+      currentUserPresent: Boolean(authService.getCurrentUser()),
+    });
+  });
+  ipcMain.handle('auth:getCurrentUser', async () => {
+    const currentUser = authService.getCurrentUser();
+    logMainProcessEvent('auth:getCurrentUser', {
+      currentUserPresent: Boolean(currentUser),
+    });
+    return currentUser;
+  });
+  ipcMain.handle('auth:createFirstAdmin', async (_, payload) => {
+    const hasUsers = authService.getUserCount() > 0;
+    logMainProcessEvent('auth:createFirstAdmin:start', {
+      hasUsers,
+      username: payload?.username || null,
+    });
+    if (hasUsers) {
+      logMainProcessEvent('auth:createFirstAdmin:blocked', {
+        hasUsers: true,
+        reason: 'already-created',
+      });
+      throw new Error('Amministratore già creato.');
+    }
+    const user = authService.createUser({ ...payload, role: 'admin' });
+    try { authService.audit('users:create_first_admin', 'user', user.id, { username: user.username }); } catch {}
+    logMainProcessEvent('auth:createFirstAdmin:end', {
+      hasUsers: true,
+      currentUserPresent: Boolean(authService.getCurrentUser()),
+      userId: user?.id || null,
+    });
+    return user;
+  });
+
+  // Users (admin only)
+  ipcMain.handle('users:list', async () => { authService.requireAdmin(); return authService.listUsers(); });
+  ipcMain.handle('users:create', async (_, payload) => {
+    authService.requireAdmin();
+    const user = authService.createUser(payload);
+    try { authService.audit('users:create', 'user', user.id, { username: payload.username, role: payload.role }); } catch {}
+    return user;
+  });
+  ipcMain.handle('users:update', async (_, id, payload) => {
+    authService.requireAdmin();
+    authService.updateUser(id, payload);
+    try { authService.audit('users:update', 'user', id, payload); } catch {}
+  });
+  ipcMain.handle('users:disable', async (_, id) => {
+    authService.requireAdmin();
+    authService.disableUser(id);
+    try { authService.audit('users:disable', 'user', id, {}); } catch {}
+  });
+  ipcMain.handle('users:enable', async (_, id) => {
+    authService.requireAdmin();
+    authService.enableUser(id);
+    try { authService.audit('users:enable', 'user', id, {}); } catch {}
+  });
+  ipcMain.handle('users:resetPassword', async (_, id, newPassword) => {
+    authService.requireSuperAdmin();
+    logMainProcessEvent('users:reset-password:start', { targetUserId: id });
+    authService.changePassword(id, newPassword);
+    try { authService.audit('users:reset_password', 'user', id, {}); } catch {}
+    logMainProcessEvent('users:reset-password:end', { targetUserId: id });
+  });
+  ipcMain.handle('users:changeOwnPassword', async (_, newPassword) => {
+    authService.requireAuth();
+    authService.changeOwnPassword(newPassword);
+    const currentUser = authService.getCurrentUser();
+    try { authService.audit('users:change_own_password', 'user', currentUser?.userId || null, {}); } catch {}
+    logMainProcessEvent('users:change-own-password:end', {
+      currentUserPresent: Boolean(currentUser),
+      userId: currentUser?.userId || null,
+    });
+  });
+  ipcMain.handle('users:changeManagedPassword', async (_, id, newPassword) => {
+    authService.requireAdmin();
+    logMainProcessEvent('users:change-managed-password:start', { targetUserId: id });
+    authService.changeManagedUserPassword(id, newPassword);
+    try { authService.audit('users:change_password', 'user', id, {}); } catch {}
+    logMainProcessEvent('users:change-managed-password:end', { targetUserId: id });
+  });
+  ipcMain.handle('users:getAuditLogs', async (_, options) => {
+    authService.requireAdmin();
+    return authService.getAuditLogs(options);
+  });
+
   ipcMain.handle('appRuntime:getInfo', async () => buildAppRuntimeInfo());
   ipcMain.handle('appRuntime:getAvailableYears', async () => buildAvailableYears());
+  ipcMain.handle('operations:getActiveJobs', async () => getActiveOperationsSnapshot());
   if (variantConfig.variant === 'demo') {
     ipcMain.handle('demo:markWelcomeSeen', async () => demoService.markWelcomeSeen());
     ipcMain.handle('demo:reset', async () => demoService.resetDemoData());
   }
 
   ipcMain.handle('settings:get', async () => settingsService.buildSettingsSummary());
-  ipcMain.handle('settings:save', async (_, payload) => settingsService.buildSettingsSummary(settingsService.saveSettings(payload)));
+  ipcMain.handle('settings:save', async (_, payload) => {
+    requireWritableLicense('La modifica delle impostazioni operative');
+    const result = settingsService.buildSettingsSummary(settingsService.saveSettings(payload));
+    try { authService.audit('settings:save', 'settings', null, {}); } catch {}
+    return result;
+  });
   ipcMain.handle('settings:unlockAdmin', async (_, pin) => settingsService.buildSettingsSummary(settingsService.unlockAdmin(pin)));
   ipcMain.handle('settings:setRole', async (_, role) => settingsService.buildSettingsSummary(settingsService.setCurrentRole(role)));
   ipcMain.handle('settings:chooseBackupDirectory', async () => {
+    requireWritableLicense('La modifica delle impostazioni operative');
     const result = await settingsService.chooseBackupDirectory(mainWindow);
     return result.canceled ? result : { ...result, settings: settingsService.buildSettingsSummary(result.settings) };
   });
   ipcMain.handle('settings:uploadLogo', async () => {
+    requireWritableLicense('La modifica delle impostazioni operative');
     const result = await settingsService.uploadCompanyLogo(mainWindow);
     return result.canceled ? result : { ...result, settings: settingsService.buildSettingsSummary(result.settings) };
   });
   ipcMain.handle('settings:chooseLogoFile', async () => settingsService.chooseCompanyLogoFile(mainWindow));
-  ipcMain.handle('settings:uploadMarkerAsset', async () => settingsService.uploadMarkerAsset(mainWindow));
-  ipcMain.handle('settings:removeLogo', async () => settingsService.buildSettingsSummary(settingsService.removeCompanyLogo()));
+  ipcMain.handle('settings:uploadMarkerAsset', async () => {
+    requireWritableLicense('La modifica delle impostazioni operative');
+    return settingsService.uploadMarkerAsset(mainWindow);
+  });
+  ipcMain.handle('settings:removeLogo', async () => {
+    requireWritableLicense('La modifica delle impostazioni operative');
+    return settingsService.buildSettingsSummary(settingsService.removeCompanyLogo());
+  });
+  ipcMain.handle('diagnostics:generateReport', async () => {
+    try {
+      return diagnosticsService.generateReport();
+    } catch (error) {
+      logMainProcessEvent('diagnostics:generate-error', {
+        message: error?.message || String(error),
+      });
+      throw error;
+    }
+  });
+  ipcMain.handle('diagnostics:logRendererError', async (_, payload = {}) => {
+    return diagnosticsService.logRendererError({
+      ...payload,
+      timestamp: payload.timestamp || new Date().toISOString(),
+    });
+  });
 
   ipcMain.handle('backups:list', async () => backupService.listBackups());
   ipcMain.handle('backups:create', async (_, type) => {
     settingsService.requireAdmin();
-    return backupService.createBackup(type || 'manual');
+    const result = await backupService.createBackup(type || 'manual');
+    try { authService.audit('backup:create', 'backup', null, { type: type || 'manual' }); } catch {}
+    return result;
   });
+  ipcMain.handle('backups:openDirectory', async () => backupService.openBackupDirectory());
   ipcMain.handle('backups:chooseRestore', async () => {
     const result = await backupService.chooseRestoreBackup(mainWindow);
     if (result.canceled || !result.filePaths?.length) {
@@ -568,6 +925,7 @@ app.whenReady().then(async () => {
     };
   });
   ipcMain.handle('backups:restore', async (_, backupDir) => {
+    requireWritableLicense('Il ripristino dei backup');
     if (!backupDir || typeof backupDir !== 'string') {
       throw new Error('Percorso backup non valido.');
     }
@@ -580,7 +938,15 @@ app.whenReady().then(async () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     try {
       const result = await backupService.restoreBackup(resolvedBackupDir);
-      if (isDev) {
+      const integrity = dbModule.runIntegrityCheck();
+      if (!integrity.ok) {
+        throw new Error(
+          `Ripristino eseguito ma il controllo integrita del database ha rilevato problemi.\n\n` +
+          `${(integrity.messages || []).join('\n')}\n\n` +
+          `Backup sicurezza pre-restore: ${result.pre_restore_backup_dir || 'non disponibile'}`
+        );
+      }
+      if (!app.isPackaged) {
         await dialog.showMessageBox({
           type: 'info',
           title: 'Ripristino completato',
@@ -618,175 +984,427 @@ app.whenReady().then(async () => {
     employeeRepo.findEmployeeHistoryMatches(criteria)
   );
   ipcMain.handle('employees:create', async (_, payload) => {
-    requireWritableLicense('L’aggiunta di nuovi dipendenti');
-    return employeeRepo.createEmployee(payload);
+    requireWritableLicense("L'aggiunta di nuovi dipendenti");
+    const result = employeeRepo.createEmployee(payload);
+    try { authService.audit('employee:create', 'employee', result?.id, { name: (payload?.first_name || '') + ' ' + (payload?.last_name || '') }); } catch {}
+    return result;
   });
-  ipcMain.handle('employees:update', async (_, id, payload) => employeeRepo.updateEmployee(id, payload));
-  ipcMain.handle('employees:archive', async (_, id) => employeeRepo.archiveEmployee(id));
-  ipcMain.handle('employees:restore', async (_, id) => employeeRepo.restoreEmployee(id));
-  ipcMain.handle('employees:uploadHireDocument', async (_, employeeId) =>
-    employeeRepo.uploadHireDocument(mainWindow, employeeId)
-  );
-  ipcMain.handle('employees:uploadHireDocumentForPeriod', async (_, employeeId, employmentPeriodId) =>
-    employeeRepo.uploadHireDocumentForEmploymentPeriod(mainWindow, employeeId, employmentPeriodId)
-  );
+  ipcMain.handle('employees:update', async (_, id, payload) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    const result = employeeRepo.updateEmployee(id, payload);
+    try { authService.audit('employee:update', 'employee', id, {}); } catch {}
+    return result;
+  });
+  ipcMain.handle('employees:archive', async (_, id) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    const result = employeeRepo.archiveEmployee(id);
+    try { authService.audit('employee:archive', 'employee', id, {}); } catch {}
+    return result;
+  });
+  ipcMain.handle('employees:bulkArchive', async (_, ids = []) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    const requestedCount = Array.isArray(ids) ? ids.length : 0;
+    logMainProcessEvent('employees:bulk-archive:start', {
+      requested_count: requestedCount,
+    });
+    try {
+      const result = employeeRepo.bulkArchiveEmployees(ids);
+      logMainProcessEvent('employees:bulk-archive:end', result);
+      return result;
+    } catch (error) {
+      logMainProcessEvent('employees:bulk-archive:error', {
+        requested_count: requestedCount,
+        message: error?.message || String(error),
+      });
+      throw error;
+    }
+  });
+  ipcMain.handle('employees:restore', async (_, id) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.restoreEmployee(id);
+  });
+  ipcMain.handle('employees:uploadHireDocument', async (_, employeeId) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.uploadHireDocument(mainWindow, employeeId);
+  });
+  ipcMain.handle('employees:uploadHireDocumentForPeriod', async (_, employeeId, employmentPeriodId) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.uploadHireDocumentForEmploymentPeriod(mainWindow, employeeId, employmentPeriodId);
+  });
   ipcMain.handle('employees:openHireDocument', async (_, employeeId) =>
     employeeRepo.openHireDocument(employeeId)
   );
   ipcMain.handle('employees:openHireDocumentForPeriod', async (_, employeeId, employmentPeriodId) =>
     employeeRepo.openHireDocumentForEmploymentPeriod(employeeId, employmentPeriodId)
   );
-  ipcMain.handle('employees:deleteHireDocument', async (_, employeeId) =>
-    employeeRepo.deleteHireDocument(employeeId)
-  );
-  ipcMain.handle('employees:deleteHireDocumentForPeriod', async (_, employeeId, employmentPeriodId) =>
-    employeeRepo.deleteHireDocumentForEmploymentPeriod(employeeId, employmentPeriodId)
-  );
-  ipcMain.handle('employees:uploadArt37Document', async (_, employeeId) =>
-    employeeRepo.uploadArt37Document(mainWindow, employeeId)
-  );
+  ipcMain.handle('employees:deleteHireDocument', async (_, employeeId) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.deleteHireDocument(employeeId);
+  });
+  ipcMain.handle('employees:deleteHireDocumentForPeriod', async (_, employeeId, employmentPeriodId) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.deleteHireDocumentForEmploymentPeriod(employeeId, employmentPeriodId);
+  });
+  ipcMain.handle('employees:uploadArt37Document', async (_, employeeId) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.uploadArt37Document(mainWindow, employeeId);
+  });
   ipcMain.handle('employees:openArt37Document', async (_, employeeId) =>
     employeeRepo.openArt37Document(employeeId)
   );
-  ipcMain.handle('employees:deleteArt37Document', async (_, employeeId) =>
-    employeeRepo.deleteArt37Document(employeeId)
-  );
-  ipcMain.handle('employees:uploadMedicalVisitDocument', async (_, employeeId) =>
-    employeeRepo.uploadMedicalVisitDocument(mainWindow, employeeId)
-  );
+  ipcMain.handle('employees:deleteArt37Document', async (_, employeeId) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.deleteArt37Document(employeeId);
+  });
+  ipcMain.handle('employees:uploadMedicalVisitDocument', async (_, employeeId) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.uploadMedicalVisitDocument(mainWindow, employeeId);
+  });
   ipcMain.handle('employees:openMedicalVisitDocument', async (_, employeeId) =>
     employeeRepo.openMedicalVisitDocument(employeeId)
   );
-  ipcMain.handle('employees:deleteMedicalVisitDocument', async (_, employeeId) =>
-    employeeRepo.deleteMedicalVisitDocument(employeeId)
-  );
+  ipcMain.handle('employees:deleteMedicalVisitDocument', async (_, employeeId) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.deleteMedicalVisitDocument(employeeId);
+  });
   ipcMain.handle('occupations:list', async () => occupationRepo.listOccupations());
-  ipcMain.handle('occupations:create', async (_, name) => occupationRepo.ensureOccupation(name));
+  ipcMain.handle('occupations:create', async (_, name) => {
+    requireWritableLicense('La modifica delle impostazioni operative');
+    return occupationRepo.ensureOccupation(name);
+  });
 
   ipcMain.handle('teams:list', async (_, options) => teamsRepo.listTeams(options));
   ipcMain.handle('teams:getById', async (_, id, options) => teamsRepo.getTeamById(id, options));
-  ipcMain.handle('teams:create', async (_, payload) => teamsRepo.createTeam(payload));
-  ipcMain.handle('teams:update', async (_, id, payload) => teamsRepo.updateTeam(id, payload));
-  ipcMain.handle('teams:archive', async (_, id) => teamsRepo.archiveTeam(id));
-  ipcMain.handle('teams:restore', async (_, id) => teamsRepo.restoreTeam(id));
-  ipcMain.handle('employees:deletePermanently', async (_, id) => employeeRepo.deleteEmployeePermanently(id));
-  ipcMain.handle('teams:deletePermanently', async (_, id) => teamsRepo.deleteTeamPermanently(id));
+  ipcMain.handle('teams:create', async (_, payload) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamsRepo.createTeam(payload);
+  });
+  ipcMain.handle('teams:update', async (_, id, payload) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamsRepo.updateTeam(id, payload);
+  });
+  ipcMain.handle('teams:archive', async (_, id) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamsRepo.archiveTeam(id);
+  });
+  ipcMain.handle('teams:restore', async (_, id) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamsRepo.restoreTeam(id);
+  });
+  ipcMain.handle('employees:deletePermanently', async (_, id) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    const result = employeeRepo.deleteEmployeePermanently(id);
+    try { authService.audit('employee:delete', 'employee', id, {}); } catch {}
+    return result;
+  });
+  ipcMain.handle('employees:bulkDelete', async (_, ids = []) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    const requestedCount = Array.isArray(ids) ? ids.length : 0;
+    logMainProcessEvent('employees:bulk-delete:start', {
+      requested_count: requestedCount,
+    });
+    try {
+      const result = employeeRepo.bulkDeleteEmployees(ids);
+      logMainProcessEvent('employees:bulk-delete:end', result);
+      return result;
+    } catch (error) {
+      logMainProcessEvent('employees:bulk-delete:error', {
+        requested_count: requestedCount,
+        message: error?.message || String(error),
+        code: error?.code || null,
+      });
+      throw error;
+    }
+  });
+  ipcMain.handle('teams:deletePermanently', async (_, id) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamsRepo.deleteTeamPermanently(id);
+  });
 
   ipcMain.handle('employees:parsePdfImport', async (_, options = {}) => {
-    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
-      title: 'Seleziona PDF assunzioni',
-      filters: [{ name: 'PDF', extensions: ['pdf'] }],
-      properties: ['openFile'],
+    return runExclusiveOperation({
+      type: 'pdf-import',
+      startMessage: 'Preparazione import PDF...',
+      fn: async (progress) => {
+        progress({
+          status: 'running',
+          step: 'file_read',
+          percent: 5,
+          message: 'Seleziona il file PDF da importare...',
+          concurrent_error_message: "Importazione PDF già in corso. Attendi il completamento prima di avviarne un'altra.",
+        });
+        const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+          title: 'Seleziona PDF assunzioni',
+          filters: [{ name: 'PDF', extensions: ['pdf'] }],
+          properties: ['openFile'],
+        });
+        if (canceled || !filePaths[0]) {
+          emitOperationProgress({
+            type: 'pdf-import',
+            status: 'idle',
+            job_id: `pdf-import-cancel-${Date.now()}`,
+          });
+          return { canceled: true };
+        }
+
+        progress({
+          status: 'running',
+          step: 'file_read',
+          percent: 12,
+          message: `Lettura file: ${path.basename(filePaths[0])}`,
+          file_path: filePaths[0],
+        });
+
+        let records;
+        try {
+          records = await pdfImportService.parsePdfAssunzioniWithProgress(filePaths[0], {
+            onProgress: progress,
+          });
+        } catch (error) {
+          throw new Error(`PDF non leggibile o parsing fallito. ${error?.message || error}`);
+        }
+
+        const enriched = pdfImportService.checkDuplicates(records, {
+          targetYear: getTargetYear(options),
+          onProgress: progress,
+        });
+        const pdfEmployer = enriched.find((record) => record.pdf_employer?.name || record.pdf_employer?.tax_id)?.pdf_employer
+          || { name: '', tax_id: '', workplace: '' };
+        const employerResolution = settingsService.resolvePdfEmployer(pdfEmployer);
+        const rowsWithResolvedEmployer = employerResolution.employer_short_name
+          ? enriched.map((record) => ({
+              ...record,
+              hired_by_detected: record.hired_by_detected || employerResolution.employer_short_name,
+              hired_by: record.hired_by || record.hired_by_detected || employerResolution.employer_short_name,
+            }))
+          : enriched;
+        const resolvedRows = employerResolution.employer_short_name
+          ? pdfImportService.checkDuplicates(rowsWithResolvedEmployer, {
+              targetYear: getTargetYear(options),
+            })
+          : rowsWithResolvedEmployer;
+        progress({
+          status: 'running',
+          step: 'duplicate_check',
+          percent: 96,
+          message: 'Controllo duplicati completato.',
+          record_count: resolvedRows.length,
+        });
+        return {
+          canceled: false,
+          filePath: filePaths[0],
+          records: resolvedRows,
+          pdfEmployer,
+          employerResolution,
+        };
+      },
     });
-    if (canceled || !filePaths[0]) return { canceled: true };
-    const records = await pdfImportService.parsePdfAssunzioni(filePaths[0]);
-    const enriched = pdfImportService.checkDuplicates(records, {
-      targetYear: getTargetYear(options),
+  });
+
+  ipcMain.handle('employees:evaluatePdfImportRows', async (_, { rows, targetYear }) => {
+    return pdfImportService.checkDuplicates(Array.isArray(rows) ? rows : [], {
+      targetYear: Number(targetYear) || new Date().getFullYear(),
     });
-    return { canceled: false, filePath: filePaths[0], records: enriched };
+  });
+
+  ipcMain.handle('employees:resolvePdfEmployer', async (_, payload = {}) => {
+    requireWritableLicense("L'importazione di nuovi dipendenti");
+    const pdfEmployer = payload.pdfEmployer || {};
+    const action = String(payload.action || '').trim();
+    if (action === 'associate_existing') {
+      const result = settingsService.savePdfEmployerMapping(pdfEmployer, payload.employerShortName);
+      return settingsService.resolvePdfEmployer(pdfEmployer, result.settings);
+    }
+    if (action === 'create_new') {
+      const result = settingsService.createEmployerFromPdfEmployer(pdfEmployer);
+      return settingsService.resolvePdfEmployer(pdfEmployer, result.settings);
+    }
+    throw new Error('Azione di risoluzione datore non valida.');
   });
 
   ipcMain.handle('employees:confirmPdfImport', async (_, { filePath, rows }) => {
-    requireWritableLicense('L’importazione di nuovi dipendenti');
-    const results = [];
-    for (const row of rows) {
-      if (!row.selected) continue;
-      const datori = row.hired_by === 'entrambi' ? ['LC', 'LG'] : [row.hired_by];
-      const normDate = pdfImportService.normDateToISO;
-      try {
-        if (row.import_action === 'già_presente') {
-          results.push({ fiscal_code: row.fiscal_code, action: 'saltato', employee_id: row.existing_employee_id });
-        } else if (row.import_action === 'esistente') {
-          const periodTargets = [];
-          for (const datore of datori) {
-            const period = employeeRepo.addEmploymentPeriodToEmployee(row.existing_employee_id, {
-              hire_date_from: normDate(row.hire_date_from),
-              hire_date_to: normDate(row.hire_date_to),
-              hired_by: datore,
-            });
-            periodTargets.push({
-              employmentPeriodId: period.id,
-              hiredBy: datore,
-            });
-          }
-          await pdfImportService.attachEmployeePages(
-            filePath,
-            row.page_index,
-            row.existing_employee_id,
-            row.first_name,
-            row.last_name,
-            periodTargets
-          );
-          results.push({ fiscal_code: row.fiscal_code, action: 'aggiornato', employee_id: row.existing_employee_id });
-        } else {
-          const emp = await employeeRepo.createEmployee({
-            first_name: row.first_name,
-            last_name: row.last_name,
-            fiscal_code: row.fiscal_code?.toUpperCase() || null,
-            hire_date_from: normDate(row.hire_date_from),
-            hire_date_to: normDate(row.hire_date_to),
-            hired_by: datori[0],
-            status: 'attivo',
+    requireWritableLicense("L'importazione di nuovi dipendenti");
+    return runExclusiveOperation({
+      type: 'pdf-import',
+      startMessage: 'Importazione dipendenti in corso...',
+      fn: async (progress) => {
+        progress({
+          status: 'running',
+          step: 'backup_pre_import',
+          percent: 8,
+          message: 'Creazione backup di sicurezza pre-import...',
+          concurrent_error_message: "Importazione PDF già in corso. Attendi il completamento prima di avviarne un'altra.",
+        });
+        backupService.createOperationSafetyBackup('import_pdf');
+        const reclassifiedRows = pdfImportService.checkDuplicates(Array.isArray(rows) ? rows : [], {
+          targetYear: Number(Array.isArray(rows) && rows[0]?.target_year) || new Date().getFullYear(),
+        });
+        const selectedRows = reclassifiedRows.filter(
+          (row) => row.selected && (row.status === 'pronto' || row.status === 'nuovo_rapporto_datore')
+        );
+        const results = [];
+        const totalRows = Math.max(1, selectedRows.length);
+        const fileFingerprint = filePath && fs.existsSync(filePath) ? hashFile(filePath) : `pdf-import-${Date.now()}`;
+
+        for (let index = 0; index < selectedRows.length; index += 1) {
+          const row = selectedRows[index];
+          const datori = row.hired_by === 'entrambi' ? ['LC', 'LG'] : [row.hired_by];
+          const normDate = pdfImportService.normDateToISO;
+          const sourcePagesLabel = Array.isArray(row.page_numbers) && row.page_numbers.length
+            ? row.page_numbers.join('-')
+            : String(Number(row.page_index ?? index));
+          progress({
+            status: 'running',
+            step: 'data_save',
+            percent: 18 + Math.round((index / totalRows) * 76),
+            message: `Salvataggio dati ${index + 1} di ${totalRows}: ${row.last_name || ''} ${row.first_name || ''}`.trim(),
           });
-          const periodTargets = [];
-          const firstPeriod = (emp.employment_periods || []).find((period) => period.is_current) || emp.employment_periods?.[0];
-          if (firstPeriod) {
-            periodTargets.push({
-              employmentPeriodId: firstPeriod.id,
-              hiredBy: datori[0],
-            });
+          try {
+            const sourceDocumentIdBase = `${fileFingerprint}:pages:${sourcePagesLabel}`;
+            if (row.import_action === 'già_presente') {
+              results.push({ fiscal_code: row.fiscal_code, action: 'saltato', employee_id: row.existing_employee_id });
+            } else if (!employeeRepo.isValidFiscalCode(row.fiscal_code) || !row.first_name || !row.last_name || !row.hire_date_from) {
+              results.push({
+                fiscal_code: row.fiscal_code,
+                action: 'scartato',
+                error: 'Record incompleto: nome, cognome, codice fiscale e data sono obbligatori.',
+              });
+            } else if (row.existing_employee_id) {
+              if (row.existing_is_deleted) {
+                await employeeRepo.updateEmployee(row.existing_employee_id, {
+                  first_name: row.first_name,
+                  last_name: row.last_name,
+                  fiscal_code: row.fiscal_code?.toUpperCase() || null,
+                  hire_date_from: normDate(row.hire_date_from),
+                  hire_date_to: normDate(row.hire_date_to),
+                  hired_by: datori[0],
+                  status: 'attivo',
+                });
+                await employeeRepo.restoreEmployee(row.existing_employee_id);
+              }
+              const periodTargets = [];
+              for (const datore of datori) {
+                const { period, action } = employeeRepo.upsertImportedEmploymentPeriod(row.existing_employee_id, {
+                  hire_date_from: normDate(row.hire_date_from),
+                  hire_date_to: normDate(row.hire_date_to),
+                  hired_by: datore,
+                  source_document_id: `${sourceDocumentIdBase}:${datore}`,
+                });
+                if (action === 'already_present') {
+                  continue;
+                }
+                periodTargets.push({
+                  employmentPeriodId: period.id,
+                  hiredBy: datore,
+                });
+              }
+              if (periodTargets.length) {
+                await pdfImportService.attachEmployeePages(
+                  filePath,
+                  row.page_numbers || row.page_index,
+                  row.existing_employee_id,
+                  row.first_name,
+                  row.last_name,
+                  periodTargets
+                );
+                results.push({
+                  fiscal_code: row.fiscal_code,
+                  action: row.import_action === 'nuovo_rapporto_datore' ? 'nuovo_rapporto_datore' : 'aggiornato',
+                  employee_id: row.existing_employee_id,
+                });
+              } else {
+                results.push({ fiscal_code: row.fiscal_code, action: 'saltato', employee_id: row.existing_employee_id });
+              }
+            } else {
+              const emp = await employeeRepo.createEmployee({
+                first_name: row.first_name,
+                last_name: row.last_name,
+                fiscal_code: row.fiscal_code?.toUpperCase() || null,
+                hire_date_from: normDate(row.hire_date_from),
+                hire_date_to: normDate(row.hire_date_to),
+                hired_by: datori[0],
+                status: 'attivo',
+              });
+              const periodTargets = [];
+              const firstPeriod = (emp.employment_periods || []).find((period) => period.is_current) || emp.employment_periods?.[0];
+              if (firstPeriod) {
+                employeeRepo.upsertImportedEmploymentPeriod(emp.id, {
+                  hire_date_from: normDate(row.hire_date_from),
+                  hire_date_to: normDate(row.hire_date_to),
+                  hired_by: datori[0],
+                  source_document_id: `${sourceDocumentIdBase}:${datori[0]}`,
+                });
+                periodTargets.push({
+                  employmentPeriodId: firstPeriod.id,
+                  hiredBy: datori[0],
+                });
+              }
+              if (datori.length > 1) {
+                const { period: secondPeriod } = employeeRepo.upsertImportedEmploymentPeriod(emp.id, {
+                  hire_date_from: normDate(row.hire_date_from),
+                  hire_date_to: normDate(row.hire_date_to),
+                  hired_by: datori[1],
+                  source_document_id: `${sourceDocumentIdBase}:${datori[1]}`,
+                });
+                periodTargets.push({
+                  employmentPeriodId: secondPeriod.id,
+                  hiredBy: datori[1],
+                });
+              }
+              await pdfImportService.attachEmployeePages(
+                filePath,
+                row.page_numbers || row.page_index,
+                emp.id,
+                row.first_name,
+                row.last_name,
+                periodTargets
+              );
+              results.push({ fiscal_code: row.fiscal_code, action: 'creato', employee_id: emp.id });
+            }
+          } catch (err) {
+            results.push({ fiscal_code: row.fiscal_code, action: 'errore', error: err.message });
           }
-          if (datori.length > 1) {
-            const secondPeriod = employeeRepo.addEmploymentPeriodToEmployee(emp.id, {
-              hire_date_from: normDate(row.hire_date_from),
-              hire_date_to: normDate(row.hire_date_to),
-              hired_by: datori[1],
-            });
-            periodTargets.push({
-              employmentPeriodId: secondPeriod.id,
-              hiredBy: datori[1],
-            });
-          }
-          await pdfImportService.attachEmployeePages(
-            filePath,
-            row.page_index,
-            emp.id,
-            row.first_name,
-            row.last_name,
-            periodTargets
-          );
-          results.push({ fiscal_code: row.fiscal_code, action: 'creato', employee_id: emp.id });
         }
-      } catch (err) {
-        results.push({ fiscal_code: row.fiscal_code, action: 'errore', error: err.message });
-      }
-    }
-    return results;
+        progress({
+          status: 'running',
+          step: 'data_save',
+          percent: 98,
+          message: 'Salvataggio import completato.',
+        });
+        return results;
+      },
+    });
   });
 
-  ipcMain.handle('communications:list', async () => communicationRepo.listCommunications());
+  ipcMain.handle('communications:list', async (_, options) => communicationRepo.listCommunications(options));
   ipcMain.handle('communications:save', async (_, payload) => {
+    requireWritableLicense('La modifica delle comunicazioni operative');
     const communication = communicationRepo.saveCommunication(payload);
     return persistCommunicationArtifacts(communication.id);
   });
-  ipcMain.handle('communications:delete', async (_, id) =>
-    communicationRepo.deleteCommunication(id)
-  );
+  ipcMain.handle('communications:delete', async (_, id) => {
+    requireWritableLicense('La modifica delle comunicazioni operative');
+    return communicationRepo.deleteCommunication(id);
+  });
   ipcMain.handle('communications:openFile', async (_, id, type) =>
     communicationRepo.openCommunicationFile(id, type)
   );
   ipcMain.handle('communications:sendEmail', async (_, id, options) => {
+    requireWritableLicense('La creazione di nuove comunicazioni operative');
     await persistCommunicationArtifacts(id);
     return communicationRepo.openCommunicationEmail(id, options);
   });
 
   ipcMain.handle('attendance:save', async (_, payload) => {
-    requireWritableLicense('L’inserimento di nuove presenze');
+    requireWritableLicense("L'inserimento di nuove presenze");
     return attendanceRepo.saveAttendance(payload);
   });
   ipcMain.handle('attendance:bulkUpsert', async (_, payload) => {
-    requireWritableLicense('L’inserimento di nuove presenze');
-    return attendanceRepo.bulkUpsertAttendance(payload);
+    requireWritableLicense("L'inserimento di nuove presenze");
+    backupService.createOperationSafetyBackup('bulk_attendance');
+    const result = attendanceRepo.bulkUpsertAttendance(payload);
+    try { authService.audit('attendance:bulkUpsert', 'attendance', null, { count: payload?.length }); } catch {}
+    return result;
   });
   ipcMain.handle('attendance:listByMonth', async (_, year, month) =>
     attendanceRepo.listAttendanceByMonth(year, month)
@@ -805,8 +1423,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('payroll:listByEmployee', async (_, employeeId) =>
     payrollRepo.listPayrollRecordsByEmployee(employeeId)
   );
-  ipcMain.handle('payroll:listHistory', async () =>
-    payrollRepo.listPayrollHistory()
+  ipcMain.handle('payroll:listHistory', async (_, options) =>
+    payrollRepo.listPayrollHistory(options)
   );
   ipcMain.handle('payroll:getRecord', async (_, employeeId, month) =>
     payrollRepo.getPayrollRecord(employeeId, month)
@@ -839,45 +1457,109 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('reports:savePdf', async (_, payload) => {
-    const defaultFileName = payload?.fileName || 'report.pdf';
-    const html = payload?.html || '';
-    const landscape = !!payload?.landscape;
+    requireWritableLicense('La creazione di nuovi report');
+    return runExclusiveOperation({
+      type: 'report-export',
+      startMessage: 'Avvio generazione report...',
+      fn: async (progress) => {
+        const defaultFileName = payload?.fileName || 'report.pdf';
+        const html = payload?.html || '';
+        const landscape = !!payload?.landscape;
 
-    if (!html.trim()) {
-      throw new Error('HTML report mancante');
-    }
+        if (!html.trim()) {
+          throw new Error('HTML report mancante');
+        }
 
-    const tempPdfPath = buildTempPdfPath(defaultFileName);
-    await renderPdfToFile({
-      html,
-      filePath: tempPdfPath,
-      landscape,
+        progress({
+          status: 'running',
+          step: 'data_load',
+          percent: 10,
+          message: 'Caricamento dati report...',
+          file_name: defaultFileName,
+          concurrent_error_message: "Generazione report già in corso. Attendi il completamento prima di avviarne un'altra.",
+        });
+        progress({
+          status: 'running',
+          step: 'attendance_calc',
+          percent: 18,
+          message: 'Calcolo presenze...',
+        });
+        progress({
+          status: 'running',
+          step: 'balance_calc',
+          percent: 24,
+          message: 'Calcolo acconti, debiti e crediti...',
+        });
+        progress({
+          status: 'running',
+          step: 'document_generation',
+          percent: 30,
+          message: 'Generazione documento in corso...',
+        });
+
+        const tempPdfPath = buildTempPdfPath(defaultFileName);
+        await renderPdfToFile({
+          html,
+          filePath: tempPdfPath,
+          landscape,
+          onProgress: progress,
+        });
+
+        const openResult = await shell.openPath(tempPdfPath);
+        if (openResult) {
+          throw new Error(openResult);
+        }
+
+        return {
+          canceled: false,
+          preview_file_path: tempPdfPath,
+        };
+      },
     });
-
-    const openResult = await shell.openPath(tempPdfPath);
-    if (openResult) {
-      throw new Error(openResult);
-    }
-
-    return {
-      canceled: false,
-      preview_file_path: tempPdfPath,
-    };
   });
 
   ipcMain.handle('reports:printHtml', async (_, payload) => {
-    const html = payload?.html || '';
-    const landscape = !!payload?.landscape;
-    const fileName = payload?.fileName || 'stampa.pdf';
+    requireWritableLicense('La creazione di nuovi report');
+    return runExclusiveOperation({
+      type: 'report-export',
+      startMessage: 'Preparazione stampa report...',
+      fn: async (progress) => {
+        const html = payload?.html || '';
+        const landscape = !!payload?.landscape;
+        const fileName = payload?.fileName || 'stampa.pdf';
 
-    if (!html.trim()) {
-      throw new Error('HTML report mancante');
-    }
+        if (!html.trim()) {
+          throw new Error('HTML report mancante');
+        }
 
-    return printHtmlDocument({
-      html,
-      landscape,
-      fileName,
+        progress({
+          status: 'running',
+          step: 'data_load',
+          percent: 10,
+          message: 'Caricamento dati report...',
+          file_name: fileName,
+          concurrent_error_message: "Generazione report già in corso. Attendi il completamento prima di avviarne un'altra.",
+        });
+        progress({
+          status: 'running',
+          step: 'attendance_calc',
+          percent: 18,
+          message: 'Calcolo presenze...',
+        });
+        progress({
+          status: 'running',
+          step: 'balance_calc',
+          percent: 24,
+          message: 'Calcolo acconti, debiti e crediti...',
+        });
+
+        return printHtmlDocument({
+          html,
+          landscape,
+          fileName,
+          onProgress: progress,
+        });
+      },
     });
   });
 
