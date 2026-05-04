@@ -193,7 +193,7 @@ function blankDraft(employees, settings = null) {
   const employerOptions = settings?.employer_options || [];
   return {
     id: null,
-    company_name: settings?.company?.document_header || settings?.company?.name || 'Gestionale Presenze',
+    company_name: settings?.company?.document_header || settings?.company?.name || 'GPA versione 1',
     title: 'Elenco giornate',
     recipient_email: '',
     notes: '',
@@ -1018,7 +1018,7 @@ export default function CommunicationPage() {
                   <div>
                     <div className="communication-history-title">{communication.title}</div>
                     <div className="communication-history-meta">
-                      {communication.company_name || 'Gestionale Presenze'}
+                      {communication.company_name || 'GPA versione 1'}
                       {' · '}
                       {formatPeriodLabel(communication.period_start, communication.period_end)}
                       {' · '}

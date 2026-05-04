@@ -370,8 +370,6 @@ export default function AppLayout() {
 
           <footer className="app-footer no-print">
             {getSoftwareBrandingLabel()}
-            {settingsInfo?.runtime_info?.app_version ? ` · v${settingsInfo.runtime_info.app_version}` : ''}
-            {settingsInfo?.runtime_info?.app_variant ? ` · ${settingsInfo.runtime_info.app_variant}` : ''}
           </footer>
         </div>
       </main>
