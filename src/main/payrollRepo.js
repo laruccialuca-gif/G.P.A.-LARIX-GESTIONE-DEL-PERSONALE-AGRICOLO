@@ -316,6 +316,13 @@ function upsertPayrollRecord(data) {
   const db = getDb();
   const normalizedAdvances = normalizeAdvances(data.advances || data.acconti_details || []);
   const totalAdvances = normalizedAdvances.reduce((sum, advance) => sum + advance.amount, 0);
+  const existingRecord = db.prepare(`
+    SELECT id, datore
+    FROM payroll_records
+    WHERE employee_id = ? AND month = ?
+    LIMIT 1
+  `).get(data.employee_id, data.month);
+  const effectiveDatore = String(data.datore || '').trim() || existingRecord?.datore || null;
 
   const tx = db.transaction(() => {
     db.prepare(`
@@ -402,7 +409,7 @@ function upsertPayrollRecord(data) {
     `).run({
       employee_id: data.employee_id,
       month: data.month,
-      datore: data.datore || null,
+      datore: effectiveDatore,
       giornate_effettuate: data.giornate_effettuate ?? 0,
       ore_totali: data.ore_totali ?? 0,
       retribuzione_calcolata: data.retribuzione_calcolata ?? 0,

@@ -21,6 +21,20 @@ function formatDays(value) {
   return Number.isInteger(amount) ? String(amount) : amount.toFixed(2).replace(/\.00$/, '');
 }
 
+function formatEmployer(value, employee) {
+  const normalized = String(value || '').trim();
+  if (normalized) return normalized;
+  const fallback = String(employee?.hired_by || '').trim();
+  return fallback || '—';
+}
+
+function getAttachmentLabel(record) {
+  if (!record?.payroll_document) {
+    return 'Nessun allegato';
+  }
+  return record.payroll_document.file_name || 'Allegato disponibile';
+}
+
 export default function BustePagaPage() {
   const { selectedYear } = useYearContext();
   const [employees, setEmployees] = useState([]);
@@ -100,8 +114,10 @@ export default function BustePagaPage() {
     const rowsHtml = records.map((record) => `
       <tr>
         <td style="padding:10px 12px; font-weight:700; color:#1F2937;">${formatMonth(record.month)}</td>
+        <td style="padding:10px 12px; color:#334155;">${formatEmployer(record.datore, employee)}</td>
         <td style="padding:10px 12px; color:#334155;">${formatDays(record.giornate_effettuate)}</td>
         <td style="padding:10px 12px; color:#334155;">${formatDays(record.giornate_busta_paga)}</td>
+        <td style="padding:10px 12px; color:#334155;">${record.payroll_document ? 'Presente' : 'Nessun allegato'}</td>
       </tr>
     `).join('');
 
@@ -172,16 +188,20 @@ export default function BustePagaPage() {
             <thead>
               <tr>
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Mese</th>
+                <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Datore di lavoro</th>
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Giornate lavorate</th>
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Giornate busta paga</th>
+                <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Allegato</th>
               </tr>
             </thead>
             <tbody>
               ${rowsHtml}
               <tr>
                 <td style="padding:12px; font-weight:800; color:#1F2937; border-top:1px solid rgba(31, 41, 55, 0.08);">Totale</td>
+                <td style="padding:12px; font-weight:800; color:#1F2937; border-top:1px solid rgba(31, 41, 55, 0.08);">—</td>
                 <td style="padding:12px; font-weight:800; color:#1F2937; border-top:1px solid rgba(31, 41, 55, 0.08);">${formatDays(totalWorked)}</td>
                 <td style="padding:12px; font-weight:800; color:#1F2937; border-top:1px solid rgba(31, 41, 55, 0.08);">${formatDays(totalPayroll)}</td>
+                <td style="padding:12px; font-weight:800; color:#1F2937; border-top:1px solid rgba(31, 41, 55, 0.08);">—</td>
               </tr>
             </tbody>
           </table>
@@ -200,6 +220,15 @@ export default function BustePagaPage() {
     } catch (error) {
       console.error(error);
       alert('Errore apertura PDF buste paga');
+    }
+  }
+
+  async function handleOpenAttachment(record) {
+    try {
+      await window.api.payroll.openDocument(record.employee_id, record.month);
+    } catch (error) {
+      console.error(error);
+      alert('Errore apertura allegato busta paga');
     }
   }
 
@@ -296,22 +325,44 @@ export default function BustePagaPage() {
                           <thead>
                             <tr>
                               <th>Mese</th>
+                              <th>Datore di lavoro</th>
                               <th>Giornate lavorate</th>
                               <th>Giornate busta paga</th>
+                              <th>Allegato</th>
                             </tr>
                           </thead>
                           <tbody>
                             {records.map((record) => (
                               <tr key={`${employee.id}-${record.month}`}>
                                 <td>{formatMonth(record.month)}</td>
+                                <td>{formatEmployer(record.datore, employee)}</td>
                                 <td>{formatDays(record.giornate_effettuate)}</td>
                                 <td>{formatDays(record.giornate_busta_paga)}</td>
+                                <td>
+                                  {record.payroll_document ? (
+                                    <button
+                                      type="button"
+                                      className="button-secondary"
+                                      onClick={() => handleOpenAttachment(record)}
+                                      style={{ minHeight: 32, padding: '0 12px', fontSize: 12 }}
+                                      title={record.payroll_document.file_name || 'Apri allegato busta paga'}
+                                    >
+                                      Apri allegato
+                                    </button>
+                                  ) : (
+                                    <span style={{ color: '#667085', fontSize: 12 }}>
+                                      {getAttachmentLabel(record)}
+                                    </span>
+                                  )}
+                                </td>
                               </tr>
                             ))}
                             <tr>
                               <td style={{ fontWeight: 800 }}>Totale</td>
+                              <td style={{ fontWeight: 800 }}>—</td>
                               <td style={{ fontWeight: 800 }}>{formatDays(totalWorked)}</td>
                               <td style={{ fontWeight: 800 }}>{formatDays(totalPayroll)}</td>
+                              <td style={{ fontWeight: 800 }}>—</td>
                             </tr>
                           </tbody>
                         </table>
