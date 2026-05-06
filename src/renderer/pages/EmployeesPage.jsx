@@ -220,7 +220,7 @@ function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected,
       style={{
         display: 'flex', alignItems: 'center', gap: 12,
         padding: '10px 16px', borderBottom: '1px solid #f3f4f6',
-        cursor: 'pointer', background: selectedBg,
+        cursor: 'pointer', background: selectedBg, minWidth: 1150,
       }}
       onMouseEnter={e => { e.currentTarget.style.background = selectionEnabled && selected ? 'rgba(15,118,110,0.13)' : '#f9fafb'; }}
       onMouseLeave={e => { e.currentTarget.style.background = selectedBg; }}
@@ -1290,12 +1290,14 @@ export default function EmployeesPage() {
               </div>
             </div>
 
+            <div style={{ overflowX: 'auto', width: '100%' }}>
             {/* Intestazione colonne */}
             <div className="employee-directory-head" style={{
               display: 'flex', gap: 12, padding: '8px 16px',
               background: '#f9fafb', borderBottom: '1px solid #e5e7eb',
               fontSize: 11, fontWeight: 700, color: '#9ca3af',
               textTransform: 'uppercase', letterSpacing: '0.05em',
+              minWidth: 1150,
             }}>
               <div className="employee-col employee-col--checkbox" style={{ width: 26, display: 'flex', justifyContent: 'center' }}>
                 <SelectAllCheckbox
@@ -1325,7 +1327,7 @@ export default function EmployeesPage() {
             </div>
 
             {renderedEmployees.length === 0 ? (
-              <div className="empty-state" style={{ padding: '24px 16px' }}>
+              <div className="empty-state" style={{ padding: '24px 16px', minWidth: 1150 }}>
                 Nessun dipendente. Clicca "+ Nuovo Dipendente" per aggiungerne uno.
               </div>
             ) : (
@@ -1350,6 +1352,7 @@ export default function EmployeesPage() {
                 ))}
               </>
             )}
+            </div>
           </SectionAccordion>
 
           {/* Area Squadre */}

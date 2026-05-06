@@ -3292,16 +3292,6 @@ function EmployeePrintArea({
       order: 1,
     },
     {
-      label: 'Busta paga',
-      detail: payslipDaysNum
-        ? `${payslipDaysNum} giornate${hasMultipleEmployers && selectedEmployerLabel ? ` · ${selectedEmployerLabel}` : ''}`
-        : 'Non inserita',
-      value: importoBustaPagaNum > 0 ? formatCurrency(importoBustaPagaNum) : '—',
-      tone: 'negative',
-      order: 5,
-      hidden: importoBustaPagaNum <= 0,
-    },
-    {
       label: 'Trasporto',
       detail: trasportoAttivo && totaleTrasporto !== 0
         ? `${nMacchineMeseNum} macchine × ${formatCurrency(prezzoPerMacchinaNum)}`
