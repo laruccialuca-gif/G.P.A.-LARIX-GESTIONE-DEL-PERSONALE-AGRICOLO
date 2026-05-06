@@ -34,6 +34,20 @@ const DEFAULT_ATTENDANCE_MARKERS = [
   },
 ];
 
+function normalizeCommunicationEmailContact(contact, index = 0) {
+  const name = String(contact?.name || '').trim();
+  const email = String(contact?.email || '').trim();
+  if (!name && !email) {
+    return null;
+  }
+
+  return {
+    id: String(contact?.id || crypto.randomUUID()),
+    name: name || `Contatto ${index + 1}`,
+    email,
+  };
+}
+
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
   return dirPath;
@@ -145,6 +159,9 @@ function defaultSettings() {
       sync_mode: 'backup_only',
       versioning_strategy: 'timestamped',
       conflict_strategy: 'manual_review',
+    },
+    communication: {
+      email_contacts: [],
     },
     ocr: {
       online_fallback_enabled: false,
@@ -348,6 +365,13 @@ function normalizeSettings(input = {}) {
       sync_mode: String(merged.cloud?.sync_mode || 'backup_only').trim() || 'backup_only',
       versioning_strategy: String(merged.cloud?.versioning_strategy || 'timestamped').trim() || 'timestamped',
       conflict_strategy: String(merged.cloud?.conflict_strategy || 'manual_review').trim() || 'manual_review',
+    },
+    communication: {
+      email_contacts: Array.isArray(merged.communication?.email_contacts)
+        ? merged.communication.email_contacts
+            .map(normalizeCommunicationEmailContact)
+            .filter(Boolean)
+        : [],
     },
     ocr: {
       online_fallback_enabled: !!merged.ocr?.online_fallback_enabled,
@@ -781,6 +805,7 @@ function buildSettingsSummary(settings = readSettings()) {
     },
     employer_options: getEmployerOptions(normalizedSettings),
     pdf_import_employer_mappings: normalizedSettings.employers?.pdf_import_mappings || [],
+    communication: normalizedSettings.communication,
     is_admin: !isDemoVariant() || normalizedSettings.security.current_role === 'admin',
     backup_directory_effective: normalizedSettings.backup.directory || getBackupsDir(),
     cloud_ready: false,
@@ -812,6 +837,48 @@ function buildSettingsSummary(settings = readSettings()) {
   };
 }
 
+function listCommunicationEmailContacts() {
+  return normalizeSettings(readSettings()).communication?.email_contacts || [];
+}
+
+function saveCommunicationEmailContact(contact = {}) {
+  const current = readSettings();
+  const contacts = current.communication?.email_contacts || [];
+  const normalizedContact = normalizeCommunicationEmailContact(contact, contacts.length);
+
+  if (!normalizedContact || !normalizedContact.name || !normalizedContact.email) {
+    throw new Error('Inserisci nome ed email del contatto.');
+  }
+
+  const nextContacts = contacts.filter((item) => String(item.id) !== String(normalizedContact.id));
+  nextContacts.push(normalizedContact);
+  nextContacts.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'it'));
+
+  const next = normalizeSettings({
+    ...current,
+    communication: {
+      ...(current.communication || {}),
+      email_contacts: nextContacts,
+    },
+  });
+  writeSettings(next);
+  return next.communication.email_contacts;
+}
+
+function deleteCommunicationEmailContact(id) {
+  const current = readSettings();
+  const next = normalizeSettings({
+    ...current,
+    communication: {
+      ...(current.communication || {}),
+      email_contacts: (current.communication?.email_contacts || [])
+        .filter((item) => String(item.id) !== String(id || '')),
+    },
+  });
+  writeSettings(next);
+  return next.communication.email_contacts;
+}
+
 module.exports = {
   buildSettingsSummary,
   chooseCompanyLogoFile,
@@ -825,9 +892,12 @@ module.exports = {
   createEmployerFromPdfEmployer,
   getSettings,
   getSettingsFilePath,
+  listCommunicationEmailContacts,
   readSettings,
+  deleteCommunicationEmailContact,
   removeCompanyLogo,
   requireAdmin,
+  saveCommunicationEmailContact,
   saveSettings,
   setCurrentRole,
   unlockAdmin,

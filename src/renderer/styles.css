@@ -440,6 +440,48 @@ textarea {
   box-shadow: var(--shadow-md);
 }
 
+.report-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 45%) minmax(0, 55%);
+  gap: 18px;
+  align-items: start;
+  min-width: 0;
+}
+
+.report-editor-column,
+.report-preview-column {
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+.report-preview-sticky {
+  position: static;
+  top: auto;
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+.report-preview-column .print-area {
+  margin: 0;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+@media (max-width: 1180px) {
+  .report-workspace {
+    grid-template-columns: 1fr;
+  }
+
+}
+
 .page-hero {
   display: flex;
   align-items: flex-start;
@@ -1442,6 +1484,85 @@ textarea {
   overflow-y: visible;
 }
 
+.communication-days-grid-header,
+.communication-days-grid-row {
+  display: grid;
+  grid-template-columns: 44px 280px 160px 160px 180px 1fr;
+  align-items: center;
+  column-gap: 16px;
+  min-width: 1080px;
+}
+
+.communication-days-grid-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 14px 16px;
+  background: #edf4ee;
+  border-bottom: 1px solid rgba(20, 33, 61, 0.08);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.communication-days-grid-body {
+  display: grid;
+}
+
+.communication-days-grid-row {
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(20, 33, 61, 0.08);
+  cursor: pointer;
+}
+
+.communication-days-grid-row:hover {
+  background: rgba(34, 139, 230, 0.04);
+}
+
+.communication-days-grid-row.communication-row-selected {
+  background: rgba(34, 139, 230, 0.06);
+}
+
+.communication-select-cell {
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.communication-select-cell input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  position: static !important;
+  transform: none !important;
+}
+
+.communication-name-cell,
+.communication-days-grid-input-cell,
+.communication-compensation-cell,
+.communication-note-cell {
+  min-width: 0;
+}
+
+.communication-name-cell input,
+.communication-days-grid-input-cell input,
+.communication-note-cell textarea {
+  width: 100%;
+  min-width: 0;
+}
+
+.communication-days-grid-input-cell input {
+  text-align: right;
+}
+
+.communication-compensation-cell {
+  display: flex;
+  align-items: center;
+}
+
 .communication-days-table {
   min-width: 1120px;
   table-layout: fixed;
@@ -1453,25 +1574,52 @@ textarea {
   vertical-align: top;
 }
 
+.communication-select-col {
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  text-align: center;
+  vertical-align: middle !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.communication-select-col input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  margin: 0;
+}
+
 .communication-days-table th {
   white-space: nowrap;
 }
 
-.communication-days-table-one-employer th:nth-child(1),
-.communication-days-table-one-employer td:nth-child(1) {
-  width: 30%;
-  min-width: 300px;
+.communication-days-table th:nth-child(1),
+.communication-days-table td:nth-child(1) {
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  text-align: center;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .communication-days-table-one-employer th:nth-child(2),
 .communication-days-table-one-employer td:nth-child(2) {
+  width: 28%;
+  min-width: 280px;
+}
+
+.communication-days-table-one-employer th:nth-child(3),
+.communication-days-table-one-employer td:nth-child(3) {
   width: 16%;
   min-width: 160px;
   text-align: right;
 }
 
-.communication-days-table-one-employer th:nth-child(3),
-.communication-days-table-one-employer td:nth-child(3) {
+.communication-days-table-one-employer th:nth-child(4),
+.communication-days-table-one-employer td:nth-child(4) {
   width: 20%;
   min-width: 200px;
   text-align: right;
@@ -1480,27 +1628,27 @@ textarea {
 
 .communication-days-table-one-employer th:last-child,
 .communication-days-table-one-employer td:last-child {
-  width: 34%;
-  min-width: 320px;
-}
-
-.communication-days-table-two-employers th:nth-child(1),
-.communication-days-table-two-employers td:nth-child(1) {
-  width: 28%;
-  min-width: 280px;
+  width: 32%;
+  min-width: 300px;
 }
 
 .communication-days-table-two-employers th:nth-child(2),
-.communication-days-table-two-employers td:nth-child(2),
+.communication-days-table-two-employers td:nth-child(2) {
+  width: 26%;
+  min-width: 260px;
+}
+
 .communication-days-table-two-employers th:nth-child(3),
-.communication-days-table-two-employers td:nth-child(3) {
+.communication-days-table-two-employers td:nth-child(3),
+.communication-days-table-two-employers th:nth-child(4),
+.communication-days-table-two-employers td:nth-child(4) {
   width: 16%;
   min-width: 150px;
   text-align: right;
 }
 
-.communication-days-table-two-employers th:nth-child(4),
-.communication-days-table-two-employers td:nth-child(4) {
+.communication-days-table-two-employers th:nth-child(5),
+.communication-days-table-two-employers td:nth-child(5) {
   width: 18%;
   min-width: 190px;
   text-align: right;
@@ -1511,6 +1659,18 @@ textarea {
 .communication-days-table-two-employers td:last-child {
   width: 22%;
   min-width: 260px;
+}
+
+.communication-days-table tbody tr {
+  cursor: pointer;
+}
+
+.communication-days-table tbody tr.communication-row-selected {
+  background: rgba(34, 139, 230, 0.06);
+}
+
+.communication-days-table tbody tr:hover {
+  background: rgba(34, 139, 230, 0.04);
 }
 
 .communication-days-table input,
@@ -2167,11 +2327,28 @@ textarea {
 }
 
 @media print {
+  @page {
+    size: A4 portrait;
+    margin: 5mm;
+  }
+
+  .report-workspace {
+    display: block !important;
+  }
+
+  .report-preview-sticky {
+    position: static !important;
+    top: auto !important;
+  }
+
   html,
   body {
+    width: 210mm !important;
+    height: 297mm !important;
     margin: 0 !important;
     padding: 0 !important;
     background: white !important;
+    overflow: visible !important;
   }
 
   .app-sidebar,
@@ -2193,13 +2370,15 @@ textarea {
 
   .print-area {
     display: block !important;
-    width: 100% !important;
-    max-width: 200mm !important;
+    width: 202mm !important;
+    max-width: 202mm !important;
     margin: 0 !important;
     margin-inline: auto !important;
     padding: 0 !important;
     font-size: 10px !important;
-    line-height: 1.35 !important;
+    line-height: 1.3 !important;
+    page-break-after: avoid !important;
+    break-after: avoid !important;
   }
 
   .print-sheet,
@@ -2212,7 +2391,205 @@ textarea {
   .employee-print-layout {
     display: grid !important;
     grid-template-columns: 1fr !important;
-    gap: 10px !important;
+    gap: 6px !important;
+  }
+
+  .employee-print-area {
+    width: 100% !important;
+    max-width: 202mm !important;
+    margin: 0 auto !important;
+    transform: none !important;
+    overflow: visible !important;
+  }
+
+  .employee-print-sheet {
+    width: 100% !important;
+    max-width: 202mm !important;
+    min-height: 0 !important;
+    padding: 6mm 8mm 5mm !important;
+    border-radius: 8px !important;
+    box-shadow: none !important;
+    border: 1px solid rgba(31, 41, 55, 0.08) !important;
+    overflow: visible !important;
+    page-break-after: avoid !important;
+    break-after: avoid !important;
+  }
+
+  .employee-print-sheet > div:first-child {
+    margin-bottom: 6px !important;
+    gap: 8px !important;
+    align-items: center !important;
+  }
+
+  .employee-print-sheet > div:first-child > div:first-child > div:first-child {
+    font-size: 19px !important;
+    line-height: 1.05 !important;
+  }
+
+  .employee-print-sheet > div:first-child > div:first-child > div:nth-child(2) {
+    font-size: 11px !important;
+    margin-top: 2px !important;
+  }
+
+  .employee-print-sheet > div:first-child > div:last-child {
+    font-size: 11px !important;
+    padding: 5px 10px !important;
+    white-space: nowrap !important;
+    text-transform: uppercase !important;
+    flex-shrink: 0 !important;
+  }
+
+  .employee-print-sheet > div:nth-child(2) {
+    gap: 6px !important;
+    margin-bottom: 6px !important;
+  }
+
+  .employee-print-sheet > div:nth-child(2) > div {
+    padding: 6px 8px !important;
+    border-radius: 8px !important;
+  }
+
+  .employee-print-sheet > div:nth-child(2) > div > div:first-child {
+    font-size: 9px !important;
+    margin-bottom: 2px !important;
+    letter-spacing: 0.04em !important;
+  }
+
+  .employee-print-sheet > div:nth-child(2) > div > div:nth-child(2) {
+    font-size: 16px !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+  }
+
+  .employee-print-sheet > div:nth-child(2) > div > div:nth-child(3) {
+    font-size: 9px !important;
+    margin-top: 2px !important;
+  }
+
+  .employee-print-sheet > div:nth-child(3) {
+    gap: 6px !important;
+    margin-bottom: 2px !important;
+    flex-wrap: nowrap !important;
+  }
+
+  .employee-print-sheet > div:nth-child(3) > div {
+    padding: 4px 9px !important;
+    font-size: 10px !important;
+  }
+
+  .employee-print-sheet .employee-print-section,
+  .employee-print-sheet .print-block,
+  .calendar-section,
+  .economic-section,
+  .result-box {
+    margin-top: 5px !important;
+    padding: 7px 9px !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .employee-print-sheet .employee-print-section > div:first-child {
+    margin-bottom: 4px !important;
+    font-size: 9px !important;
+    letter-spacing: 0.06em !important;
+  }
+
+  .employee-print-sheet [style*="Settimana "] {
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    font-size: 8px !important;
+  }
+
+  .employee-print-sheet [style*="grid-template-columns: repeat(7"] {
+    gap: 4px !important;
+  }
+
+  .employee-print-sheet [style*="border-radius: 14px"][style*="justify-items: center"] {
+    padding: 4px 3px !important;
+    gap: 3px !important;
+    border-radius: 6px !important;
+    min-height: 0 !important;
+  }
+
+  .employee-print-sheet [style*="font-size: 13px"][style*="font-weight: 800"][style*="line-height: 1"] {
+    font-size: 10px !important;
+  }
+
+  .employee-print-sheet [style*="width: 28px"][style*="height: 28px"] {
+    width: 18px !important;
+    height: 18px !important;
+    font-size: 10px !important;
+  }
+
+  .employee-print-sheet [style*="min-height: 24"] {
+    min-height: 12px !important;
+    font-size: 8px !important;
+  }
+
+  .employee-print-sheet [style*="font-size: 9px"][style*="line-height: 1.1"] {
+    font-size: 7px !important;
+    line-height: 1.05 !important;
+  }
+
+  .employee-print-sheet [style*="padding: 12px 0"],
+  .employee-print-sheet [style*="padding: 12px 0 0"] {
+    padding-top: 3px !important;
+    padding-bottom: 3px !important;
+  }
+
+  .employee-print-sheet [style*="font-size: 12px"][style*="font-weight: 700"] {
+    font-size: 10px !important;
+  }
+
+  .employee-print-sheet [style*="font-size: 11px"][style*="letter-spacing: 0.08em"] {
+    font-size: 9px !important;
+    margin-bottom: 4px !important;
+  }
+
+  .employee-print-sheet [style*="font-size: 13px"][style*="font-weight: 800"][style*="color: rgb(17, 24, 39)"] {
+    font-size: 11px !important;
+  }
+
+  .employee-print-sheet [style*="font-size: 11px"][style*="margin-top: 4px"] {
+    font-size: 9px !important;
+    margin-top: 1px !important;
+    line-height: 1.2 !important;
+  }
+
+  .employee-print-sheet [style*="font-size: 13px"][style*="font-weight: 800"][style*="white-space: nowrap"] {
+    font-size: 11px !important;
+  }
+
+  .employee-print-sheet [style*="font-size: 15px"][style*="font-weight: 800"][style*="white-space: nowrap"] {
+    font-size: 12px !important;
+  }
+
+  .employee-print-sheet [style*="padding: 18px 20px"] {
+    padding: 9px 13px !important;
+    margin-top: 5px !important;
+    border-radius: 10px !important;
+  }
+
+  .employee-print-sheet [style*="font-size: 14px"][style*="font-weight: 800"] {
+    font-size: 11px !important;
+    margin-bottom: 1px !important;
+  }
+
+  .employee-print-sheet [style*="font-size: 28px"][style*="font-weight: 900"] {
+    font-size: 19px !important;
+    line-height: 1 !important;
+  }
+
+  .employee-print-sheet [style*="margin-top: 14px"][style*="padding: 12px 14px"] {
+    margin-top: 4px !important;
+    padding: 5px 9px !important;
+    font-size: 9px !important;
+  }
+
+  .employee-print-sheet [style*="margin-top: 18px"][style*="padding-top: 14px"] {
+    margin-top: 4px !important;
+    padding-top: 4px !important;
+    font-size: 8px !important;
   }
 
   .print-area table {

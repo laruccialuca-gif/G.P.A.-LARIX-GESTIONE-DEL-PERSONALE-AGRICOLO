@@ -73,9 +73,21 @@ function normalizeNumberInput(value) {
   return Number.isFinite(parsed) ? String(parsed) : '';
 }
 
+function normalizeIntegerInput(value) {
+  const raw = String(value ?? '');
+  if (raw === '') return '';
+  return raw.replace(/\D+/g, '');
+}
+
 function toNumericValue(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toIntegerValue(value) {
+  const normalized = normalizeIntegerInput(value);
+  if (normalized === '') return 0;
+  return Number(normalized);
 }
 
 function formatCurrency(value) {
@@ -113,19 +125,19 @@ function buildCompensationSummary(record, month) {
   const acconti = Number(record.acconti || 0);
   const installments = getCurrentInstallments(record, month);
   const rateDebiti = installments.reduce((sum, installment) => sum + Number(installment.amount || 0), 0);
-  const crediti = Number(record.resto_precedente || 0);
+  const restoPrecedente = Number(record.resto_precedente || 0);
+  const crediti = Math.max(restoPrecedente, 0);
+  const debitiPrecedenti = Math.abs(Math.min(restoPrecedente, 0));
   const trasporto = Number(record.totale_trasporto || 0);
   const aggiunte = Number(record.regalo_importo || 0);
-  const calculatedTotal = retribuzione - acconti - rateDebiti + crediti + trasporto + aggiunte;
-  const totale = record.differenza_finale !== null && record.differenza_finale !== undefined
-    ? Number(record.differenza_finale || 0)
-    : calculatedTotal;
+  const totale = retribuzione + aggiunte + crediti + trasporto - rateDebiti - debitiPrecedenti - acconti;
 
   return {
     retribuzione,
     acconti,
     rateDebiti,
     crediti,
+    debitiPrecedenti,
     trasporto,
     aggiunte,
     totale,
@@ -169,8 +181,8 @@ function buildEmployeeRows(employees, existingRows = []) {
       return {
         employee_id: employee.id,
         employee_label: `${employee.last_name || ''} ${employee.first_name || ''}`.trim(),
-        giornate_primo: existing ? normalizeNumberInput(existing.giornate_primo) : '',
-        giornate_secondo: existing ? normalizeNumberInput(existing.giornate_secondo) : '',
+        giornate_primo: existing ? normalizeIntegerInput(existing.giornate_primo) : '',
+        giornate_secondo: existing ? normalizeIntegerInput(existing.giornate_secondo) : '',
         detail_note: existing?.detail_note || '',
         sort_order: existing?.sort_order ?? index,
       };
@@ -181,8 +193,8 @@ function historyToDraftRows(details = []) {
   return details.map((detail, index) => ({
     employee_id: detail.employee_id || null,
     employee_label: detail.employee_label,
-    giornate_primo: normalizeNumberInput(detail.giornate_primo),
-    giornate_secondo: normalizeNumberInput(detail.giornate_secondo),
+    giornate_primo: normalizeIntegerInput(detail.giornate_primo),
+    giornate_secondo: normalizeIntegerInput(detail.giornate_secondo),
     detail_note: detail.detail_note || '',
     sort_order: detail.sort_order ?? index,
   }));
@@ -191,18 +203,21 @@ function historyToDraftRows(details = []) {
 function blankDraft(employees, settings = null) {
   const defaultMonth = monthIso();
   const employerOptions = settings?.employer_options || [];
+  const rows = buildEmployeeRows(employees);
   return {
     id: null,
     company_name: settings?.company?.document_header || settings?.company?.name || 'GPA versione 1',
     title: 'Elenco giornate',
     recipient_email: '',
+    show_compensation_in_pdf: true,
+    selected_employee_ids: rows.map((row) => row.employee_id).filter(Boolean),
     notes: '',
     employer_labels: employerOptions,
     period_mode: 'monthly',
     month_reference: defaultMonth,
     period_start: monthToRange(defaultMonth).start,
     period_end: monthToRange(defaultMonth).end,
-    details: buildEmployeeRows(employees),
+    details: rows,
   };
 }
 
@@ -245,6 +260,9 @@ export default function CommunicationPage() {
   const [historyOffset, setHistoryOffset] = useState(0);
   const [includeExcelInEmail, setIncludeExcelInEmail] = useState(true);
   const [draft, setDraft] = useState(blankDraft([]));
+  const [emailContacts, setEmailContacts] = useState([]);
+  const [showAddressBook, setShowAddressBook] = useState(false);
+  const [contactForm, setContactForm] = useState({ id: '', name: '', email: '' });
   const [payrollByEmployee, setPayrollByEmployee] = useState({});
   const [activeCompensationKey, setActiveCompensationKey] = useState(null);
   const [lockedCompensationKey, setLockedCompensationKey] = useState(null);
@@ -265,9 +283,11 @@ export default function CommunicationPage() {
         }),
         window.api.settings.get(),
       ]);
+      const contacts = await window.api.communications.listContacts();
 
       const employeeList = employeeData || [];
       setSettings(settingsData || null);
+      setEmailContacts(contacts || []);
       setEmployees(employeeList);
       if (Array.isArray(communicationData)) {
         setCommunications(communicationData || []);
@@ -277,12 +297,23 @@ export default function CommunicationPage() {
         setCommunicationTotal(Number(communicationData?.total || 0));
       }
       setDraft((current) => ({
-        ...current,
-        company_name: current.id ? current.company_name : settingsData?.company?.document_header || settingsData?.company?.name || current.company_name,
-        employer_labels: settingsData?.employer_options || current.employer_labels || [],
-        details: current.id
-          ? current.details
-          : buildEmployeeRows(employeeList, current.details),
+        ...(() => {
+          const rebuiltRows = current.id
+            ? current.details
+            : buildEmployeeRows(employeeList, current.details);
+          const rebuiltEmployeeIds = rebuiltRows.map((row) => row.employee_id).filter(Boolean);
+          return {
+            ...current,
+            company_name: current.id ? current.company_name : settingsData?.company?.document_header || settingsData?.company?.name || current.company_name,
+            employer_labels: settingsData?.employer_options || current.employer_labels || [],
+            details: rebuiltRows,
+            selected_employee_ids: current.id
+              ? current.selected_employee_ids || rebuiltEmployeeIds
+              : rebuiltEmployeeIds.filter((id) =>
+                  (current.selected_employee_ids || rebuiltEmployeeIds).includes(id)
+                ),
+          };
+        })(),
       }));
     } catch (err) {
       console.error(err);
@@ -379,6 +410,11 @@ export default function CommunicationPage() {
       return {
         ...current,
         details: buildEmployeeRows(visibleEmployees, current.details),
+        selected_employee_ids: (() => {
+          const nextIds = visibleEmployees.map((employee) => employee.id);
+          const currentIds = current.selected_employee_ids || nextIds;
+          return nextIds.filter((id) => currentIds.includes(id));
+        })(),
       };
     });
   }, [visibleEmployees]);
@@ -466,11 +502,18 @@ export default function CommunicationPage() {
   }
 
   async function persistDraft() {
+    if (!draft.selected_employee_ids?.length) {
+      alert('Seleziona almeno un dipendente');
+      return null;
+    }
+
     const basePayload = {
       id: draft.id,
       company_name: draft.company_name,
       title: draft.title,
       recipient_email: draft.recipient_email,
+      selected_employee_ids: draft.selected_employee_ids || [],
+      show_compensation_in_pdf: draft.show_compensation_in_pdf !== false,
       notes: draft.notes,
       employer_labels: employerOptions,
       period_mode: draft.period_mode,
@@ -480,8 +523,8 @@ export default function CommunicationPage() {
       details: draft.details.map((row, index) => ({
         employee_id: row.employee_id,
         employee_label: row.employee_label,
-        giornate_primo: toNumericValue(row.giornate_primo),
-        giornate_secondo: toNumericValue(row.giornate_secondo),
+        giornate_primo: toIntegerValue(row.giornate_primo),
+        giornate_secondo: toIntegerValue(row.giornate_secondo),
         detail_note: row.detail_note || '',
         sort_order: row.sort_order ?? index,
       })),
@@ -591,6 +634,10 @@ export default function CommunicationPage() {
       company_name: communication.company_name || 'AZIENDA AGRICOLA LARUCCIA',
       title: communication.title || 'Elenco giornate',
       recipient_email: communication.recipient_email || '',
+      show_compensation_in_pdf: communication.show_compensation_in_pdf !== false,
+      selected_employee_ids: communication.selected_employee_ids?.length
+        ? communication.selected_employee_ids
+        : (communication.details || []).map((detail) => detail.employee_id).filter(Boolean),
       notes: communication.notes || '',
       employer_labels: communication.employer_labels || employerOptions,
       period_mode: communication.period_mode || 'monthly',
@@ -609,6 +656,33 @@ export default function CommunicationPage() {
     }));
   }
 
+  function togglePdfEmployee(employeeId) {
+    setDraft((current) => {
+      const currentIds = current.selected_employee_ids || [];
+      const nextIds = currentIds.includes(employeeId)
+        ? currentIds.filter((id) => id !== employeeId)
+        : [...currentIds, employeeId];
+      return {
+        ...current,
+        selected_employee_ids: nextIds,
+      };
+    });
+  }
+
+  function selectAllPdfEmployees() {
+    setDraft((current) => ({
+      ...current,
+      selected_employee_ids: current.details.map((row) => row.employee_id).filter(Boolean),
+    }));
+  }
+
+  function clearAllPdfEmployees() {
+    setDraft((current) => ({
+      ...current,
+      selected_employee_ids: [],
+    }));
+  }
+
   function updateDetailRow(index, field, value) {
     setDraft((current) => ({
       ...current,
@@ -619,11 +693,37 @@ export default function CommunicationPage() {
               [field]:
                 field === 'employee_label' || field === 'detail_note'
                   ? value
-                  : normalizeNumberInput(value),
+                  : normalizeIntegerInput(value),
             }
           : row
       ),
     }));
+  }
+
+  async function handleSaveContact() {
+    try {
+      const contacts = await window.api.communications.saveContact(contactForm);
+      setEmailContacts(contacts || []);
+      setContactForm({ id: '', name: '', email: '' });
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || 'Errore salvataggio contatto');
+    }
+  }
+
+  async function handleDeleteContact(contactId) {
+    const confirmed = window.confirm('Eliminare questo contatto dalla rubrica?');
+    if (!confirmed) return;
+    try {
+      const contacts = await window.api.communications.deleteContact(contactId);
+      setEmailContacts(contacts || []);
+      if (String(contactForm.id || '') === String(contactId)) {
+        setContactForm({ id: '', name: '', email: '' });
+      }
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || 'Errore eliminazione contatto');
+    }
   }
 
   async function handleHistoryOpen(communicationId, type) {
@@ -721,6 +821,14 @@ export default function CommunicationPage() {
             <label className="communication-checkbox">
               <input
                 type="checkbox"
+                checked={draft.show_compensation_in_pdf !== false}
+                onChange={(e) => updateDraftField('show_compensation_in_pdf', e.target.checked)}
+              />
+              Mostra colonna compenso nel PDF
+            </label>
+            <label className="communication-checkbox">
+              <input
+                type="checkbox"
                 checked={includeExcelInEmail}
                 onChange={(e) => setIncludeExcelInEmail(e.target.checked)}
               />
@@ -748,14 +856,107 @@ export default function CommunicationPage() {
               </div>
               <label>
                 <span className="communication-field-label">Email destinatario</span>
-                <input
-                  type="email"
-                  placeholder="consulente@azienda.it"
-                  value={draft.recipient_email}
-                  onChange={(e) => updateDraftField('recipient_email', e.target.value)}
-                />
+                <div style={recipientRowStyle}>
+                  <input
+                    type="email"
+                    placeholder="consulente@azienda.it"
+                    value={draft.recipient_email}
+                    onChange={(e) => updateDraftField('recipient_email', e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={() => setShowAddressBook((current) => !current)}
+                  >
+                    Rubrica
+                  </button>
+                </div>
               </label>
             </div>
+            {showAddressBook ? (
+              <div style={addressBookPanelStyle}>
+                <div style={addressBookHeaderStyle}>
+                  <strong>Rubrica destinatari</strong>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={() => {
+                      setShowAddressBook(false);
+                      setContactForm({ id: '', name: '', email: '' });
+                    }}
+                  >
+                    Chiudi
+                  </button>
+                </div>
+
+                <div style={addressBookFormStyle}>
+                  <input
+                    placeholder="Nome contatto"
+                    value={contactForm.name}
+                    onChange={(e) => setContactForm((current) => ({ ...current, name: e.target.value }))}
+                  />
+                  <input
+                    type="email"
+                    placeholder="Email contatto"
+                    value={contactForm.email}
+                    onChange={(e) => setContactForm((current) => ({ ...current, email: e.target.value }))}
+                  />
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button type="button" className="button" onClick={handleSaveContact}>
+                      {contactForm.id ? 'Aggiorna contatto' : 'Salva contatto'}
+                    </button>
+                    {contactForm.id ? (
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        onClick={() => setContactForm({ id: '', name: '', email: '' })}
+                      >
+                        Annulla modifica
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div style={addressBookListStyle}>
+                  {emailContacts.length ? emailContacts.map((contact) => (
+                    <div key={contact.id} style={addressBookItemStyle}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 700 }}>{contact.name}</div>
+                        <div style={{ fontSize: 12, color: '#667085', overflowWrap: 'anywhere' }}>{contact.email}</div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button
+                          type="button"
+                          className="button-secondary"
+                          onClick={() => {
+                            updateDraftField('recipient_email', contact.email);
+                            setShowAddressBook(false);
+                          }}
+                        >
+                          Usa
+                        </button>
+                        <button
+                          type="button"
+                          className="button-secondary"
+                          onClick={() => setContactForm(contact)}
+                        >
+                          Modifica
+                        </button>
+                        <button
+                          type="button"
+                          className="button-danger"
+                          onClick={() => handleDeleteContact(contact.id)}
+                        >
+                          Elimina
+                        </button>
+                      </div>
+                    </div>
+                  )) : (
+                    <div className="empty-state" style={{ padding: 16 }}>Nessun contatto salvato.</div>
+                  )}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div className="communication-card">
@@ -820,55 +1021,116 @@ export default function CommunicationPage() {
             </div>
           </div>
 
+          <div style={pdfSelectionPanelStyle}>
+            <div style={pdfSelectionHeaderStyle}>
+              <div>
+                <div className="communication-field-label">Dipendenti inclusi nel PDF</div>
+                <strong>
+                  {(draft.selected_employee_ids || []).length} su {draft.details.filter((r) => r.employee_id).length} selezionati
+                </strong>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button type="button" className="button-secondary" onClick={selectAllPdfEmployees}>
+                  Seleziona tutti
+                </button>
+                <button type="button" className="button-secondary" onClick={clearAllPdfEmployees}>
+                  Deseleziona tutti
+                </button>
+              </div>
+            </div>
+          </div>
+
           {loading ? (
             <div className="empty-state" style={{ padding: '24px 0' }}>Caricamento dipendenti...</div>
           ) : (
             <div className="communication-table-shell communication-days-table-shell">
-              <table className={`table communication-table communication-days-table ${hasSecondEmployer ? 'communication-days-table-two-employers' : 'communication-days-table-one-employer'}`}>
-                <thead>
-                  <tr>
-                    <th>Nome dipendente</th>
-                    <th>{employerOptions[0] ? `${employerOptions[0].short_name} (${employerOptions[0].name})` : 'Datore 1'}</th>
-                    {hasSecondEmployer ? <th>{`${employerOptions[1].short_name} (${employerOptions[1].name})`}</th> : null}
-                    <th>Compenso mese</th>
-                    <th>Note</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <div className="communication-days-grid-header">
+                <div
+                  className="communication-select-cell"
+                  title="Includi nel PDF"
+                  aria-label="Includi nel PDF"
+                >
+                      <input
+                        type="checkbox"
+                        aria-label="Seleziona tutti"
+                        checked={
+                          draft.details.filter((r) => r.employee_id).length > 0 &&
+                          (draft.selected_employee_ids || []).length ===
+                            draft.details.filter((r) => r.employee_id).length
+                        }
+                        ref={(el) => {
+                          if (el) {
+                            const total = draft.details.filter((r) => r.employee_id).length;
+                            const sel = (draft.selected_employee_ids || []).length;
+                            el.indeterminate = sel > 0 && sel < total;
+                          }
+                        }}
+                        onChange={(e) => (e.target.checked ? selectAllPdfEmployees() : clearAllPdfEmployees())}
+                      />
+                </div>
+                <div className="communication-name-cell">Nome dipendente</div>
+                <div>{employerOptions[0] ? employerOptions[0].short_name : 'LC'}</div>
+                <div>{employerOptions[1] ? employerOptions[1].short_name : 'LG'}</div>
+                <div>Compenso mese</div>
+                <div>Note</div>
+              </div>
+              <div className="communication-days-grid-body">
                   {draft.details.map((row, index) => {
                     const rowKey = `${row.employee_id || 'manual'}_${index}`;
                     const compensation = buildCompensationSummary(payrollByEmployee[String(row.employee_id)], communicationMonth);
                     const isCompensationOpen = activeCompensationKey === rowKey || lockedCompensationKey === rowKey;
+                    const isSelected = (draft.selected_employee_ids || []).includes(row.employee_id);
 
                     return (
-                      <tr key={rowKey}>
-                        <td>
+                      <div
+                        key={rowKey}
+                        className={`communication-days-grid-row${isSelected ? ' communication-row-selected' : ''}`}
+                        onClick={(e) => {
+                          if (!row.employee_id) return;
+                          const tag = (e.target.tagName || '').toLowerCase();
+                          if (['input', 'textarea', 'button', 'select', 'label', 'a'].includes(tag)) return;
+                          togglePdfEmployee(row.employee_id);
+                        }}
+                      >
+                        <div className="communication-select-cell" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            aria-label={`Includi ${row.employee_label || 'dipendente'} nel PDF`}
+                            checked={isSelected}
+                            disabled={!row.employee_id}
+                            onChange={() => togglePdfEmployee(row.employee_id)}
+                          />
+                        </div>
+                        <div className="communication-name-cell">
                           <input
                             value={row.employee_label}
                             onChange={(e) => updateDetailRow(index, 'employee_label', e.target.value)}
                           />
-                        </td>
-                        <td>
+                        </div>
+                        <div className="communication-days-grid-input-cell">
                           <input
-                            type="number"
-                            step="0.5"
-                            min="0"
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
                             value={row.giornate_primo}
+                            onFocus={(e) => e.target.select()}
+                            onClick={(e) => e.target.select()}
                             onChange={(e) => updateDetailRow(index, 'giornate_primo', e.target.value)}
                           />
-                        </td>
-                        {hasSecondEmployer ? (
-                          <td>
-                            <input
-                              type="number"
-                              step="0.5"
-                              min="0"
-                              value={row.giornate_secondo}
-                              onChange={(e) => updateDetailRow(index, 'giornate_secondo', e.target.value)}
-                            />
-                          </td>
-                        ) : null}
-                        <td
+                        </div>
+                        <div className="communication-days-grid-input-cell">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            value={row.giornate_secondo}
+                            onFocus={(e) => e.target.select()}
+                            onClick={(e) => e.target.select()}
+                            onChange={(e) => updateDetailRow(index, 'giornate_secondo', e.target.value)}
+                          />
+                        </div>
+                        <div
+                          className="communication-compensation-cell"
                           style={compensationCellStyle}
                           onMouseEnter={(event) => openCompensationPopover(rowKey, event)}
                           onMouseLeave={() => scheduleCompensationClose(rowKey)}
@@ -915,13 +1177,14 @@ export default function CommunicationPage() {
                               {compensation ? (
                                 <>
                                   <SummaryMoneyRow label="Retribuzione mese" value={compensation.retribuzione} />
-                                  <SummaryMoneyRow label="Acconti" value={-compensation.acconti} />
-                                  <SummaryMoneyRow label="Rate/debiti" value={-compensation.rateDebiti} />
-                                  <SummaryMoneyRow label="Crediti" value={compensation.crediti} />
+                                  <SummaryMoneyRow label="Regali / extra" value={compensation.aggiunte} />
+                                  <SummaryMoneyRow label="Crediti precedenti" value={compensation.crediti} />
                                   <SummaryMoneyRow label="Trasporto/macchina" value={compensation.trasporto} />
-                                  <SummaryMoneyRow label="Altre aggiunte" value={compensation.aggiunte} />
+                                  <SummaryMoneyRow label="Rate/debiti" value={-compensation.rateDebiti} />
+                                  <SummaryMoneyRow label="Debiti precedenti" value={-compensation.debitiPrecedenti} />
+                                  <SummaryMoneyRow label="Acconti" value={-compensation.acconti} />
                                   <div style={compensationTotalRowStyle}>
-                                    <span>Totale finale</span>
+                                    <span>Compenso del mese</span>
                                     <strong>{formatCurrency(compensation.totale)}</strong>
                                   </div>
                                 </>
@@ -943,8 +1206,8 @@ export default function CommunicationPage() {
                             </div>,
                             document.body
                           ) : null}
-                        </td>
-                        <td>
+                        </div>
+                        <div className="communication-note-cell">
                           <textarea
                             rows={2}
                             className="communication-note-input"
@@ -952,12 +1215,11 @@ export default function CommunicationPage() {
                             onChange={(e) => updateDetailRow(index, 'detail_note', e.target.value)}
                             placeholder="Nota libera"
                           />
-                        </td>
-                      </tr>
+                        </div>
+                      </div>
                     );
                   })}
-                </tbody>
-              </table>
+              </div>
             </div>
           )}
         </div>
@@ -1207,3 +1469,69 @@ const compensationTotalRowStyle = {
   borderTop: '1px solid rgba(20, 33, 61, 0.14)',
   fontSize: 14,
 };
+
+const recipientRowStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'minmax(0, 1fr) auto',
+  gap: 8,
+  alignItems: 'center',
+};
+
+const addressBookPanelStyle = {
+  marginTop: 14,
+  display: 'grid',
+  gap: 12,
+  padding: 14,
+  borderRadius: 16,
+  border: '1px solid rgba(20, 33, 61, 0.08)',
+  background: 'rgba(248, 250, 252, 0.96)',
+};
+
+const addressBookHeaderStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  gap: 10,
+  alignItems: 'center',
+  flexWrap: 'wrap',
+};
+
+const addressBookFormStyle = {
+  display: 'grid',
+  gap: 10,
+  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+};
+
+const addressBookListStyle = {
+  display: 'grid',
+  gap: 10,
+};
+
+const addressBookItemStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'minmax(0, 1fr) auto',
+  gap: 12,
+  alignItems: 'center',
+  padding: 12,
+  borderRadius: 14,
+  border: '1px solid rgba(20, 33, 61, 0.08)',
+  background: '#fff',
+};
+
+const pdfSelectionPanelStyle = {
+  display: 'grid',
+  gap: 12,
+  marginBottom: 16,
+  padding: 14,
+  borderRadius: 16,
+  border: '1px solid rgba(20, 33, 61, 0.08)',
+  background: 'rgba(248, 250, 252, 0.9)',
+};
+
+const pdfSelectionHeaderStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  gap: 12,
+  alignItems: 'center',
+  flexWrap: 'wrap',
+};
+

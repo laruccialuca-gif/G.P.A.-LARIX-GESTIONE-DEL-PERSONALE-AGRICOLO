@@ -288,7 +288,19 @@ function normalizeCurrency(value) {
 }
 
 function formatCurrency(value) {
-  return `€ ${Number(value || 0).toFixed(2)}`;
+  const amount = Number(value || 0);
+  const formatted = new Intl.NumberFormat('it-IT', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount);
+  return `€ ${formatted}`;
+}
+
+function getBalanceOutcomeLabel(value) {
+  const amount = Number(value || 0);
+  if (amount < 0) return 'Debito operaio';
+  if (amount > 0) return 'Credito operaio';
+  return 'Saldo perfetto';
 }
 
 function formatSignedCurrency(value) {
@@ -323,6 +335,30 @@ function getPayrollAdvancesInRange(records, start, end) {
 
 function buildEconomicSnapshot(fields) {
   return JSON.stringify(fields);
+}
+
+function getBenefitsSectionStorageKey(entityKey, monthKey) {
+  return `report-benefits-section:${entityKey || 'none'}:${monthKey || 'none'}`;
+}
+
+function readBenefitsSectionCollapsed(storageKey) {
+  if (!storageKey || typeof window === 'undefined') return false;
+
+  try {
+    return window.localStorage.getItem(storageKey) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeBenefitsSectionCollapsed(storageKey, isCollapsed) {
+  if (!storageKey || typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(storageKey, isCollapsed ? '1' : '0');
+  } catch {
+    // Best effort only.
+  }
 }
 
 function getPreviousBalanceLabel(amount) {
@@ -435,8 +471,14 @@ export default function ReportPage() {
   const [saveState, setSaveState] = useState('idle');
   const [overtimeRateOverride, setOvertimeRateOverride] = useState('');
   const [showOvertimePanel, setShowOvertimePanel] = useState(false);
+  const [showOvertimeInReport, setShowOvertimeInReport] = useState(true);
+  const [showPayslipAmountDetails, setShowPayslipAmountDetails] = useState(false);
+  const [payslipCalcDailyAmount, setPayslipCalcDailyAmount] = useState('');
+  const [payslipCalcSelectedOption, setPayslipCalcSelectedOption] = useState('');
+  const [payslipCustomDays, setPayslipCustomDays] = useState('');
   const [previousBalanceReference, setPreviousBalanceReference] = useState(null);
   const [previousBalanceWarning, setPreviousBalanceWarning] = useState('');
+  const [isBenefitsSectionCollapsed, setIsBenefitsSectionCollapsed] = useState(false);
   const autosaveTimeoutRef = useRef(null);
 
   const [teamPeriodStart, setTeamPeriodStart] = useState(formatLocalDate(startOfMonth(currentMonth)));
@@ -652,6 +694,16 @@ export default function ReportPage() {
           resolvedDebtPlans: splitPlans.resolved,
           overtimeRateOverride: '',
           showOvertimePanel: false,
+          showOvertimeInReport: record?.report_snapshot_json?.showOvertimeInReport !== false,
+          payslipCalcDailyAmount: record?.report_snapshot_json?.payslip_simulator?.daily_amount
+            ? String(record.report_snapshot_json.payslip_simulator.daily_amount)
+            : '',
+          payslipCalcSelectedOption: record?.report_snapshot_json?.payslip_simulator?.selected_option || '',
+          payslipCustomDays:
+            record?.report_snapshot_json?.payslip_simulator?.custom_days !== undefined &&
+            record?.report_snapshot_json?.payslip_simulator?.custom_days !== null
+              ? String(record.report_snapshot_json.payslip_simulator.custom_days)
+              : '',
           previousBalanceReference: buildPreviousBalanceReference(record, currentMonthKey),
         };
       }
@@ -678,6 +730,10 @@ export default function ReportPage() {
           resolvedDebtPlans: [],
           overtimeRateOverride: '',
           showOvertimePanel: false,
+          showOvertimeInReport: true,
+          payslipCalcDailyAmount: '',
+          payslipCalcSelectedOption: '',
+          payslipCustomDays: '',
           previousBalanceReference: null,
         };
       }
@@ -703,6 +759,10 @@ export default function ReportPage() {
         setCurrentPayrollRecord(nextState.currentPayrollRecord);
         setOvertimeRateOverride(nextState.overtimeRateOverride);
         setShowOvertimePanel(nextState.showOvertimePanel);
+        setShowOvertimeInReport(nextState.showOvertimeInReport);
+        setPayslipCalcDailyAmount(nextState.payslipCalcDailyAmount);
+        setPayslipCalcSelectedOption(nextState.payslipCalcSelectedOption);
+        setPayslipCustomDays(nextState.payslipCustomDays);
         setPreviousBalanceReference(nextState.previousBalanceReference || null);
       }
 
@@ -742,6 +802,10 @@ export default function ReportPage() {
               giftLabel: nextSavedState.giftLabel,
               debtPlans: nextSavedState.debtPlans,
               resolvedDebtPlans: nextSavedState.resolvedDebtPlans,
+              showOvertimeInReport: nextSavedState.showOvertimeInReport,
+              payslipCalcDailyAmount: nextSavedState.payslipCalcDailyAmount,
+              payslipCalcSelectedOption: nextSavedState.payslipCalcSelectedOption,
+              payslipCustomDays: nextSavedState.payslipCustomDays,
             })
           );
           setSaveState('idle');
@@ -770,6 +834,10 @@ export default function ReportPage() {
             giftLabel: nextSavedState.giftLabel,
             debtPlans: nextSavedState.debtPlans,
             resolvedDebtPlans: nextSavedState.resolvedDebtPlans,
+            showOvertimeInReport: nextSavedState.showOvertimeInReport,
+            payslipCalcDailyAmount: nextSavedState.payslipCalcDailyAmount,
+            payslipCalcSelectedOption: nextSavedState.payslipCalcSelectedOption,
+            payslipCustomDays: nextSavedState.payslipCustomDays,
           })
         );
         setSaveState('idle');
@@ -1086,6 +1154,14 @@ export default function ReportPage() {
           is_pagato: isPagato,
           resto_pagato: restoPaid,
           resto_pagato_data: normalizedRestoPaidDate || null,
+          showOvertimeInReport,
+          payslip_simulator: {
+            compensation_month_amount: compensationMonthAmount,
+            daily_amount: payslipCalculatorDailyAmount,
+            theoretical_days: payslipTheoreticalDays,
+            selected_option: payslipCalcSelectedOption || null,
+            custom_days: payslipCustomDays === '' ? null : Number(payslipCustomDays),
+          },
           previous_balance_snapshot: previousBalanceReference,
         },
         debt_plans: normalizedDebtPlansPayload,
@@ -1130,6 +1206,10 @@ export default function ReportPage() {
         resolvedDebtPlans: nextResolvedDebtPlans,
         overtimeRateOverride,
         showOvertimePanel,
+        showOvertimeInReport,
+        payslipCalcDailyAmount,
+        payslipCalcSelectedOption,
+        payslipCustomDays,
         previousBalanceReference,
       };
       setSavedEditorState(nextSavedState);
@@ -1151,6 +1231,10 @@ export default function ReportPage() {
           giftLabel: nextSavedState.giftLabel,
           debtPlans: nextSavedState.debtPlans,
           resolvedDebtPlans: nextSavedState.resolvedDebtPlans,
+          showOvertimeInReport: nextSavedState.showOvertimeInReport,
+          payslipCalcDailyAmount: nextSavedState.payslipCalcDailyAmount,
+          payslipCalcSelectedOption: nextSavedState.payslipCalcSelectedOption,
+          payslipCustomDays: nextSavedState.payslipCustomDays,
         })
       );
       setSaveState('saved');
@@ -1410,6 +1494,7 @@ export default function ReportPage() {
   const totalRegularPay = employeeTotals.totalRegularHours * regularHourlyRate;
   const totalOvertimePay = employeeTotals.totalOvertimeHours * overtimeHourlyRate;
   const totalCalculatedPay = totalRegularPay + totalOvertimePay;
+  const totalCalculatedPayForReport = showOvertimeInReport ? totalCalculatedPay : totalRegularPay;
   const normalizedAdvances = advances
     .map((advance, index) => ({
       id: advance.id || `advance-${index}`,
@@ -1453,9 +1538,10 @@ export default function ReportPage() {
       .filter((installment) => installment.target_month === monthString(currentMonth))
   );
   const currentInstallmentTotal = currentInstallments.reduce((sum, installment) => sum + installment.amount, 0);
+  const currentMonthKey = monthString(currentMonth);
   const totalDebtResidual = normalizedDebtPlans.reduce((sum, plan) => {
     const paidInstallments = plan.installments
-      .filter((installment) => installment.target_month < monthString(currentMonth))
+      .filter((installment) => installment.target_month < currentMonthKey)
       .reduce((acc, installment) => acc + installment.amount, 0);
     return sum + Math.max(plan.total_amount - paidInstallments - currentInstallmentTotal, 0);
   }, 0);
@@ -1467,6 +1553,46 @@ export default function ReportPage() {
   const giftAmountNum = parseFloat(giftAmount) || 0;
   const isProcessedRecord = !!currentPayrollRecord?.processed_at;
   const isEmployeeEditingDisabled = isProcessedRecord && !isEditUnlocked;
+  const compensationMonthAmount =
+    totalCalculatedPayForReport +
+    giftAmountNum +
+    Math.max(restoPrecedenteNum, 0) +
+    totaleTrasporto -
+    currentInstallmentTotal -
+    Math.abs(Math.min(restoPrecedenteNum, 0)) -
+    totalAdvances;
+  const payslipCalculatorDailyAmount = Number(payslipCalcDailyAmount || 0);
+  const payslipTheoreticalDays =
+    payslipCalculatorDailyAmount > 0
+      ? compensationMonthAmount / payslipCalculatorDailyAmount
+      : 0;
+  const payslipFloorDays =
+    payslipCalculatorDailyAmount > 0
+      ? Math.max(0, Math.floor(payslipTheoreticalDays))
+      : 0;
+  const payslipCeilDays =
+    payslipCalculatorDailyAmount > 0
+      ? Math.max(0, Math.ceil(payslipTheoreticalDays))
+      : 0;
+  const payslipFloorTotal = payslipFloorDays * payslipCalculatorDailyAmount;
+  const payslipCeilTotal = payslipCeilDays * payslipCalculatorDailyAmount;
+  const payslipFloorDifference = compensationMonthAmount - payslipFloorTotal;
+  const payslipCeilDifference = payslipCeilTotal - compensationMonthAmount;
+  const payslipCustomDaysNum = Math.max(0, Number(payslipCustomDays || 0));
+  const payslipCustomTotal = payslipCustomDaysNum * payslipCalculatorDailyAmount;
+  const payslipCustomDifference = compensationMonthAmount - payslipCustomTotal;
+  const payslipPreferredOption =
+    payslipCalculatorDailyAmount > 0 && payslipFloorDifference <= payslipCeilDifference ? 'floor' : 'ceil';
+  const meaningfulAdvanceCount = advances.filter((advance) => Number(advance.amount || 0) > 0).length;
+  const benefitsSectionSummaryParts = [
+    meaningfulAdvanceCount > 0 ? `Acconti: ${meaningfulAdvanceCount}` : '',
+    totaleTrasporto > 0 ? `Trasporto: ${formatCurrency(totaleTrasporto)}` : '',
+    giftAmountNum > 0 ? `Extra: ${formatCurrency(giftAmountNum)}` : '',
+  ].filter(Boolean);
+  const benefitsSectionSummary = benefitsSectionSummaryParts.length
+    ? benefitsSectionSummaryParts.join(' · ')
+    : 'Nessun acconto, trasporto o extra';
+  const benefitsSectionStorageKey = getBenefitsSectionStorageKey(selectedEntity, currentMonthKey);
   const currentEconomicSnapshot = buildEconomicSnapshot({
     datore,
     importoBustaPaga,
@@ -1484,12 +1610,47 @@ export default function ReportPage() {
     giftLabel,
     debtPlans,
     resolvedDebtPlans,
+    showOvertimeInReport,
+    payslipCalcDailyAmount,
+    payslipCalcSelectedOption,
+    payslipCustomDays,
   });
   const hasUnsavedChanges =
     isEmployeeMode &&
     !!employee &&
     savedEconomicSnapshot !== null &&
     currentEconomicSnapshot !== savedEconomicSnapshot;
+
+  useEffect(() => {
+    setPayslipCalcDailyAmount('');
+    setPayslipCalcSelectedOption('');
+    setPayslipCustomDays('');
+    setShowOvertimeInReport(true);
+    setShowPayslipAmountDetails(false);
+  }, [employee?.id, currentMonth]);
+
+  useEffect(() => {
+    setIsBenefitsSectionCollapsed(readBenefitsSectionCollapsed(benefitsSectionStorageKey));
+  }, [benefitsSectionStorageKey]);
+
+  useEffect(() => {
+    writeBenefitsSectionCollapsed(benefitsSectionStorageKey, isBenefitsSectionCollapsed);
+  }, [benefitsSectionStorageKey, isBenefitsSectionCollapsed]);
+
+  function handleSelectPayslipOption(optionKey, optionDays, optionTotal) {
+    setPayslipCalcSelectedOption(optionKey);
+    setGiornateBustaPaga(String(optionDays));
+    setImportoBustaPaga(optionTotal > 0 ? optionTotal.toFixed(2) : '');
+  }
+
+  useEffect(() => {
+    if (payslipCalcSelectedOption !== 'C') {
+      return;
+    }
+
+    setGiornateBustaPaga(payslipCustomDays === '' ? '' : String(payslipCustomDaysNum));
+    setImportoBustaPaga(payslipCustomTotal > 0 ? payslipCustomTotal.toFixed(2) : '');
+  }, [payslipCalcSelectedOption, payslipCustomDays, payslipCustomDaysNum, payslipCustomTotal]);
 
   useEffect(() => {
     const handleBeforeUnload = (event) => {
@@ -1560,6 +1721,10 @@ export default function ReportPage() {
     setCurrentPayrollRecord(savedEditorState.currentPayrollRecord);
     setOvertimeRateOverride(savedEditorState.overtimeRateOverride);
     setShowOvertimePanel(savedEditorState.showOvertimePanel);
+    setShowOvertimeInReport(savedEditorState.showOvertimeInReport);
+    setPayslipCalcDailyAmount(savedEditorState.payslipCalcDailyAmount);
+    setPayslipCalcSelectedOption(savedEditorState.payslipCalcSelectedOption);
+    setPayslipCustomDays(savedEditorState.payslipCustomDays);
     setPreviousBalanceReference(savedEditorState.previousBalanceReference || null);
     setSaveState('idle');
   }
@@ -1756,7 +1921,9 @@ export default function ReportPage() {
       </div>
 
       {isEmployeeMode && employee ? (
-        <div className="no-print report-editor-panel">
+        <div className="report-workspace">
+          <div className="report-editor-column no-print">
+            <div className="report-editor-panel">
           {isProcessedRecord ? (
             <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
               <div className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', borderColor: 'rgba(22, 101, 52, 0.14)' }}>
@@ -1791,7 +1958,33 @@ export default function ReportPage() {
             style={{ gridColumn: '1 / -1', display: 'contents', border: 'none', padding: 0, margin: 0 }}
           >
             <div style={editorBlockStyle}>
-              <div style={editorBlockTitleStyle}>1. Busta paga</div>
+              <div style={{ ...sectionToolbarStyle, marginBottom: 0 }}>
+                <div>
+                  <div style={editorBlockTitleStyle}>1. Busta paga</div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+                    <span style={{ fontSize: 13, fontWeight: 800 }}>
+                      {employee.first_name} {employee.last_name}
+                    </span>
+                    <a
+                      className="button-secondary"
+                      href={`#/dipendenti?employee=${employee.id}`}
+                      title="Apri scheda dipendente"
+                      style={{ minHeight: 30, width: 34, padding: 0, borderRadius: 10, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      {'->'}
+                    </a>
+                  </div>
+                </div>
+                <label style={{ ...checkboxLabelStyle, padding: '8px 10px', borderRadius: 12, background: '#fff', border: '1px solid rgba(31, 41, 55, 0.08)' }}>
+                  <input
+                    type="checkbox"
+                    checked={showOvertimeInReport}
+                    onChange={(e) => setShowOvertimeInReport(e.target.checked)}
+                    style={{ width: 16, height: 16 }}
+                  />
+                  Mostra straordinario
+                </label>
+              </div>
               <div style={editorBlockGridStyle}>
                 <div>
                   <div style={fieldLabelStyle}>Datore di lavoro</div>
@@ -1837,7 +2030,7 @@ export default function ReportPage() {
                   <input type="number" min="0" value={giornateBustaPaga} onChange={(e) => setGiornateBustaPaga(e.target.value)} placeholder="es. 11" style={fieldStyle} />
                 </div>
 
-                {overtimeView.enabled ? (
+                {overtimeView.enabled && showOvertimeInReport ? (
                   <>
                     <div>
                       <div style={fieldLabelStyle}>Straordinario</div>
@@ -1888,6 +2081,261 @@ export default function ReportPage() {
                   </>
                 ) : null}
 
+                <div style={{ gridColumn: '1 / -1', ...payslipSupportBoxStyle }}>
+                  <div style={payslipSupportHeaderStyle}>
+                    <div>
+                      <div style={fieldLabelStyle}>Compenso del mese</div>
+                      <div style={payslipSupportValueStyle}>{formatCurrency(compensationMonthAmount)}</div>
+                    </div>
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={() => setShowPayslipAmountDetails((current) => !current)}
+                      title="Mostra dettaglio calcolo"
+                      style={{ minHeight: 34, width: 34, padding: 0, borderRadius: 999 }}
+                    >
+                      ?
+                    </button>
+                  </div>
+
+                  {showPayslipAmountDetails ? (
+                    <div style={payslipTooltipStyle}>
+                      <SummaryLine label="Giornate lavorate convertite" value={formatCurrency(totalCalculatedPayForReport)} />
+                      <SummaryLine label="Regali" value={formatCurrency(giftAmountNum)} />
+                      <SummaryLine label="Crediti precedenti" value={formatCurrency(Math.max(restoPrecedenteNum, 0))} />
+                      <SummaryLine label="Trasporto" value={formatCurrency(totaleTrasporto)} />
+                      <SummaryLine label="Rate" value={`- ${formatCurrency(currentInstallmentTotal)}`} />
+                      <SummaryLine label="Debiti precedenti" value={`- ${formatCurrency(Math.abs(Math.min(restoPrecedenteNum, 0)))}`} />
+                      <SummaryLine label="Acconti" value={`- ${formatCurrency(totalAdvances)}`} />
+                    </div>
+                  ) : null}
+
+                  <div style={payslipCalculatorGridStyle}>
+                    <div>
+                      <div style={fieldLabelStyle}>Importo giornaliero busta</div>
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={payslipCalcDailyAmount}
+                        onChange={(e) => setPayslipCalcDailyAmount(e.target.value)}
+                        placeholder="es. 69.22"
+                        style={fieldStyle}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={fieldSubtleStyle}>
+                    Giornate teoriche: <strong>{payslipCalculatorDailyAmount > 0 ? payslipTheoreticalDays.toFixed(2) : '—'}</strong>
+                  </div>
+
+                  <div style={payslipDecisionGridStyle}>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectPayslipOption('floor', payslipFloorDays, payslipFloorTotal)}
+                      style={getPayslipOptionCardStyle(
+                        payslipCalcSelectedOption === 'floor',
+                        payslipPreferredOption === 'floor'
+                      )}
+                      disabled={payslipCalculatorDailyAmount <= 0}
+                    >
+                      <div style={payslipDecisionTopRowStyle}>
+                        <div style={payslipDecisionTitleStyle}>Opzione A — arrotonda per difetto</div>
+                        <div style={payslipDecisionDaysStyle}>{payslipFloorDays} giornate</div>
+                      </div>
+                      <div style={payslipDecisionMetricsRowStyle}>
+                        <div style={payslipDecisionMetricStyle}>
+                          <span style={payslipDecisionMetricLabelStyle}>Totale busta</span>
+                          <span style={payslipDecisionMetricValueStyle}>{formatCurrency(payslipFloorTotal)}</span>
+                        </div>
+                        <div style={payslipDecisionMetricStyle}>
+                          <span style={payslipDecisionMetricLabelStyle}>Differenza</span>
+                          <span style={payslipDecisionMetricValueStyle}>{formatCurrency(payslipFloorDifference)}</span>
+                        </div>
+                      </div>
+                      <div
+                        style={{
+                          ...payslipDecisionHintStyle,
+                          background: getPayslipDecisionTone(
+                            payslipFloorDifference > 0 ? 'give' : 'neutral'
+                          ).background,
+                        }}
+                      >
+                        <span
+                          style={{
+                            color: getPayslipDecisionTone(
+                              payslipFloorDifference > 0 ? 'give' : 'neutral'
+                            ).color,
+                          }}
+                        >
+                          {payslipFloorDifference > 0
+                            ? "Devi dare all'operaio"
+                            : 'Saldo perfetto'}
+                        </span>
+                        <span
+                          style={{
+                            ...payslipDecisionHintAmountStyle,
+                            color: getPayslipDecisionTone(
+                              payslipFloorDifference > 0 ? 'give' : 'neutral'
+                            ).amountColor,
+                          }}
+                        >
+                          {formatCurrency(payslipFloorDifference)}
+                        </span>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleSelectPayslipOption('ceil', payslipCeilDays, payslipCeilTotal)}
+                      style={getPayslipOptionCardStyle(
+                        payslipCalcSelectedOption === 'ceil',
+                        payslipPreferredOption === 'ceil'
+                      )}
+                      disabled={payslipCalculatorDailyAmount <= 0}
+                    >
+                      <div style={payslipDecisionTopRowStyle}>
+                        <div style={payslipDecisionTitleStyle}>Opzione B — arrotonda per eccesso</div>
+                        <div style={payslipDecisionDaysStyle}>{payslipCeilDays} giornate</div>
+                      </div>
+                      <div style={payslipDecisionMetricsRowStyle}>
+                        <div style={payslipDecisionMetricStyle}>
+                          <span style={payslipDecisionMetricLabelStyle}>Totale busta</span>
+                          <span style={payslipDecisionMetricValueStyle}>{formatCurrency(payslipCeilTotal)}</span>
+                        </div>
+                        <div style={payslipDecisionMetricStyle}>
+                          <span style={payslipDecisionMetricLabelStyle}>Differenza</span>
+                          <span style={payslipDecisionMetricValueStyle}>{formatCurrency(payslipCeilDifference)}</span>
+                        </div>
+                      </div>
+                      <div
+                        style={{
+                          ...payslipDecisionHintStyle,
+                          background: getPayslipDecisionTone(
+                            payslipCeilDifference > 0 ? 'receive' : 'neutral'
+                          ).background,
+                        }}
+                      >
+                        <span
+                          style={{
+                            color: getPayslipDecisionTone(
+                              payslipCeilDifference > 0 ? 'receive' : 'neutral'
+                            ).color,
+                          }}
+                        >
+                          {payslipCeilDifference > 0
+                            ? "Devi ricevere dall'operaio"
+                            : 'Saldo perfetto'}
+                        </span>
+                        <span
+                          style={{
+                            ...payslipDecisionHintAmountStyle,
+                            color: getPayslipDecisionTone(
+                              payslipCeilDifference > 0 ? 'receive' : 'neutral'
+                            ).amountColor,
+                          }}
+                        >
+                          {formatCurrency(payslipCeilDifference)}
+                        </span>
+                      </div>
+                    </button>
+
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => handleSelectPayslipOption('C', payslipCustomDaysNum, payslipCustomTotal)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          handleSelectPayslipOption('C', payslipCustomDaysNum, payslipCustomTotal);
+                        }
+                      }}
+                      style={getPayslipOptionCardStyle(
+                        payslipCalcSelectedOption === 'C',
+                        false
+                      )}
+                    >
+                      <div style={payslipDecisionTopRowStyle}>
+                        <div style={payslipDecisionTitleStyle}>Opzione C — Personalizzata</div>
+                        <div style={payslipDecisionDaysStyle}>
+                          {payslipCustomDays === '' ? '—' : `${payslipCustomDaysNum} giornate`}
+                        </div>
+                      </div>
+                      <div style={payslipDecisionInputRowStyle}>
+                        <div style={payslipDecisionInlineLabelStyle}>Giornate busta</div>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={payslipCustomDays}
+                          onClick={(event) => event.stopPropagation()}
+                          onFocus={() => setPayslipCalcSelectedOption('C')}
+                          onChange={(event) => {
+                            setPayslipCustomDays(event.target.value);
+                            setPayslipCalcSelectedOption('C');
+                          }}
+                          placeholder="es. 5"
+                          style={payslipCompactInputStyle}
+                        />
+                      </div>
+                      <div style={payslipDecisionMetricsRowStyle}>
+                        <div style={payslipDecisionMetricStyle}>
+                          <span style={payslipDecisionMetricLabelStyle}>Totale busta</span>
+                          <span style={payslipDecisionMetricValueStyle}>{formatCurrency(payslipCustomTotal)}</span>
+                        </div>
+                        <div style={payslipDecisionMetricStyle}>
+                          <span style={payslipDecisionMetricLabelStyle}>Differenza</span>
+                          <span style={payslipDecisionMetricValueStyle}>{formatCurrency(Math.abs(payslipCustomDifference))}</span>
+                        </div>
+                      </div>
+                      <div
+                        style={{
+                          ...payslipDecisionHintStyle,
+                          background: getPayslipDecisionTone(
+                            payslipCustomDifference > 0
+                              ? 'give'
+                              : payslipCustomDifference < 0
+                              ? 'receive'
+                              : 'neutral'
+                          ).background,
+                        }}
+                      >
+                        <span
+                          style={{
+                            color: getPayslipDecisionTone(
+                              payslipCustomDifference > 0
+                                ? 'give'
+                                : payslipCustomDifference < 0
+                                ? 'receive'
+                                : 'neutral'
+                            ).color,
+                          }}
+                        >
+                          {payslipCustomDifference > 0
+                            ? "Devi dare all'operaio"
+                            : payslipCustomDifference < 0
+                            ? "Devi ricevere dall'operaio"
+                            : 'Saldo perfetto'}
+                        </span>
+                        <span
+                          style={{
+                            ...payslipDecisionHintAmountStyle,
+                            color: getPayslipDecisionTone(
+                              payslipCustomDifference > 0
+                                ? 'give'
+                                : payslipCustomDifference < 0
+                                ? 'receive'
+                                : 'neutral'
+                            ).amountColor,
+                          }}
+                        >
+                          {formatCurrency(Math.abs(payslipCustomDifference))}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div>
                   <div style={fieldLabelStyle}>Stato pagamento</div>
                   <button
@@ -1909,14 +2357,67 @@ export default function ReportPage() {
             </div>
 
             <div style={editorBlockStyle}>
-              <div style={editorBlockTitleStyle}>2. Acconti, trasporto e regalo</div>
-              <div style={sectionToolbarStyle}>
-                <div style={fieldSubtleStyle}>Gestisci acconti del mese, trasporto e voce extra da mostrare in stampa.</div>
-                <button type="button" className="button-secondary" onClick={addAdvance}>
-                  Aggiungi acconto
-                </button>
+              <div
+                style={{
+                  ...sectionToolbarStyle,
+                  alignItems: isBenefitsSectionCollapsed ? 'center' : 'flex-start',
+                  gap: 12,
+                }}
+              >
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                    }}
+                  >
+                    <div style={editorBlockTitleStyle}>2. Acconti, trasporto e regalo</div>
+                    <button
+                      type="button"
+                      onClick={() => setIsBenefitsSectionCollapsed((current) => !current)}
+                      aria-expanded={!isBenefitsSectionCollapsed}
+                      aria-label={isBenefitsSectionCollapsed ? 'Apri sezione acconti, trasporto e regalo' : 'Chiudi sezione acconti, trasporto e regalo'}
+                      style={{
+                        minWidth: 40,
+                        height: 36,
+                        borderRadius: 10,
+                        border: '1px solid rgba(31, 41, 55, 0.12)',
+                        background: 'white',
+                        color: '#1f2937',
+                        fontSize: 16,
+                        fontWeight: 800,
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {isBenefitsSectionCollapsed ? '>' : 'v'}
+                    </button>
+                  </div>
+                  <div style={{ ...fieldSubtleStyle, marginTop: 4 }}>
+                    {isBenefitsSectionCollapsed
+                      ? benefitsSectionSummary
+                      : 'Gestisci acconti del mese, trasporto e voce extra da mostrare in stampa.'}
+                  </div>
+                </div>
+                {!isBenefitsSectionCollapsed ? (
+                  <button type="button" className="button-secondary" onClick={addAdvance}>
+                    Aggiungi acconto
+                  </button>
+                ) : null}
               </div>
 
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateRows: isBenefitsSectionCollapsed ? '0fr' : '1fr',
+                  transition: 'grid-template-rows 220ms ease, opacity 220ms ease, margin-top 220ms ease',
+                  opacity: isBenefitsSectionCollapsed ? 0 : 1,
+                  marginTop: isBenefitsSectionCollapsed ? 0 : 10,
+                }}
+              >
+                <div style={{ overflow: 'hidden', minHeight: 0 }}>
               <div style={{ display: 'grid', gap: 10 }}>
                 {advances.map((advance, index) => (
                   <div key={`advance-row-${index}`} style={advanceRowStyle}>
@@ -1933,7 +2434,7 @@ export default function ReportPage() {
                 ))}
               </div>
 
-              {advances.filter((advance) => Number(advance.amount || 0) > 0).length > 1 ? (
+              {meaningfulAdvanceCount > 1 ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
                   Totale acconti: <strong>{formatCurrency(totalAdvances)}</strong>
                 </div>
@@ -1992,6 +2493,8 @@ export default function ReportPage() {
                 <div>
                   <div style={fieldLabelStyle}>Etichetta in stampa</div>
                   <input value={giftLabel} onChange={(e) => setGiftLabel(e.target.value)} placeholder="Es. Premio Pasqua" style={fieldStyle} />
+                </div>
+              </div>
                 </div>
               </div>
             </div>
@@ -2182,6 +2685,54 @@ export default function ReportPage() {
               </button>
             </div>
           </div>
+            </div>
+          </div>
+
+          <div className="report-preview-column">
+            <div className="report-preview-sticky">
+              {loading ? (
+                <div style={emptyBoxStyle}>Caricamento...</div>
+              ) : (
+                <EmployeePrintArea
+                  employee={employee}
+                  currentMonth={currentMonth}
+                  datore={datore}
+                  employerOptions={employerOptions}
+                  attendanceBaseHours={attendanceBaseHours}
+                  hoursFormat={hoursFormat}
+                  attendanceMap={attendanceMap}
+                  dayMarkers={settings?.general?.attendance_markers || []}
+                  employeeTotals={employeeTotals}
+                  dailyPay={dailyPay}
+                  overtimeHourlyRate={overtimeHourlyRate}
+                  overtimeView={overtimeView}
+                  showOvertimeInReport={showOvertimeInReport}
+                  workedDays={workedDays}
+                  totalRegularPay={totalRegularPay}
+                  totalOvertimePay={totalOvertimePay}
+                  totalCalculatedPay={totalCalculatedPayForReport}
+                  importoBustaPagaNum={importoBustaPagaNum}
+                  giornateBustaPaga={giornateBustaPaga}
+                  totalAdvances={totalAdvances}
+                  visibleAdvances={visibleAdvances}
+                  currentInstallments={currentInstallments}
+                  currentInstallmentTotal={currentInstallmentTotal}
+                  giftAmountNum={giftAmountNum}
+                  giftLabel={giftLabel}
+                  restoPrecedenteNum={restoPrecedenteNum}
+                  trasportoAttivo={trasportoAttivo}
+                  nMacchineMeseNum={nMacchineMeseNum}
+                  prezzoPerMacchinaNum={prezzoPerMacchinaNum}
+                  totaleTrasporto={totaleTrasporto}
+                  differenzaFinale={differenzaFinale}
+                  noteExtra={noteExtra}
+                  isPagato={isPagato}
+                  restoPaid={restoPaid}
+                  restoPaidDate={restoPaidDate}
+                />
+              )}
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -2256,45 +2807,8 @@ export default function ReportPage() {
         <div style={emptyBoxStyle}>
           Seleziona un dipendente o una squadra per generare il report
         </div>
-      ) : loading ? (
+      ) : loading && !isEmployeeMode ? (
         <div>Caricamento...</div>
-      ) : isEmployeeMode && employee ? (
-        <EmployeePrintArea
-          employee={employee}
-          currentMonth={currentMonth}
-          datore={datore}
-          employerOptions={employerOptions}
-          attendanceBaseHours={attendanceBaseHours}
-          hoursFormat={hoursFormat}
-          attendanceMap={attendanceMap}
-          dayMarkers={settings?.general?.attendance_markers || []}
-          employeeTotals={employeeTotals}
-          dailyPay={dailyPay}
-          overtimeHourlyRate={overtimeHourlyRate}
-          overtimeView={overtimeView}
-          workedDays={workedDays}
-          totalRegularPay={totalRegularPay}
-          totalOvertimePay={totalOvertimePay}
-          totalCalculatedPay={totalCalculatedPay}
-          importoBustaPagaNum={importoBustaPagaNum}
-          giornateBustaPaga={giornateBustaPaga}
-          totalAdvances={totalAdvances}
-          visibleAdvances={visibleAdvances}
-          currentInstallments={currentInstallments}
-          currentInstallmentTotal={currentInstallmentTotal}
-          giftAmountNum={giftAmountNum}
-          giftLabel={giftLabel}
-          restoPrecedenteNum={restoPrecedenteNum}
-          trasportoAttivo={trasportoAttivo}
-          nMacchineMeseNum={nMacchineMeseNum}
-          prezzoPerMacchinaNum={prezzoPerMacchinaNum}
-          totaleTrasporto={totaleTrasporto}
-          differenzaFinale={differenzaFinale}
-          noteExtra={noteExtra}
-          isPagato={isPagato}
-          restoPaid={restoPaid}
-          restoPaidDate={restoPaidDate}
-        />
       ) : isTeamMode && selectedTeam ? (
         <TeamPrintArea
           selectedTeam={selectedTeam}
@@ -2341,7 +2855,7 @@ function getMarkerMeta(markerCode, markers) {
   return markers.find((m) => m.value === markerCode) || null;
 }
 
-function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers }) {
+function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers, showOvertimeInReport = true }) {
   return (
     <div style={rp2WeekGridStyle}>
       {week.map((day, colIndex) => {
@@ -2349,8 +2863,12 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers }) {
         if (!day) {
           return (
             <div key={colIndex} style={{ ...rp2DayCellStyle(isSunday), opacity: 0 }}>
-              <div style={rp2DayHeaderStyle}>—</div>
-              <div style={rp2DayValueEmptyStyle}>—</div>
+              <div style={rp2DayHeaderTopStyle}>
+                <span style={rp2DayHeaderLabelStyle}>—</span>
+                <span style={rp2DayHeaderNumberStyle}>—</span>
+              </div>
+              <div style={rp2DayIndicatorStyle('neutral')}>•</div>
+              <div style={rp2DayMetaMutedStyle}> </div>
             </div>
           );
         }
@@ -2369,34 +2887,49 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers }) {
           } else {
             normalHours = Number(att.hours_worked || 0);
           }
-          overtimeHours = Number(att.overtime_hours || 0);
+          overtimeHours = showOvertimeInReport ? Number(att.overtime_hours || 0) : 0;
         }
 
         const markerMeta = getMarkerMeta(att?.marker_code, dayMarkers);
         const hasHours = normalHours > 0 || overtimeHours > 0;
         const hasContent = specialCode !== null || hasHours || !!markerMeta;
+        const isWorkedDay = hasHours || att?.status === 'presente';
+        const isEmptyDay = !hasContent;
+        const indicatorTone = isWorkedDay
+          ? 'worked'
+          : specialCode
+          ? 'special'
+          : isSunday || isEmptyDay
+          ? 'neutral'
+          : 'empty';
+        const indicatorLabel = isWorkedDay ? 'X' : specialCode || (isSunday || isEmptyDay ? '•' : '—');
+        const helperLabel = markerMeta?.symbol || markerMeta?.text || markerMeta?.value || '';
+        const detailLabel = hasHours
+          ? formatHoursValue(normalHours + overtimeHours, hoursFormat)
+          : specialCode
+          ? specialCode
+          : isSunday
+          ? 'Riposo'
+          : 'Assenza';
 
         return (
           <div key={dateStr} style={rp2DayCellStyle(isSunday)}>
-            <div style={rp2DayHeaderStyle}>{day.getDate()} {DAY_ABBR_SHORT[colIndex]}</div>
-            {!hasContent ? (
-              <div style={rp2DayValueEmptyStyle}>—</div>
+            <div style={rp2DayHeaderTopStyle}>
+              <span style={rp2DayHeaderLabelStyle}>{DAY_ABBR_SHORT[colIndex]}</span>
+              <span style={rp2DayHeaderNumberStyle}>{day.getDate()}</span>
+            </div>
+            <div style={rp2DayIndicatorStyle(indicatorTone, markerMeta?.color)}>
+              {indicatorLabel}
+            </div>
+            <div style={rp2DayDetailStyle(isWorkedDay || specialCode !== null)}>
+              {detailLabel}
+            </div>
+            {overtimeHours > 0 ? (
+              <div style={rp2DayMetaAccentStyle}>+{formatHoursValue(overtimeHours, hoursFormat)} straord.</div>
+            ) : helperLabel ? (
+              <div style={rp2DayMetaStyle(markerMeta?.color)}>{helperLabel}</div>
             ) : (
-              <>
-                {specialCode !== null ? (
-                  <div style={rp2DayValueActiveStyle}>{specialCode}</div>
-                ) : normalHours > 0 ? (
-                  <div style={rp2DayValueActiveStyle}>{normalHours}h</div>
-                ) : null}
-                {overtimeHours > 0 && (
-                  <div style={rp2DayOvertimeStyle}>+{overtimeHours}h</div>
-                )}
-                {markerMeta && (
-                  <div style={rp2DayMarkerStyle(markerMeta.color)}>
-                    {markerMeta.symbol || markerMeta.text || markerMeta.value}
-                  </div>
-                )}
-              </>
+              <div style={rp2DayMetaMutedStyle}>{isSunday ? 'Domenica' : ' '}</div>
             )}
           </div>
         );
@@ -2418,6 +2951,7 @@ function EmployeePrintArea({
   dailyPay,
   overtimeHourlyRate,
   overtimeView,
+  showOvertimeInReport,
   workedDays,
   totalRegularPay,
   totalOvertimePay,
@@ -2449,7 +2983,11 @@ function EmployeePrintArea({
   const monthName = MONTH_NAMES[currentMonth.getMonth()];
   const yearStr = String(currentMonth.getFullYear());
   const mainBalanceLabel =
-    differenzaFinale > 0 ? "Resto da dare all'operaio" : differenzaFinale < 0 ? 'Da restituire' : 'Pareggio';
+    differenzaFinale > 0
+      ? "Resto da dare all'operaio"
+      : differenzaFinale < 0
+      ? "Resto da ricevere dall'operaio"
+      : 'Saldo perfetto';
   const previousBalanceLabel = getPreviousBalanceLabel(restoPrecedenteNum);
   const payslipDaysNum = Number(giornateBustaPaga || 0);
   const hasMultipleEmployers = Array.isArray(employerOptions) && employerOptions.length > 1;
@@ -2458,16 +2996,85 @@ function EmployeePrintArea({
     : null;
   const selectedEmployerLabel = selectedEmployer?.short_name || selectedEmployer?.value || datore || '';
   const payrollDifference = totalCalculatedPay - importoBustaPagaNum;
-  const balanceWithPrevious = payrollDifference + restoPrecedenteNum;
-  const balanceBeforeDeductions = balanceWithPrevious + totaleTrasporto + giftAmountNum;
   const totalTrattenute = totalAdvances + currentInstallmentTotal;
   const hasDeductions = visibleAdvances.length > 0 || currentInstallments.length > 0;
+  const displayTotalHours = showOvertimeInReport
+    ? employeeTotals.totalHours
+    : employeeTotals.totalRegularHours;
+  const compensationMonthAmount =
+    totalCalculatedPay +
+    giftAmountNum +
+    Math.max(restoPrecedenteNum, 0) +
+    totaleTrasporto -
+    currentInstallmentTotal -
+    Math.abs(Math.min(restoPrecedenteNum, 0)) -
+    totalAdvances;
+  const economicRows = [
+    {
+      label: 'Retribuzione calcolata',
+      detail:
+        showOvertimeInReport && overtimeView?.displayMode === 'separate'
+          ? `${formatCurrency(totalRegularPay)} ordinario + ${formatCurrency(totalOvertimePay)} straordinario`
+          : `${workedDays} gg · ${formatHoursValue(displayTotalHours, hoursFormat)}`,
+      value: formatCurrency(totalCalculatedPay),
+      tone: 'base',
+    },
+    {
+      label: 'Busta paga',
+      detail: payslipDaysNum
+        ? `${payslipDaysNum} giornate${hasMultipleEmployers && selectedEmployerLabel ? ` · ${selectedEmployerLabel}` : ''}`
+        : 'Non inserita',
+      value: importoBustaPagaNum > 0 ? formatCurrency(importoBustaPagaNum) : '—',
+      tone: 'base',
+    },
+    {
+      label: 'Trasporto',
+      detail: trasportoAttivo && totaleTrasporto !== 0
+        ? `${nMacchineMeseNum} macchine × ${formatCurrency(prezzoPerMacchinaNum)}`
+        : 'Non incluso',
+      value: totaleTrasporto !== 0 ? formatCurrency(totaleTrasporto) : '—',
+      tone: totaleTrasporto !== 0 ? 'positive' : 'muted',
+    },
+    {
+      label: giftLabel || 'Regalo / Extra',
+      detail: giftAmountNum !== 0 ? 'Voce aggiuntiva del mese' : 'Nessun extra',
+      value: giftAmountNum !== 0 ? formatCurrency(giftAmountNum) : '—',
+      tone: giftAmountNum !== 0 ? 'positive' : 'muted',
+    },
+    {
+      label: 'Acconti',
+      detail: visibleAdvances.length
+        ? `${visibleAdvances.length} registrazion${visibleAdvances.length > 1 ? 'i' : 'e'} nel mese`
+        : 'Nessun acconto',
+      value: totalAdvances > 0 ? formatCurrency(totalAdvances) : '—',
+      tone: totalAdvances > 0 ? 'negative' : 'muted',
+    },
+    {
+      label: 'Rate',
+      detail: currentInstallments.length
+        ? `${currentInstallments.length} rat${currentInstallments.length > 1 ? 'e' : 'a'} in corso`
+        : 'Nessuna rata',
+      value: currentInstallmentTotal > 0 ? formatCurrency(currentInstallmentTotal) : '—',
+      tone: currentInstallmentTotal > 0 ? 'negative' : 'muted',
+    },
+    {
+      label: previousBalanceLabel || 'Crediti / debiti precedenti',
+      detail: restoPrecedenteNum !== 0 ? 'Saldo importato dal mese precedente' : 'Nessun saldo precedente',
+      value: restoPrecedenteNum !== 0 ? formatSignedCurrency(restoPrecedenteNum) : '—',
+      tone: restoPrecedenteNum > 0 ? 'positive' : restoPrecedenteNum < 0 ? 'negative' : 'muted',
+    },
+    {
+      label: 'Compenso del mese',
+      detail: 'Importo teorico da regolare nel mese corrente',
+      value: formatCurrency(compensationMonthAmount),
+      tone: compensationMonthAmount >= 0 ? 'base' : 'negative',
+      strong: true,
+    },
+  ];
 
   return (
     <div className="print-area employee-print-area">
-      <div className="print-sheet employee-print-sheet" style={printCardStyle}>
-
-        {/* 1. Header */}
+      <div className="print-sheet employee-print-sheet" style={employeePrintSheetStyle}>
         <div style={rp2HeaderStyle}>
           <div>
             <div style={rp2NameStyle}>{employee.first_name} {employee.last_name}</div>
@@ -2476,8 +3083,7 @@ function EmployeePrintArea({
           <div style={rp2BadgeStyle(isPagato)}>{isPagato ? 'PAGATO' : 'NON PAGATO'}</div>
         </div>
 
-        {/* 2. Three summary cards */}
-        <div style={{ ...rp2SummaryRowStyle, marginTop: 8 }}>
+        <div style={rp2SummaryRowStyle}>
           <div style={rp2SummaryCardStyle}>
             <div style={rp2CardLabelStyle}>Giorni lavorati</div>
             <div style={rp2CardValueStyle}>{workedDays}</div>
@@ -2485,138 +3091,88 @@ function EmployeePrintArea({
           </div>
           <div style={rp2SummaryCardStyle}>
             <div style={rp2CardLabelStyle}>Ore totali</div>
-            <div style={rp2CardValueStyle}>{formatHoursValue(employeeTotals.totalHours, hoursFormat)}</div>
-            <div style={rp2CardSubStyle}>{formatWorkedSummary(employeeTotals.totalHours, attendanceBaseHours, hoursFormat)}</div>
+            <div style={rp2CardValueStyle}>{formatHoursValue(displayTotalHours, hoursFormat)}</div>
+            <div style={rp2CardSubStyle}>{formatWorkedSummary(displayTotalHours, attendanceBaseHours, hoursFormat)}</div>
           </div>
           <div style={rp2SummaryCardStyle}>
-            <div style={rp2CardLabelStyle}>Retribuzione</div>
-            <div style={rp2CardValueStyle}>{formatCurrency(totalCalculatedPay)}</div>
-            <div style={rp2CardSubStyle}>Calcolata dal gestionale</div>
+            <div style={rp2CardLabelStyle}>Compenso mese</div>
+            <div style={rp2CardValueStyle}>{formatCurrency(compensationMonthAmount)}</div>
+            <div style={rp2CardSubStyle}>Saldo teorico del mese</div>
           </div>
         </div>
 
-        {/* 3. Weekly attendance grid */}
-        <div className="print-block employee-print-section" style={{ ...rp2SectionBoxStyle, marginTop: 6 }}>
-          <div style={rp2SectionLabelStyle}>Presenze del mese</div>
-          {weekGroups.map((week, i) => (
-            <div key={`week-group-${i}`}>
-              <div style={rp2WeekLabelStyle}>Settimana {i + 1}</div>
-              <WeekGrid week={week} attendanceMap={attendanceMap} hoursFormat={hoursFormat} dayMarkers={dayMarkers} />
-            </div>
-          ))}
-          <div style={rp2TariffRowStyle}>
-            <div>
-              <span style={rp2TariffLabelStyle}>Tariffa giornaliera</span>
-              <strong>{formatCurrency(dailyPay)}</strong>
-            </div>
-            <div>
-              <span style={rp2TariffLabelStyle}>Tariffa straordinario</span>
+        <div style={rp2TariffRowStyle}>
+          <div style={rp2TariffPillStyle}>
+            <span style={rp2TariffLabelStyle}>Tariffa giornaliera</span>
+            <strong>{formatCurrency(dailyPay)}</strong>
+          </div>
+          {showOvertimeInReport ? (
+            <div style={rp2TariffPillStyle}>
+              <span style={rp2TariffLabelStyle}>Straordinario</span>
               <strong>
                 {overtimeView?.showHourlyRate
                   ? overtimeHourlyRate > 0 ? `${formatCurrency(overtimeHourlyRate)} / h` : '—'
                   : '—'}
               </strong>
             </div>
+          ) : null}
+        </div>
+
+        <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
+          <div style={rp2SectionLabelStyle}>Presenze del mese</div>
+          {weekGroups.map((week, i) => (
+            <div key={`week-group-${i}`} style={rp2WeekBlockStyle}>
+              <div style={rp2WeekLabelStyle}>Settimana {i + 1}</div>
+              <WeekGrid
+                week={week}
+                attendanceMap={attendanceMap}
+                hoursFormat={hoursFormat}
+                dayMarkers={dayMarkers}
+                showOvertimeInReport={showOvertimeInReport}
+              />
+            </div>
+          ))}
+          <div style={rp2AttendanceLegendStyle}>
+            <span style={rp2LegendItemStyle}><span style={rp2LegendDotStyle('worked')} /> Presenza</span>
+            <span style={rp2LegendItemStyle}><span style={rp2LegendDotStyle('neutral')} /> Domenica / riposo</span>
+            <span style={rp2LegendItemStyle}><span style={rp2LegendDotStyle('empty')} /> Assenza</span>
           </div>
         </div>
 
-        {/* 4. Riepilogo economico */}
-        <div className="print-block employee-print-section" style={{ ...rp2SectionBoxStyle, marginTop: 6 }}>
+        <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
           <div style={rp2SectionLabelStyle}>Riepilogo economico</div>
-
-          <div style={rp2EconRowStyle}>
-            <div>
-              <div style={rp2EconLabelStyle}>Retribuzione calcolata</div>
-              <div style={rp2EconSubStyle}>
-                {overtimeView?.displayMode === 'separate'
-                  ? `${formatCurrency(totalRegularPay)} ordinario + ${formatCurrency(totalOvertimePay)} straordinario`
-                  : `${workedDays} gg · ${formatHoursValue(employeeTotals.totalHours, hoursFormat)}`}
+          <div style={rp2EconomicTableStyle}>
+            {economicRows.map((row) => (
+              <div key={row.label} style={rp2EconRowStyle(row.strong)}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={rp2EconLabelStyle(row.strong)}>{row.label}</div>
+                  <div style={rp2EconSubStyle}>{row.detail}</div>
+                </div>
+                <div style={rp2EconAmountStyle(row.tone, row.strong)}>{row.value}</div>
               </div>
-            </div>
-            <div style={rp2EconAmountStyle('#111827')}>{formatCurrency(totalCalculatedPay)}</div>
+            ))}
           </div>
-
-          <div style={rp2EconRowStyle}>
-            <div>
-              <div style={rp2EconLabelStyle}>Busta paga</div>
-              <div style={rp2EconSubStyle}>
-                {payslipDaysNum
-                  ? `${payslipDaysNum} gg inserite${hasMultipleEmployers && selectedEmployerLabel ? ` — ${selectedEmployerLabel}` : ''}`
-                  : 'Non inserita'}
-              </div>
-            </div>
-            <div style={rp2EconAmountStyle('#111827')}>{importoBustaPagaNum > 0 ? formatCurrency(importoBustaPagaNum) : '—'}</div>
-          </div>
-
-          {restoPrecedenteNum !== 0 ? (
-            <div style={rp2EconRowStyle}>
-              <div>
-                <div style={rp2EconLabelStyle}>{previousBalanceLabel || 'Resto mese precedente'}</div>
-                <div style={rp2EconSubStyle}>Saldo importato dal mese precedente</div>
-              </div>
-              <div style={rp2EconAmountStyle()}>{formatSignedCurrency(restoPrecedenteNum)}</div>
-            </div>
-          ) : null}
-
-          {trasportoAttivo && totaleTrasporto !== 0 ? (
-            <div style={rp2EconRowStyle}>
-              <div>
-                <div style={rp2EconLabelStyle}>Trasporto</div>
-                <div style={rp2EconSubStyle}>{nMacchineMeseNum} macchine × {formatCurrency(prezzoPerMacchinaNum)}</div>
-              </div>
-              <div style={rp2EconAmountStyle('#059669')}>{formatCurrency(totaleTrasporto)}</div>
-            </div>
-          ) : null}
-
-          {giftAmountNum !== 0 ? (
-            <div style={rp2EconRowStyle}>
-              <div style={rp2EconLabelStyle}>{giftLabel || 'Regalo / Extra'}</div>
-              <div style={rp2EconAmountStyle('#059669')}>{formatCurrency(giftAmountNum)}</div>
-            </div>
-          ) : null}
-
-          {importoBustaPagaNum > 0 || restoPrecedenteNum !== 0 || totaleTrasporto !== 0 || giftAmountNum !== 0 ? (
-            balanceBeforeDeductions > 0 ? (
-              <div style={rp2CreditBoxStyle}>
-                <span>Totale credito</span>
-                <span>{formatCurrency(balanceBeforeDeductions)}</span>
-              </div>
-            ) : balanceBeforeDeductions < 0 ? (
-              <div style={rp2DeductionBoxStyle}>
-                <span>Totale debito</span>
-                <span>{formatCurrency(Math.abs(balanceBeforeDeductions))}</span>
-              </div>
-            ) : null
-          ) : (
-            totalCalculatedPay > 0 ? (
-              <div style={rp2CreditBoxStyle}>
-                <span>Totale da riconoscere</span>
-                <span>{formatCurrency(totalCalculatedPay)}</span>
-              </div>
-            ) : null
-          )}
         </div>
 
-        {/* 5. Trattenute e recuperi */}
         {hasDeductions ? (
-          <div className="print-block employee-print-section" style={{ ...rp2SectionBoxStyle, marginTop: 6 }}>
-            <div style={rp2SectionLabelStyle}>Trattenute e recuperi</div>
+          <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
+            <div style={rp2SectionLabelStyle}>Dettaglio trattenute</div>
             {visibleAdvances.map((advance, index) => (
-              <div key={`print-adv-${index}`} style={rp2EconRowStyle}>
+              <div key={`print-adv-${index}`} style={rp2EconRowStyle()}>
                 <div>
-                  <div style={rp2EconLabelStyle}>Acconto {visibleAdvances.length > 1 ? index + 1 : ''}</div>
+                  <div style={rp2EconLabelStyle()}>Acconto {visibleAdvances.length > 1 ? index + 1 : ''}</div>
                   <div style={rp2EconSubStyle}>{advance.date ? `Data: ${formatDateLabel(advance.date)}` : 'Senza data'}</div>
                 </div>
-                <div style={rp2EconAmountStyle('#dc2626')}>{formatCurrency(advance.amount)}</div>
+                <div style={rp2EconAmountStyle('negative')}>{formatCurrency(advance.amount)}</div>
               </div>
             ))}
             {currentInstallments.map((installment, index) => (
-              <div key={`print-inst-${index}`} style={rp2EconRowStyle}>
+              <div key={`print-inst-${index}`} style={rp2EconRowStyle()}>
                 <div>
-                  <div style={rp2EconLabelStyle}>Rata {installment.installmentNumber}</div>
+                  <div style={rp2EconLabelStyle()}>Rata {installment.installmentNumber}</div>
                   <div style={rp2EconSubStyle}>{installment.planLabel} · Residuo {formatCurrency(installment.residualAfterCurrent)}</div>
                 </div>
-                <div style={rp2EconAmountStyle('#dc2626')}>{formatCurrency(installment.amount)}</div>
+                <div style={rp2EconAmountStyle('negative')}>{formatCurrency(installment.amount)}</div>
               </div>
             ))}
             {totalTrattenute > 0 ? (
@@ -2628,8 +3184,7 @@ function EmployeePrintArea({
           </div>
         ) : null}
 
-        {/* 6. Risultato finale */}
-        <div className="print-block employee-print-section" style={{ ...rp2ResultCardStyle, marginTop: 6 }}>
+        <div className="print-block employee-print-section" style={rp2ResultCardStyle(differenzaFinale)}>
           <div>
             <div style={rp2ResultLabelStyle}>{mainBalanceLabel}</div>
             <div style={rp2ResultFormulaStyle}>
@@ -2639,14 +3194,16 @@ function EmployeePrintArea({
             </div>
           </div>
           <div style={rp2ResultValueStyle(differenzaFinale)}>
-            {differenzaFinale !== 0 ? formatSignedCurrency(differenzaFinale) : '—'}
+            {differenzaFinale !== 0 ? formatSignedCurrency(differenzaFinale) : '€ 0,00'}
           </div>
         </div>
 
-        {/* 7. Note */}
-        {noteExtra ? (
-          <div style={{ ...rp2NoteStyle, marginTop: 8 }}>{noteExtra}</div>
-        ) : null}
+        {noteExtra ? <div style={rp2NoteStyle}>{noteExtra}</div> : null}
+
+        <div style={rp2FooterStyle}>
+          <span>Gestionale Demo</span>
+          <span>{monthName} {yearStr}</span>
+        </div>
       </div>
     </div>
   );
@@ -2973,6 +3530,184 @@ function SummaryLine({ label, detail, value, strong, color, subtle }) {
   );
 }
 
+const payslipSupportBoxStyle = {
+  display: 'grid',
+  gap: 12,
+  padding: 14,
+  borderRadius: 12,
+  border: '1px solid rgba(22, 101, 52, 0.16)',
+  background: 'linear-gradient(180deg, rgba(255,255,255,0.98), rgba(240,253,244,0.72))',
+};
+
+const payslipSupportHeaderStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  gap: 12,
+  alignItems: 'center',
+};
+
+const payslipSupportValueStyle = {
+  fontSize: 24,
+  fontWeight: 800,
+  color: '#14532d',
+};
+
+const payslipTooltipStyle = {
+  display: 'grid',
+  gap: 6,
+  padding: 12,
+  borderRadius: 10,
+  border: '1px solid rgba(31, 41, 55, 0.08)',
+  background: '#fff',
+};
+
+const payslipCalculatorGridStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+  gap: 12,
+};
+
+const payslipOutputGridStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+  gap: 10,
+};
+
+const payslipDecisionGridStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+  gap: 10,
+};
+
+function getPayslipOptionCardStyle(isSelected, isPreferred) {
+  return {
+    display: 'grid',
+    gap: 7,
+    textAlign: 'left',
+    padding: 11,
+    borderRadius: 12,
+    border: isSelected
+      ? '2px solid #111827'
+      : isPreferred
+      ? '1px solid rgba(22, 101, 52, 0.22)'
+      : '1px solid rgba(31, 41, 55, 0.08)',
+    background: isSelected
+      ? 'linear-gradient(180deg, rgba(243, 244, 246, 0.98), rgba(229, 231, 235, 0.95))'
+      : isPreferred
+      ? 'linear-gradient(180deg, rgba(255,255,255,0.98), rgba(240,253,244,0.65))'
+      : '#fff',
+    boxShadow: isSelected ? '0 8px 18px rgba(17, 24, 39, 0.1)' : 'none',
+    alignContent: 'start',
+    minWidth: 0,
+  };
+}
+
+function getPayslipDecisionTone(type) {
+  if (type === 'give') {
+    return {
+      color: '#b91c1c',
+      amountColor: '#991b1b',
+      background: 'rgba(239, 68, 68, 0.08)',
+    };
+  }
+
+  if (type === 'receive') {
+    return {
+      color: '#166534',
+      amountColor: '#14532d',
+      background: 'rgba(34, 197, 94, 0.08)',
+    };
+  }
+
+  return {
+    color: '#4b5563',
+    amountColor: '#374151',
+    background: 'rgba(107, 114, 128, 0.08)',
+  };
+}
+
+const payslipDecisionTitleStyle = {
+  fontSize: 11,
+  fontWeight: 800,
+  color: '#475467',
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+};
+
+const payslipDecisionTopRowStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'baseline',
+  gap: 10,
+  flexWrap: 'wrap',
+};
+
+const payslipDecisionDaysStyle = {
+  fontSize: 20,
+  fontWeight: 800,
+  color: '#111827',
+  lineHeight: 1.1,
+};
+
+const payslipDecisionMetricsRowStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+  gap: 8,
+};
+
+const payslipDecisionMetricStyle = {
+  display: 'grid',
+  gap: 2,
+  padding: '7px 8px',
+  borderRadius: 10,
+  background: 'rgba(248, 250, 252, 0.95)',
+  border: '1px solid rgba(31, 41, 55, 0.06)',
+  minWidth: 0,
+};
+
+const payslipDecisionMetricLabelStyle = {
+  fontSize: 11,
+  color: '#667085',
+  fontWeight: 700,
+};
+
+const payslipDecisionMetricValueStyle = {
+  fontSize: 13,
+  color: '#111827',
+  fontWeight: 800,
+};
+
+const payslipDecisionInputRowStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+  flexWrap: 'wrap',
+};
+
+const payslipDecisionInlineLabelStyle = {
+  fontSize: 12,
+  fontWeight: 700,
+  color: '#374151',
+};
+
+const payslipDecisionHintStyle = {
+  fontSize: 12,
+  fontWeight: 800,
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: 10,
+  padding: '8px 10px',
+  borderRadius: 10,
+};
+
+const payslipDecisionHintAmountStyle = {
+  fontSize: 14,
+  fontWeight: 900,
+  whiteSpace: 'nowrap',
+};
+
 const fieldStyle = {
   width: '100%',
   padding: 10,
@@ -2980,6 +3715,14 @@ const fieldStyle = {
   borderRadius: 8,
   background: 'rgba(255, 255, 255, 0.92)',
   color: '#000',
+};
+
+const payslipCompactInputStyle = {
+  ...fieldStyle,
+  width: 92,
+  minWidth: 92,
+  padding: '8px 10px',
+  textAlign: 'right',
 };
 
 const readonlyBoxStyle = {
@@ -3013,8 +3756,9 @@ const editorBlockTitleStyle = {
 
 const editorBlockGridStyle = {
   display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-  gap: 12,
+  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+  gap: 14,
+  alignItems: 'start',
 };
 
 const fieldLabelStyle = {
@@ -3077,14 +3821,16 @@ const sectionToolbarStyle = {
   display: 'flex',
   justifyContent: 'space-between',
   gap: 12,
-  alignItems: 'center',
+  alignItems: 'flex-start',
   marginBottom: 8,
+  flexWrap: 'wrap',
 };
 
 const advanceRowStyle = {
   display: 'grid',
-  gridTemplateColumns: 'minmax(160px, 1fr) minmax(170px, 1fr) minmax(180px, 1fr) auto',
-  gap: 10,
+  gridTemplateColumns: 'minmax(0, 1fr) minmax(160px, 180px) minmax(220px, 1.2fr) auto',
+  gap: 12,
+  alignItems: 'end',
   padding: 12,
   border: '1px solid rgba(31, 41, 55, 0.08)',
   borderRadius: 10,
@@ -3093,8 +3839,9 @@ const advanceRowStyle = {
 
 const teamAdvanceRowStyle = {
   display: 'grid',
-  gridTemplateColumns: 'minmax(130px, 1fr) minmax(150px, 1fr) minmax(220px, 1.2fr) auto',
-  gap: 10,
+  gridTemplateColumns: 'minmax(0, 1fr) minmax(150px, 170px) minmax(220px, 1.2fr) auto',
+  gap: 12,
+  alignItems: 'end',
   padding: 12,
   border: '1px solid rgba(31, 41, 55, 0.08)',
   borderRadius: 10,
@@ -3344,6 +4091,17 @@ const employeeMiniMetricCardStyle = {
   background: 'rgba(244, 248, 243, 0.9)',
 };
 
+const employeePrintSheetStyle = {
+  ...printCardStyle,
+  width: '100%',
+  maxWidth: 620,
+  padding: '28px 28px 22px',
+  borderRadius: 22,
+  border: '1px solid rgba(31, 41, 55, 0.1)',
+  background: '#ffffff',
+  boxShadow: '0 20px 44px rgba(15, 23, 42, 0.08)',
+};
+
 const employeePrintBodyGridStyle = {
   display: 'grid',
   gap: 10,
@@ -3430,35 +4188,210 @@ const tdCenterCompact = {
   textAlign: 'center',
 };
 
-const rp2SectionBoxStyle = { border: '1px solid #e5e7eb', borderRadius: 8, padding: 8, background: '#fff' };
-const rp2SectionLabelStyle = { fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#6b7280', marginBottom: 6 };
-const rp2HeaderStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' };
-const rp2NameStyle = { fontSize: 22, fontWeight: 500, color: '#111827', lineHeight: 1.2 };
-const rp2SubtitleStyle = { fontSize: 11, color: '#6b7280', marginTop: 3 };
-const rp2BadgeStyle = (isPaid) => ({ fontSize: 10, fontWeight: 700, padding: '3px 10px', borderRadius: 4, background: isPaid ? '#059669' : '#dc2626', color: '#fff', letterSpacing: '0.05em', textTransform: 'uppercase', whiteSpace: 'nowrap' });
-const rp2SummaryRowStyle = { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 };
-const rp2SummaryCardStyle = { border: '1px solid #e5e7eb', borderRadius: 8, padding: '7px 10px', background: '#fff' };
-const rp2CardLabelStyle = { fontSize: 10, fontWeight: 700, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 };
-const rp2CardValueStyle = { fontSize: 17, fontWeight: 500, color: '#111827', lineHeight: 1.2 };
-const rp2CardSubStyle = { fontSize: 10, color: '#6b7280', marginTop: 2 };
-const rp2WeekLabelStyle = { fontSize: 9, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2, marginTop: 5 };
-const rp2WeekGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 3 };
-const rp2DayCellStyle = (isSunday) => ({ border: '1px solid #e5e7eb', borderRadius: 4, padding: '3px 2px', textAlign: 'center', background: isSunday ? '#f9fafb' : '#fff', minWidth: 0 });
-const rp2DayHeaderStyle = { fontSize: 8, color: '#9ca3af', marginBottom: 2 };
-const rp2DayValueActiveStyle = { fontSize: 10, fontWeight: 600, color: '#2563eb' };
-const rp2DayValueEmptyStyle = { fontSize: 10, color: '#d1d5db' };
-const rp2TariffRowStyle = { display: 'flex', gap: 20, marginTop: 6, fontSize: 10 };
-const rp2TariffLabelStyle = { color: '#6b7280', marginRight: 4 };
-const rp2EconRowStyle = { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, padding: '3px 0', borderBottom: '1px solid #f3f4f6' };
-const rp2EconLabelStyle = { fontSize: 10, fontWeight: 600, color: '#111827' };
-const rp2EconSubStyle = { fontSize: 9, color: '#6b7280', marginTop: 2 };
-const rp2EconAmountStyle = () => ({ fontSize: 11, fontWeight: 700, color: '#000', whiteSpace: 'nowrap', marginLeft: 'auto', flexShrink: 0 });
-const rp2CreditBoxStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, padding: '5px 8px', marginTop: 5, fontSize: 11, fontWeight: 700, color: '#000' };
-const rp2DeductionBoxStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '5px 8px', marginTop: 5, fontSize: 11, fontWeight: 700, color: '#000' };
-const rp2ResultCardStyle = { border: '1px solid #e5e7eb', borderRadius: 8, padding: '8px 10px', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 };
-const rp2ResultLabelStyle = { fontSize: 11, fontWeight: 600, color: '#000', marginBottom: 2 };
-const rp2ResultFormulaStyle = { fontSize: 10, color: '#6b7280' };
-const rp2ResultValueStyle = () => ({ fontSize: 22, fontWeight: 700, color: '#000', lineHeight: 1, whiteSpace: 'nowrap', flexShrink: 0 });
-const rp2NoteStyle = { fontSize: 10, color: '#6b7280', fontStyle: 'italic', padding: '4px 0' };
-const rp2DayOvertimeStyle = { fontSize: 9, fontWeight: 600, color: '#d97706', marginTop: 1 };
-const rp2DayMarkerStyle = (color) => ({ fontSize: 9, marginTop: 1, color: color || '#6b7280' });
+const rp2SectionBoxStyle = {
+  border: '1px solid rgba(31, 41, 55, 0.08)',
+  borderRadius: 18,
+  padding: 18,
+  background: '#fff',
+  marginTop: 16,
+};
+const rp2SectionLabelStyle = {
+  fontSize: 11,
+  fontWeight: 800,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  color: '#6b7280',
+  marginBottom: 12,
+};
+const rp2HeaderStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'flex-start',
+  gap: 16,
+  marginBottom: 18,
+};
+const rp2NameStyle = { fontSize: 28, fontWeight: 800, color: '#111827', lineHeight: 1.05 };
+const rp2SubtitleStyle = { fontSize: 13, color: '#6b7280', marginTop: 6 };
+const rp2BadgeStyle = (isPaid) => ({
+  fontSize: 11,
+  fontWeight: 800,
+  padding: '8px 14px',
+  borderRadius: 999,
+  background: isPaid ? 'rgba(22, 163, 74, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+  color: isPaid ? '#166534' : '#b91c1c',
+  border: `1px solid ${isPaid ? 'rgba(22, 163, 74, 0.18)' : 'rgba(239, 68, 68, 0.18)'}`,
+  textTransform: 'uppercase',
+  whiteSpace: 'nowrap',
+});
+const rp2SummaryRowStyle = { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginBottom: 14 };
+const rp2SummaryCardStyle = {
+  border: '1px solid rgba(31, 41, 55, 0.08)',
+  borderRadius: 16,
+  padding: '14px 16px',
+  background: 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
+};
+const rp2CardLabelStyle = { fontSize: 11, fontWeight: 800, color: '#667085', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 };
+const rp2CardValueStyle = { fontSize: 24, fontWeight: 800, color: '#111827', lineHeight: 1.1 };
+const rp2CardSubStyle = { fontSize: 11, color: '#6b7280', marginTop: 6 };
+const rp2TariffRowStyle = { display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 6 };
+const rp2TariffPillStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '8px 12px',
+  borderRadius: 999,
+  border: '1px solid rgba(31, 41, 55, 0.08)',
+  background: '#f8fafc',
+  fontSize: 12,
+};
+const rp2TariffLabelStyle = { color: '#6b7280' };
+const rp2WeekBlockStyle = { display: 'grid', gap: 6, marginTop: 10 };
+const rp2WeekLabelStyle = { fontSize: 10, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' };
+const rp2WeekGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 8 };
+const rp2DayCellStyle = (isSunday) => ({
+  border: '1px solid rgba(31, 41, 55, 0.08)',
+  borderRadius: 14,
+  padding: '8px 6px',
+  textAlign: 'center',
+  background: isSunday ? '#f8fafc' : '#fff',
+  minWidth: 0,
+  display: 'grid',
+  gap: 5,
+  justifyItems: 'center',
+});
+const rp2DayHeaderTopStyle = { display: 'grid', gap: 1, justifyItems: 'center' };
+const rp2DayHeaderLabelStyle = { fontSize: 9, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase' };
+const rp2DayHeaderNumberStyle = { fontSize: 13, color: '#111827', fontWeight: 800, lineHeight: 1 };
+const rp2DayIndicatorStyle = (tone, markerColor) => {
+  const palette =
+    tone === 'worked'
+      ? { background: '#dcfce7', color: '#166534', border: '#bbf7d0' }
+      : tone === 'special'
+      ? { background: 'rgba(59, 130, 246, 0.12)', color: markerColor || '#2563eb', border: 'rgba(59, 130, 246, 0.18)' }
+      : tone === 'neutral'
+      ? { background: '#f3f4f6', color: '#6b7280', border: '#e5e7eb' }
+      : { background: '#fff7ed', color: '#9a3412', border: '#fed7aa' };
+  return {
+    width: 28,
+    height: 28,
+    borderRadius: 999,
+    display: 'grid',
+    placeItems: 'center',
+    fontSize: 12,
+    fontWeight: 800,
+    background: palette.background,
+    color: palette.color,
+    border: `1px solid ${palette.border}`,
+  };
+};
+const rp2DayDetailStyle = (active) => ({
+  fontSize: 10,
+  color: active ? '#111827' : '#94a3b8',
+  fontWeight: active ? 700 : 600,
+  lineHeight: 1.2,
+  minHeight: 24,
+  display: 'grid',
+  alignItems: 'center',
+});
+const rp2DayMetaAccentStyle = { fontSize: 9, color: '#b45309', fontWeight: 700, lineHeight: 1.1 };
+const rp2DayMetaStyle = (color) => ({ fontSize: 9, color: color || '#6b7280', fontWeight: 700, lineHeight: 1.1 });
+const rp2DayMetaMutedStyle = { fontSize: 9, color: '#cbd5e1', lineHeight: 1.1, minHeight: 11 };
+const rp2AttendanceLegendStyle = { display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12, fontSize: 11, color: '#667085' };
+const rp2LegendItemStyle = { display: 'inline-flex', alignItems: 'center', gap: 6 };
+const rp2LegendDotStyle = (tone) => ({
+  width: 10,
+  height: 10,
+  borderRadius: 999,
+  background: tone === 'worked' ? '#16a34a' : tone === 'neutral' ? '#9ca3af' : '#f59e0b',
+});
+const rp2EconomicTableStyle = { display: 'grid', gap: 0 };
+const rp2EconRowStyle = (strong = false) => ({
+  display: 'flex',
+  alignItems: 'flex-start',
+  justifyContent: 'space-between',
+  gap: 14,
+  padding: strong ? '12px 0 0' : '12px 0',
+  borderTop: strong ? '1px solid rgba(31, 41, 55, 0.08)' : 'none',
+  borderBottom: strong ? 'none' : '1px solid rgba(241, 245, 249, 0.95)',
+});
+const rp2EconLabelStyle = (strong = false) => ({ fontSize: strong ? 13 : 12, fontWeight: strong ? 800 : 700, color: '#111827' });
+const rp2EconSubStyle = { fontSize: 11, color: '#6b7280', marginTop: 4, lineHeight: 1.35 };
+const rp2EconAmountStyle = (tone = 'base', strong = false) => ({
+  fontSize: strong ? 15 : 13,
+  fontWeight: 800,
+  color: tone === 'positive' ? '#166534' : tone === 'negative' ? '#b91c1c' : tone === 'muted' ? '#94a3b8' : '#111827',
+  whiteSpace: 'nowrap',
+  marginLeft: 'auto',
+  flexShrink: 0,
+});
+const rp2CreditBoxStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  background: '#ecfdf3',
+  border: '1px solid #bbf7d0',
+  borderRadius: 14,
+  padding: '10px 12px',
+  marginTop: 10,
+  fontSize: 12,
+  fontWeight: 800,
+  color: '#166534',
+};
+const rp2DeductionBoxStyle = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  background: '#fff7ed',
+  border: '1px solid #fed7aa',
+  borderRadius: 14,
+  padding: '10px 12px',
+  marginTop: 10,
+  fontSize: 12,
+  fontWeight: 800,
+  color: '#b45309',
+};
+const rp2ResultCardStyle = (value) => ({
+  border: '1px solid rgba(31, 41, 55, 0.08)',
+  borderRadius: 18,
+  padding: '18px 20px',
+  background: value > 0 ? '#ecfdf3' : value < 0 ? '#fff7ed' : '#f8fafc',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 14,
+  marginTop: 16,
+});
+const rp2ResultLabelStyle = { fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 4 };
+const rp2ResultFormulaStyle = { fontSize: 11, color: '#6b7280', lineHeight: 1.35 };
+const rp2ResultValueStyle = (value) => ({
+  fontSize: 28,
+  fontWeight: 900,
+  color: value > 0 ? '#166534' : value < 0 ? '#b45309' : '#111827',
+  lineHeight: 1,
+  whiteSpace: 'nowrap',
+  flexShrink: 0,
+});
+const rp2NoteStyle = {
+  marginTop: 14,
+  padding: '12px 14px',
+  borderRadius: 14,
+  background: '#f8fafc',
+  border: '1px solid rgba(31, 41, 55, 0.06)',
+  fontSize: 11,
+  color: '#475467',
+  lineHeight: 1.5,
+};
+const rp2FooterStyle = {
+  marginTop: 18,
+  paddingTop: 14,
+  borderTop: '1px solid rgba(31, 41, 55, 0.08)',
+  display: 'flex',
+  justifyContent: 'space-between',
+  gap: 12,
+  flexWrap: 'wrap',
+  fontSize: 11,
+  color: '#98a2b3',
+  textTransform: 'uppercase',
+  letterSpacing: '0.06em',
+  fontWeight: 700,
+};

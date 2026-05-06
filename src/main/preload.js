@@ -143,6 +143,9 @@ contextBridge.exposeInMainWorld('api', {
     delete: (id) => ipcRenderer.invoke('communications:delete', id),
     openFile: (id, type) => ipcRenderer.invoke('communications:openFile', id, type),
     sendEmail: (id, options) => ipcRenderer.invoke('communications:sendEmail', id, options),
+    listContacts: () => ipcRenderer.invoke('communications:listContacts'),
+    saveContact: (payload) => ipcRenderer.invoke('communications:saveContact', payload),
+    deleteContact: (id) => ipcRenderer.invoke('communications:deleteContact', id),
   },
 
   attendance: {

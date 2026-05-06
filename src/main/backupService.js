@@ -6,8 +6,7 @@ const { getDataDir, getConfigDir, getDocumentsDir, getBackupsDir, getUserDataRoo
 const settingsService = require('./settingsService');
 const { getDb, getDbPath } = require('./db');
 
-const MAX_MANUAL_BACKUPS = 10;
-const MAX_AUTO_BACKUPS = 30;
+const MAX_AUTO_BACKUPS = 20;
 let logWriter = () => {};
 
 function ensureDir(dirPath) {
@@ -22,6 +21,19 @@ function setLogger(logger) {
 function logBackupEvent(event, details = {}) {
   try {
     logWriter(`backup:${event}`, details);
+  } catch {
+    // Best effort.
+  }
+}
+
+function logBackupMessage(message, details = {}) {
+  console.log(message);
+
+  try {
+    logWriter(message, {
+      message,
+      ...details,
+    });
   } catch {
     // Best effort.
   }
@@ -207,33 +219,50 @@ function getBackupStats(backupDir) {
   };
 }
 
-function pruneOldBackups(backupRoot, type) {
-  if (!fs.existsSync(backupRoot)) return;
+function getAutomaticBackupsSorted(backupRoot) {
+  if (!fs.existsSync(backupRoot)) {
+    return [];
+  }
 
-  const isManual = type === 'manual';
-  const limit = isManual ? MAX_MANUAL_BACKUPS : MAX_AUTO_BACKUPS;
-
-  const allBackups = fs.readdirSync(backupRoot, { withFileTypes: true })
+  const automaticBackups = fs.readdirSync(backupRoot, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => path.join(backupRoot, e.name))
     .filter((d) => fs.existsSync(getManifestPath(d)))
     .map((d) => {
       try {
         const manifest = readBackupManifest(d);
-        return { dir: d, type: manifest.type, created_at: manifest.created_at || '' };
+        return {
+          dir: d,
+          fileName: path.basename(d),
+          type: manifest.type,
+          created_at: manifest.created_at || '',
+        };
       } catch {
         return null;
       }
     })
-    .filter(Boolean);
+    .filter((backup) => backup && backup.type === 'automatic');
 
-  const group = allBackups.filter((b) => isManual ? b.type === 'manual' : b.type !== 'manual');
-  group.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  automaticBackups.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  return automaticBackups;
+}
 
-  const toDelete = group.slice(0, Math.max(0, group.length - limit));
+async function rotateAutomaticBackups(backupRoot = getEffectiveBackupDir()) {
+  logBackupMessage('ROTATION START');
+
+  const automaticBackups = getAutomaticBackupsSorted(backupRoot);
+  logBackupMessage(`Backup automatici trovati: ${automaticBackups.length}`, {
+    count: automaticBackups.length,
+  });
+
+  const toDelete = automaticBackups.slice(0, Math.max(0, automaticBackups.length - MAX_AUTO_BACKUPS));
   for (const backup of toDelete) {
     try {
-      fs.rmSync(backup.dir, { recursive: true, force: true });
+      await withRetry(() => fs.rmSync(backup.dir, { recursive: true, force: true }));
+      logBackupMessage(`Backup eliminato: ${backup.fileName}`, {
+        backup_dir: backup.dir,
+        file_name: backup.fileName,
+      });
     } catch {}
   }
 }
@@ -300,8 +329,6 @@ function createBackup(type = 'manual') {
       },
     });
   }
-
-  pruneOldBackups(backupRoot, type);
 
   return {
     ...getBackupStats(backupDir),
@@ -530,14 +557,27 @@ function shouldRunScheduledBackup(settings, now = new Date()) {
   return todayKey !== lastKey;
 }
 
-function maybeRunAutomaticBackup() {
+async function createBackupSafe(type = 'automatic') {
+  if (type !== 'automatic') {
+    return createBackup(type);
+  }
+
   const settings = settingsService.getSettings();
   if (!shouldRunScheduledBackup(settings)) {
+    logBackupMessage('Backup saltato: già eseguito oggi');
+    await rotateAutomaticBackups();
     return null;
   }
 
+  const backup = createBackup('automatic');
+  await rotateAutomaticBackups();
+  logBackupMessage('Backup eseguito');
+  return backup;
+}
+
+async function maybeRunAutomaticBackup() {
   try {
-    return createBackup('automatic');
+    return await createBackupSafe('automatic');
   } catch (error) {
     logBackupEvent('failed', {
       type: 'automatic',
@@ -547,14 +587,14 @@ function maybeRunAutomaticBackup() {
   }
 }
 
-function maybeRunExitBackup() {
+async function maybeRunExitBackup() {
   const settings = settingsService.getSettings();
   if (!settings.backup.backup_on_exit) {
     return null;
   }
 
   try {
-    return createBackup('automatic');
+    return await createBackupSafe('automatic');
   } catch (error) {
     logBackupEvent('failed', {
       type: 'automatic-exit',
@@ -701,12 +741,14 @@ module.exports = {
   checkAndHandleIncompleteRestore,
   chooseRestoreBackup,
   createBackup,
+  createBackupSafe,
   createOperationSafetyBackup,
   getEffectiveBackupDir,
   listBackups,
   maybeRunAutomaticBackup,
   maybeRunExitBackup,
   openBackupDirectory,
+  rotateAutomaticBackups,
   restoreBackup,
   setLogger,
   validateBackup,

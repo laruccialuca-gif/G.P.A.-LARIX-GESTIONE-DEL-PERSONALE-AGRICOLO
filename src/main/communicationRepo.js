@@ -106,6 +106,20 @@ function formatCurrency(value) {
   }).format(normalizeNumber(value));
 }
 
+function formatMonthYearUppercase(monthValue) {
+  if (!/^\d{4}-\d{2}$/.test(String(monthValue || ''))) {
+    return String(monthValue || '').trim().toUpperCase();
+  }
+
+  const [year, month] = String(monthValue).split('-').map(Number);
+  const date = new Date(year, month - 1, 1);
+  const label = new Intl.DateTimeFormat('it-IT', {
+    month: 'long',
+    year: 'numeric',
+  }).format(date);
+  return label.toUpperCase();
+}
+
 function getCommunicationMonth(communication) {
   if (communication.period_mode === 'monthly' && /^\d{4}-\d{2}$/.test(String(communication.month_reference || ''))) {
     return communication.month_reference;
@@ -129,13 +143,12 @@ function buildCompensationSummary(record, month) {
   const acconti = normalizeNumber(record.acconti);
   const rateDebiti = getCurrentInstallments(record, month)
     .reduce((sum, installment) => sum + normalizeNumber(installment.amount), 0);
-  const crediti = normalizeNumber(record.resto_precedente);
+  const restoPrecedente = normalizeNumber(record.resto_precedente);
+  const crediti = Math.max(restoPrecedente, 0);
+  const debitiPrecedenti = Math.abs(Math.min(restoPrecedente, 0));
   const trasporto = normalizeNumber(record.totale_trasporto);
   const aggiunte = normalizeNumber(record.regalo_importo);
-  const calculatedTotal = retribuzione - acconti - rateDebiti + crediti + trasporto + aggiunte;
-  const totale = record.differenza_finale !== null && record.differenza_finale !== undefined
-    ? normalizeNumber(record.differenza_finale)
-    : calculatedTotal;
+  const totale = retribuzione + aggiunte + crediti + trasporto - rateDebiti - debitiPrecedenti - acconti;
 
   return {
     totale,
@@ -167,18 +180,58 @@ function getCommunicationBaseSelect() {
   `;
 }
 
-function mapCommunicationRow(row, details = []) {
-  let employerLabels = [];
-  try {
-    employerLabels = row.employer_labels_json ? JSON.parse(row.employer_labels_json) : [];
-  } catch {
-    employerLabels = [];
+function parseJsonArray(value, fallback = []) {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
   }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function ensureCommunicationsSchema(db) {
+  const columns = db.prepare("PRAGMA table_info(communications)").all();
+  const existingColumns = new Set(columns.map((column) => column.name));
+  const requiredColumns = [
+    { name: 'selected_employee_ids_json', definition: "TEXT DEFAULT '[]'" },
+    { name: 'show_compensation_in_pdf', definition: 'INTEGER DEFAULT 1' },
+    { name: 'period_mode', definition: "TEXT NOT NULL DEFAULT 'monthly'" },
+    { name: 'period_start', definition: 'TEXT' },
+    { name: 'period_end', definition: 'TEXT' },
+    { name: 'month_reference', definition: 'TEXT' },
+    { name: 'company_name', definition: 'TEXT' },
+    { name: 'title', definition: 'TEXT' },
+    { name: 'employer_labels_json', definition: 'TEXT' },
+    { name: 'recipient_email', definition: 'TEXT' },
+    { name: 'notes', definition: 'TEXT' },
+  ];
+
+  for (const column of requiredColumns) {
+    if (!existingColumns.has(column.name)) {
+      db.prepare(
+        `ALTER TABLE communications ADD COLUMN ${column.name} ${column.definition}`
+      ).run();
+      console.log(`communications schema: ${column.name} added`);
+    } else {
+      console.log(`communications schema: ${column.name} already exists`);
+    }
+  }
+}
+
+function mapCommunicationRow(row, details = []) {
+  const employerLabels = parseJsonArray(row.employer_labels_json, []);
+  const selectedEmployeeIds = parseJsonArray(row.selected_employee_ids_json, []);
 
   return {
     ...row,
     detail_count: Number(row.detail_count || details.length || 0),
     employer_labels: Array.isArray(employerLabels) ? employerLabels : [],
+    selected_employee_ids: Array.isArray(selectedEmployeeIds) ? selectedEmployeeIds.map((value) => Number(value)).filter(Number.isFinite) : [],
+    show_compensation_in_pdf: row.show_compensation_in_pdf !== 0,
     details,
     pdf_file: row.pdf_relative_path
       ? describeStoredFile({
@@ -213,6 +266,7 @@ function mapCommunicationRow(row, details = []) {
 
 function getCommunicationDetails(communicationId) {
   const db = getDb();
+  ensureCommunicationsSchema(db);
   return db.prepare(`
     SELECT
       id,
@@ -238,6 +292,7 @@ function getCommunicationDetails(communicationId) {
 
 function getCommunicationById(id) {
   const db = getDb();
+  ensureCommunicationsSchema(db);
   const row = db.prepare(`
     ${getCommunicationBaseSelect()}
     WHERE c.id = ?
@@ -251,6 +306,7 @@ function getCommunicationById(id) {
 
 function listCommunications(options = {}) {
   const db = getDb();
+  ensureCommunicationsSchema(db);
   const conditions = [];
   const params = [];
   const requestedLimit = Number(options.limit || 0) || 0;
@@ -414,6 +470,12 @@ function normalizeCommunicationPayload(payload = {}) {
         : employerOptions)
     ),
     recipient_email: normalizeString(payload.recipient_email),
+    selected_employee_ids_json: JSON.stringify(
+      (Array.isArray(payload.selected_employee_ids) ? payload.selected_employee_ids : [])
+        .map((value) => Number(value))
+        .filter(Number.isFinite)
+    ),
+    show_compensation_in_pdf: payload.show_compensation_in_pdf !== false ? 1 : 0,
     notes: normalizeString(payload.notes),
     details: validDetails,
   };
@@ -421,6 +483,12 @@ function normalizeCommunicationPayload(payload = {}) {
 
 function saveCommunication(payload = {}) {
   const db = getDb();
+  ensureCommunicationsSchema(db);
+  const communicationColumns = db.prepare("PRAGMA table_info(communications)").all();
+  console.log(
+    'communications schema columns before save:',
+    communicationColumns.map((column) => column.name)
+  );
   const normalized = normalizeCommunicationPayload(payload);
   const overwriteExisting = !!payload.overwrite_existing;
 
@@ -460,6 +528,8 @@ function saveCommunication(payload = {}) {
             title = @title,
             employer_labels_json = @employer_labels_json,
             recipient_email = @recipient_email,
+            selected_employee_ids_json = @selected_employee_ids_json,
+            show_compensation_in_pdf = @show_compensation_in_pdf,
             notes = @notes,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = @id
@@ -472,9 +542,9 @@ function saveCommunication(payload = {}) {
     } else {
       const result = db.prepare(`
         INSERT INTO communications (
-          period_mode, period_start, period_end, month_reference, company_name, title, employer_labels_json, recipient_email, notes
+          period_mode, period_start, period_end, month_reference, company_name, title, employer_labels_json, recipient_email, selected_employee_ids_json, show_compensation_in_pdf, notes
         ) VALUES (
-          @period_mode, @period_start, @period_end, @month_reference, @company_name, @title, @employer_labels_json, @recipient_email, @notes
+          @period_mode, @period_start, @period_end, @month_reference, @company_name, @title, @employer_labels_json, @recipient_email, @selected_employee_ids_json, @show_compensation_in_pdf, @notes
         )
       `).run(input);
       communicationId = result.lastInsertRowid;
@@ -595,7 +665,12 @@ function buildCommunicationPdfHtml(communication) {
   const periodLabel = formatPeriodLabel(communication.period_start, communication.period_end);
   const createdLabel = formatDateTimeLabel(communication.created_at || communication.updated_at);
   const communicationMonth = getCommunicationMonth(communication);
-  const rowsHtml = communication.details.map((detail) => {
+  const selectedIds = Array.isArray(communication.selected_employee_ids) ? communication.selected_employee_ids : [];
+  const filteredDetails = selectedIds.length
+    ? communication.details.filter((detail) => selectedIds.includes(Number(detail.employee_id)))
+    : communication.details;
+  const showCompensationColumn = communication.show_compensation_in_pdf !== false;
+  const rowsHtml = filteredDetails.map((detail) => {
     const compensation = getDetailCompensation(detail, communicationMonth);
 
     return `
@@ -603,7 +678,7 @@ function buildCommunicationPdfHtml(communication) {
         <td>${escapeHtml(detail.employee_label)}</td>
         <td style="text-align:center;">${escapeHtml(formatDecimal(detail.giornate_primo))}</td>
         ${secondaryEmployer ? `<td style="text-align:center;">${escapeHtml(formatDecimal(detail.giornate_secondo))}</td>` : ''}
-        <td style="text-align:right; white-space:nowrap; font-weight:700;">${compensation ? escapeHtml(formatCurrency(compensation.totale)) : '&mdash;'}</td>
+        ${showCompensationColumn ? `<td style="text-align:right; white-space:nowrap; font-weight:700;">${compensation ? escapeHtml(formatCurrency(compensation.totale)) : '&mdash;'}</td>` : ''}
         <td>${escapeHtml(detail.detail_note || '')}</td>
       </tr>
     `;
@@ -631,7 +706,7 @@ function buildCommunicationPdfHtml(communication) {
             <th style="padding:10px 12px; text-align:left;">Nome dipendente</th>
             <th style="padding:10px 12px; text-align:center;">${escapeHtml(`${employerLabels[0]?.short_name || 'D1'} (${employerLabels[0]?.name || 'Datore 1'})`)}</th>
             ${secondaryEmployer ? `<th style="padding:10px 12px; text-align:center;">${escapeHtml(`${secondaryEmployer.short_name} (${secondaryEmployer.name})`)}</th>` : ''}
-            <th style="padding:10px 12px; text-align:right;">Compenso mese</th>
+            ${showCompensationColumn ? '<th style="padding:10px 12px; text-align:right;">Compenso</th>' : ''}
             <th style="padding:10px 12px; text-align:left;">Note</th>
           </tr>
         </thead>
@@ -784,8 +859,9 @@ async function openCommunicationEmail(id, options = {}) {
   }
 
   const recipient = normalizeString(options.recipient_email || communication.recipient_email) || '';
+  const monthLabel = formatMonthYearUppercase(getCommunicationMonth(communication));
   const periodLabel = formatPeriodLabel(communication.period_start, communication.period_end);
-  const subject = `Comunicazione mese ${periodLabel}`;
+  const subject = `RICHIESTA BUSTE PAGA DI ${monthLabel || String(periodLabel || '').toUpperCase()}`;
   const body = [
     `Buongiorno,`,
     ``,
@@ -838,11 +914,18 @@ async function openCommunicationEmail(id, options = {}) {
   };
 }
 
+try {
+  ensureCommunicationsSchema(getDb());
+} catch (error) {
+  console.error('communications schema init failed:', error?.message || error);
+}
+
 module.exports = {
   buildCommunicationExcelXml,
   buildCommunicationPdfHtml,
   openCommunicationEmail,
   deleteCommunication,
+  ensureCommunicationsSchema,
   getCommunicationById,
   getCommunicationFileTargets,
   listCommunications,

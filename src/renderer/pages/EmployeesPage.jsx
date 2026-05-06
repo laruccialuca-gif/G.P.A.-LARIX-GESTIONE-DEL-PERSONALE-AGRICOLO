@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import EmployeeForm from '../components/EmployeeForm';
 import TeamForm from '../components/TeamForm';
 import PdfImportModal from '../components/PdfImportModal';
@@ -561,6 +562,7 @@ function SectionAccordion({ title, subtitle, count, isOpen, onToggle, color, bg,
 
 export default function EmployeesPage() {
   const { selectedYear, getTargetYear } = useYearContext();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [employees, setEmployees] = useState([]);
   const [teams, setTeams] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -589,6 +591,7 @@ export default function EmployeesPage() {
   const [sortField, setSortField] = useState('name');
   const [sortDirection, setSortDirection] = useState('asc');
   const pdfImportOperationRef = useRef({ id: 0, cancelled: false });
+  const requestedEmployeeId = searchParams.get('employee');
 
   async function loadData() {
     setLoading(true);
@@ -612,6 +615,20 @@ export default function EmployeesPage() {
   }
 
   useEffect(() => { loadData(); }, []);
+
+  useEffect(() => {
+    if (!requestedEmployeeId || !employees.length) return;
+
+    const target = employees.find((employee) => String(employee.id) === String(requestedEmployeeId));
+    if (!target) return;
+
+    setEditing(target);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('employee');
+      return next;
+    }, { replace: true });
+  }, [requestedEmployeeId, employees, setSearchParams]);
 
   async function handleCreate(data) {
     try {
