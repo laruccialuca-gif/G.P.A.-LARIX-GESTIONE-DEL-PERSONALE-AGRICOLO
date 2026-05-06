@@ -163,3 +163,4 @@ win-unpacked/
 # sistema mac/windows
 .DS_Store
 Thumbs.db
+tmp/
