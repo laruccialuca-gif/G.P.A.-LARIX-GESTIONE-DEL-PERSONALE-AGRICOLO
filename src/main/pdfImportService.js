@@ -581,6 +581,112 @@ function findFiscalCodeInText(value = '') {
   return match?.[0] ? match[0].replace(/\s+/g, '').toUpperCase() : null;
 }
 
+function findAllFiscalCodesInText(value = '') {
+  const text = normalizeOcrText(value).toUpperCase();
+  const directPattern = /([A-Z]\s*){6}[0-9O]\s*[0-9O]\s*[A-Z]\s*[0-9O]\s*[0-9O]\s*[A-Z]\s*[0-9O]\s*[0-9O]\s*[0-9O]\s*[A-Z]/gi;
+  const matches = Array.from(text.matchAll(directPattern))
+    .map((match) => match?.[0]?.replace(/\s+/g, '').toUpperCase())
+    .filter(Boolean);
+  return [...new Set(matches)];
+}
+
+function sliceTextFromFirstLabel(text = '', labels = [], prefixPadding = 96) {
+  const normalized = normalizeOcrText(text);
+  if (!normalized) return '';
+
+  const indices = labels
+    .map((label) => normalized.toLowerCase().indexOf(String(label || '').toLowerCase()))
+    .filter((index) => index >= 0);
+
+  if (!indices.length) {
+    return normalized;
+  }
+
+  return normalized.slice(Math.max(0, Math.min(...indices) - prefixPadding));
+}
+
+function extractEmployerFiscalCode(sectionText = '') {
+  const employerWindow = sliceTextFromFirstLabel(
+    sectionText,
+    ['tipo di comunicazione', 'denominazione', 'ragione sociale', 'p.iva', 'partita iva'],
+    0
+  );
+  const labeled = extractLabeledInlineValue(
+    employerWindow,
+    ['codice fiscale', 'c.f.', 'cf'],
+    ['p.iva', 'partita iva', 'denominazione', 'ragione sociale', 'comune sede legale', 'indirizzo sede legale', 'comune sede di lavoro', 'indirizzo sede di lavoro'],
+    'fiscal_code'
+  );
+  if (labeled.value) {
+    return labeled;
+  }
+
+  const allCodes = findAllFiscalCodesInText(employerWindow);
+  return {
+    value: allCodes[0] || null,
+    source: allCodes[0] ? 'employer-text-fallback:first-fiscal-code' : '',
+  };
+}
+
+function extractWorkerFiscalCode(sectionText = '', employerTaxCode = '') {
+  const workerWindow = sliceTextFromFirstLabel(
+    sectionText,
+    ['cognome', 'nome', 'sesso', 'data nascita', 'data di nascita', 'cittadinanza'],
+    96
+  );
+  const normalizedEmployerTaxCode = String(employerTaxCode || '').trim().toUpperCase();
+  const labeled = extractLabeledInlineValue(
+    workerWindow,
+    ['codice fiscale', 'c.f.', 'cf'],
+    ['sesso', 'cognome', 'nome', 'data nascita', 'data di nascita', 'cittadinanza', 'comune nascita', 'stato nascita'],
+    'fiscal_code'
+  );
+  if (labeled.value && labeled.value !== normalizedEmployerTaxCode) {
+    return labeled;
+  }
+
+  const contextualMatch = workerWindow.match(
+    /(?:codice fiscale|c\.f\.|cf)\s*[:\-]?\s*(([A-Z]\s*){6}[0-9O]\s*[0-9O]\s*[A-Z]\s*[0-9O]\s*[0-9O]\s*[A-Z]\s*[0-9O]\s*[0-9O]\s*[0-9O]\s*[A-Z])(?=.*\b(?:sesso|cognome|nome|data(?: di)? nascita|cittadinanza)\b)/i
+  );
+  if (contextualMatch?.[1]) {
+    const contextualValue = contextualMatch[1].replace(/\s+/g, '').toUpperCase().replace(/O/g, '0');
+    if (contextualValue === normalizedEmployerTaxCode) {
+      // Keep looking: the datore fiscal code must never be reused for the worker.
+    } else {
+    return {
+      value: contextualValue,
+      source: 'worker-text-context',
+    };
+    }
+  }
+
+  const allCodes = findAllFiscalCodesInText(normalizeOcrText(sectionText));
+  const alternativeCode = allCodes.find((code) => code && code !== normalizedEmployerTaxCode) || null;
+  return {
+    value: alternativeCode,
+    source: alternativeCode
+      ? alternativeCode !== allCodes[0]
+        ? 'worker-text-fallback:first-code-different-from-employer'
+        : 'worker-text-fallback:first-fiscal-code'
+      : '',
+  };
+}
+
+function buildWorkerFiscalCodeDebug(sectionText = '', employerTaxCode = '') {
+  const normalizedSectionText = normalizeOcrText(sectionText);
+  return {
+    allFiscalCodesFound: findAllFiscalCodesInText(normalizedSectionText),
+    employerTaxCode: String(employerTaxCode || '').trim().toUpperCase(),
+    employeeTaxCodeBeforeFallback: extractWorkerFiscalCode(normalizedSectionText, '').value || null,
+    employeeTaxCodeFinal: extractWorkerFiscalCode(normalizedSectionText, employerTaxCode).value || null,
+    workerBlockExcerpt: sliceTextFromFirstLabel(
+      normalizedSectionText,
+      ['cognome', 'nome', 'sesso', 'data nascita', 'data di nascita', 'cittadinanza'],
+      96
+    ).slice(0, 320),
+  };
+}
+
 function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -932,7 +1038,8 @@ function cleanWorkerLabelArtifacts(value) {
   return sanitizeDetectedNamePart(normalized);
 }
 
-function parseWorkerSection(section2Lines = []) {
+function parseWorkerSection(section2Lines = [], options = {}) {
+  const { allowItemFallback = true, employerTaxCode = '' } = options;
   const items = linesToItems(section2Lines);
   const section2Labels = ['cognome', 'nome', 'codice fiscale', 'c.f.', 'cf', 'data nascita'];
   const sectionText = normalizeOcrText(section2Lines.map((line) => line.text).join(' '));
@@ -946,14 +1053,39 @@ function parseWorkerSection(section2Lines = []) {
     section2Labels.filter((label) => !['codice fiscale', 'c.f.', 'cf'].includes(label)),
     'fiscal_code'
   );
-  const fiscalCodeFromItems = findFiscalCodeInItems(items);
+  const fiscalCodeFromInlineText = extractWorkerFiscalCode(sectionText, employerTaxCode);
+  const fiscalCodeFromItems = allowItemFallback ? findFiscalCodeInItems(items) : { value: null, source: '', block_text: '' };
+  const normalizedEmployerTaxCode = String(employerTaxCode || '').trim().toUpperCase();
+  const itemFallbackValue =
+    fiscalCodeFromItems.value && fiscalCodeFromItems.value !== normalizedEmployerTaxCode
+      ? fiscalCodeFromItems.value
+      : null;
+  const resolvedFiscalCode =
+    fiscalCodeFromLines.value ||
+    fiscalCodeFromInlineText.value ||
+    itemFallbackValue ||
+    null;
+  const resolvedFiscalCodeSource = fiscalCodeFromLines.value
+    ? fiscalCodeFromLines.source
+    : fiscalCodeFromInlineText.value
+    ? fiscalCodeFromInlineText.source
+    : itemFallbackValue
+    ? fiscalCodeFromItems.source
+    : '';
+  const resolvedFiscalCodeBlock = fiscalCodeFromLines.value
+    ? ''
+    : fiscalCodeFromInlineText.value
+    ? sectionText
+    : itemFallbackValue
+    ? fiscalCodeFromItems.block_text
+    : '';
 
   return {
     first_name: cleanWorkerLabelArtifacts(nameField.value || findValueAt(items, 'Nome', 0.45, 1.0)),
     last_name: cleanWorkerLabelArtifacts(surnameField.value || findValueAt(items, 'Cognome', 0.1, 0.55)),
-    fiscal_code: fiscalCodeFromLines.value || fiscalCodeFromItems.value || findFiscalCodeInText(sectionText) || null,
-    fiscal_code_source: fiscalCodeFromLines.value ? fiscalCodeFromLines.source : fiscalCodeFromItems.source,
-    fiscal_code_block: fiscalCodeFromLines.value ? '' : fiscalCodeFromItems.block_text,
+    fiscal_code: resolvedFiscalCode,
+    fiscal_code_source: resolvedFiscalCodeSource,
+    fiscal_code_block: resolvedFiscalCodeBlock,
     birth_date: birthDateField.value || '',
   };
 }
@@ -1083,7 +1215,10 @@ function parseEmployerSection(section1Lines = []) {
   );
 
   const workplace = [workplaceComuneField.value, workplaceAddressField.value].filter(Boolean).join(' · ');
-  const employerTaxCode = normalizeOcrText(taxCodeField.value || inlineTaxCodeField.value).toUpperCase().match(/\b([A-Z]{6}[0-9O]{2}[A-Z][0-9O]{2}[A-Z][0-9O]{3}[A-Z])\b/i)?.[1]?.replace(/O/g, '0') || '';
+  const contextualEmployerTaxCode = extractEmployerFiscalCode(sectionText);
+  const employerTaxCode = normalizeOcrText(
+    taxCodeField.value || inlineTaxCodeField.value || contextualEmployerTaxCode.value
+  ).toUpperCase().match(/\b([A-Z]{6}[0-9O]{2}[A-Z][0-9O]{2}[A-Z][0-9O]{3}[A-Z])\b/i)?.[1]?.replace(/O/g, '0') || '';
   const employerVatNumber = normalizeOcrText(vatField.value || inlineVatField.value).match(/\b(\d{11})\b/)?.[1] || '';
   const employerName = sanitizeDetectedNamePart(nameField.value || inlineNameField.value);
   const employerLegalCity = sanitizeDetectedNamePart(legalComuneField.value || inlineLegalComuneField.value);
@@ -1706,7 +1841,13 @@ function parseSingleEmployee(block, pageIndex, documentEmployer, documentEmploye
   const section4Lines = getSectionLines(block.lines, 'section4_employment', ['section5_attuatore']);
   const workerLines = section2Lines.length ? section2Lines : block.lines;
   const employmentLines = section4Lines.length ? section4Lines : block.lines;
-  const workerInfo = parseWorkerSection(workerLines);
+  const employerTaxCode = String(documentEmployerInfo?.tax_code || '').trim().toUpperCase();
+  const workerSectionText = normalizeOcrText(workerLines.map((line) => line.text).join(' '));
+  const workerTaxDebug = buildWorkerFiscalCodeDebug(workerSectionText, employerTaxCode);
+  const workerInfo = parseWorkerSection(workerLines, {
+    allowItemFallback: !!section2Lines.length,
+    employerTaxCode,
+  });
   const employmentInfo = parseEmploymentSection(employmentLines);
   const original_text = block.original_text || normalizeOcrText(block.lines.map((line) => line.text).join(' '));
   const hired_by_detected = documentEmployer || parseDatore(linesToItems(block.lines), documentEmployerInfo);
@@ -1723,6 +1864,9 @@ function parseSingleEmployee(block, pageIndex, documentEmployer, documentEmploye
   }
 
   const fiscal_code = workerInfo.fiscal_code;
+  if (fiscal_code && employerTaxCode && fiscal_code === employerTaxCode) {
+    parserUncertainReasons.push('Codice fiscale lavoratore uguale al datore: verificare OCR');
+  }
   if (!fiscal_code) warnings.push('Codice fiscale non trovato');
 
   const last_name = workerInfo.last_name;
@@ -1751,6 +1895,11 @@ function parseSingleEmployee(block, pageIndex, documentEmployer, documentEmploye
     parse_model: block.parse_model || '',
     page_numbers: block.page_numbers || [],
     discarded_reasons: [...warnings, ...parserUncertainReasons],
+    allFiscalCodesFound: workerTaxDebug.allFiscalCodesFound,
+    employerTaxCode: workerTaxDebug.employerTaxCode,
+    employeeTaxCodeBeforeFallback: workerTaxDebug.employeeTaxCodeBeforeFallback,
+    employeeTaxCodeFinal: workerTaxDebug.employeeTaxCodeFinal,
+    workerBlockExcerpt: workerTaxDebug.workerBlockExcerpt,
   });
 
   return {
@@ -2051,6 +2200,14 @@ function checkDuplicates(records, options = {}) {
       nextStatus = 'da_correggere';
       nextAction = 'scartato';
       correctionReasons = [...correctionReasons, record.parser_uncertain_reason];
+    }
+
+    const employerTaxCode = String(record?.pdf_employer?.tax_code || '').trim().toUpperCase();
+    const employeeTaxCode = String(baseClassification.fiscal_code || '').trim().toUpperCase();
+    if (employeeTaxCode && employerTaxCode && employeeTaxCode === employerTaxCode) {
+      nextStatus = 'da_correggere';
+      nextAction = 'scartato';
+      correctionReasons = [...correctionReasons, 'Codice fiscale lavoratore uguale al datore: verificare OCR'];
     }
 
     const duplicateNamesForFiscalCode = fiscalCodeNameMap.get(String(baseClassification.fiscal_code || '').trim().toUpperCase());

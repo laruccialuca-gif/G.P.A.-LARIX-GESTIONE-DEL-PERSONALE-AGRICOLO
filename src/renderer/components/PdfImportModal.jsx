@@ -142,6 +142,7 @@ export default function PdfImportModal({
   onClose,
   onConfirm,
   records,
+  files = [],
   employerOptions = [],
   settings = null,
   filePath = '',
@@ -150,6 +151,7 @@ export default function PdfImportModal({
   importDiagnostics = null,
 }) {
   const [rows, setRows] = useState([]);
+  const [sourceFiles, setSourceFiles] = useState([]);
   const [currentDiagnostics, setCurrentDiagnostics] = useState(importDiagnostics);
   const [confirming, setConfirming] = useState(false);
   const [onlineOcrBusy, setOnlineOcrBusy] = useState(false);
@@ -167,6 +169,7 @@ export default function PdfImportModal({
 
   useEffect(() => {
     if (!open) {
+      setSourceFiles([]);
       setResults(null);
       setConfirming(false);
       setEvaluating(false);
@@ -215,15 +218,20 @@ export default function PdfImportModal({
         tipo_lavorazione: r.tipo_lavorazione || '',
         giornate_previste: r.giornate_previste || '',
         original_text: r.original_text || '',
+        pdf_employer: r.pdf_employer || null,
+        source_file_path: r.source_file_path || '',
+        source_file_name: r.source_file_name || '',
+        source_file_index: r.source_file_index ?? 0,
       }))
     );
+    setSourceFiles(Array.isArray(files) ? files : []);
     setCurrentDiagnostics(importDiagnostics);
     setEmployerResolution(initialEmployerResolution || null);
     setSelectedEmployerShortName(initialEmployerResolution?.employer_short_name || employerOptions[0]?.short_name || employerOptions[0]?.value || '');
     setEmployerAssociationMode('');
     setEmployerFeedback(null);
     setDismissEmployerMismatch(false);
-  }, [open, records, importDiagnostics]);
+  }, [open, records, files, importDiagnostics]);
 
   useEffect(() => {
     setEmployerResolution(initialEmployerResolution || null);
@@ -242,6 +250,9 @@ export default function PdfImportModal({
   const currentEmployerOptions = employerResolution?.employer_options || employerOptions;
   const selectedRows = rows.filter((row) => row.selected);
   const readyRows = rows.filter((row) => isReadyImportStatus(row.status));
+  const parsedSourceFiles = sourceFiles.filter((file) => file?.status === 'parsed');
+  const sourceFileCount = sourceFiles.length;
+  const sourceFileErrorCount = sourceFiles.filter((file) => file?.status === 'error').length;
   const selectedReadyRows = rows.filter((row) =>
     row.selected &&
     isReadyImportStatus(row.status) &&
@@ -269,7 +280,7 @@ export default function PdfImportModal({
       : 'enabled';
   const onlineOcrEnabled = !!settings?.ocr?.online_fallback_enabled;
   const onlineOcrConfigured = !!settings?.ocr?.online_configured || !!String(settings?.ocr?.ocr_space_api_key || '').trim();
-  const canRunOnlineOcr = onlineOcrEnabled && onlineOcrConfigured && !!filePath && !onlineOcrBusy;
+  const canRunOnlineOcr = onlineOcrEnabled && onlineOcrConfigured && !!filePath && parsedSourceFiles.length <= 1 && !onlineOcrBusy;
 
   useEffect(() => {
     console.info('[pdf-import] employer state debug', {
@@ -283,6 +294,42 @@ export default function PdfImportModal({
   }, [selectedEmployerShortName, pdfEmployer, employerAssociationMode, hasEmployerAssociation, selectedReadyRows.length, disabledReason]);
 
   if (!open) return null;
+
+  function buildDiagnosticsForRows(nextRows, nextFiles = sourceFiles) {
+    return {
+      ...(currentDiagnostics || {}),
+      file_count: nextFiles.length,
+      file_error_count: nextFiles.filter((file) => file?.status === 'error').length,
+      records_length: nextRows.length,
+      records_ready_count: nextRows.filter((row) => row.status === 'pronto' || row.status === 'nuovo_rapporto_datore').length,
+      records_to_fix_count: nextRows.filter((row) => row.status === 'da_correggere' || row.status === 'duplicato').length,
+    };
+  }
+
+  function removeSourceFile(targetFilePath) {
+    const nextFiles = sourceFiles.filter((file) => file.filePath !== targetFilePath);
+    const nextRows = rows.filter((row) => row.source_file_path !== targetFilePath);
+    setSourceFiles(nextFiles);
+    setExpandedTextKeys(new Set());
+    if (!nextRows.length) {
+      setRows([]);
+      setCurrentDiagnostics(buildDiagnosticsForRows([], nextFiles));
+      return;
+    }
+    setCurrentDiagnostics(buildDiagnosticsForRows(nextRows, nextFiles));
+    setRows(nextRows);
+    scheduleReevaluation(nextRows);
+  }
+
+  function clearAllSources() {
+    setSourceFiles([]);
+    setRows([]);
+    setExpandedTextKeys(new Set());
+    setCurrentDiagnostics(buildDiagnosticsForRows([], []));
+    setEmployerResolution(null);
+    setEmployerFeedback(null);
+    setDismissEmployerMismatch(true);
+  }
 
   function applyResolvedEmployer(nextResolution) {
     if (!nextResolution?.employer_short_name) return;
@@ -307,12 +354,7 @@ export default function PdfImportModal({
           rows: nextRows.map(normalizeRowForEvaluation),
           targetYear: nextRows[0]?.target_year,
         });
-        setCurrentDiagnostics((current) => current ? ({
-          ...current,
-          records_length: evaluated.length,
-          records_ready_count: evaluated.filter((row) => row.status === 'pronto' || row.status === 'nuovo_rapporto_datore').length,
-          records_to_fix_count: evaluated.filter((row) => row.status === 'da_correggere' || row.status === 'duplicato').length,
-        }) : current);
+        setCurrentDiagnostics(buildDiagnosticsForRows(evaluated));
         setRows((prev) => evaluated.map((row, index) => ({
           ...prev[index],
           ...row,
@@ -320,6 +362,10 @@ export default function PdfImportModal({
           hire_date_to: toDisplayDate(row.hire_date_to),
           hired_by_detected: prev[index]?.hired_by_detected || '',
           original_text: prev[index]?.original_text || '',
+          pdf_employer: prev[index]?.pdf_employer || null,
+          source_file_path: prev[index]?.source_file_path || '',
+          source_file_name: prev[index]?.source_file_name || '',
+          source_file_index: prev[index]?.source_file_index ?? 0,
           parser_uncertain_reason: prev[index]?.manual_corrected ? '' : (row.parser_uncertain_reason || prev[index]?.parser_uncertain_reason || ''),
           correction_reasons: prev[index]?.manual_corrected && (row.status === 'pronto' || row.status === 'nuovo_rapporto_datore') ? [] : row.correction_reasons,
           selected:
@@ -493,6 +539,10 @@ export default function PdfImportModal({
       setOnlineOcrMessage('OCR online non configurato.');
       return;
     }
+    if (parsedSourceFiles.length > 1) {
+      setOnlineOcrMessage('OCR online disponibile solo con un PDF per volta.');
+      return;
+    }
     if (!filePath) {
       setOnlineOcrMessage('PDF non disponibile per OCR online.');
       return;
@@ -557,6 +607,10 @@ export default function PdfImportModal({
           tipo_lavorazione: record.tipo_lavorazione || manualRow?.tipo_lavorazione || '',
           giornate_previste: record.giornate_previste || manualRow?.giornate_previste || '',
           original_text: record.original_text || manualRow?.original_text || '',
+          pdf_employer: record.pdf_employer || manualRow?.pdf_employer || null,
+          source_file_path: manualRow?.source_file_path || filePath || '',
+          source_file_name: manualRow?.source_file_name || sourceFiles[0]?.fileName || '',
+          source_file_index: manualRow?.source_file_index ?? 0,
         };
       });
 
@@ -568,7 +622,7 @@ export default function PdfImportModal({
       }
 
       setRows(nextRows);
-      setCurrentDiagnostics(result.importDiagnostics || null);
+      setCurrentDiagnostics(buildDiagnosticsForRows(nextRows));
       setOnlineOcrMessage(
         nextRows.length > 0
           ? `OCR online completato: ${nextRows.length} righe in preview.`
@@ -669,15 +723,23 @@ export default function PdfImportModal({
         <div className="pdf-import-content" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
           <div className="toolbar pdf-import-toolbar" style={{ marginBottom: 16, padding: '14px 18px', flexShrink: 0 }}>
             <div className="toolbar-group pdf-import-toolbar-group">
+              <span className="soft-chip" style={{ background: 'rgba(67, 56, 202, 0.12)', color: '#4338ca' }}>
+                PDF selezionati: {sourceFileCount}
+              </span>
               <span className="soft-chip" style={{ background: 'rgba(20, 33, 61, 0.06)', color: '#314762' }}>
-                {rows.length} rilevati
+                Record rilevati: {rows.length}
               </span>
               <span className="soft-chip" style={{ background: 'rgba(15, 118, 110, 0.12)', color: '#115e59' }}>
-                {readyCount} pronti · {selectedCount} selezionati
+                Pronti: {readyCount} | Selezionati: {selectedCount}
               </span>
               {correctionCount > 0 ? (
                 <span className="soft-chip" style={{ background: '#fff4db', color: '#92400e' }}>
-                  {correctionCount} da correggere
+                  Da correggere: {correctionCount}
+                </span>
+              ) : null}
+              {sourceFileErrorCount > 0 ? (
+                <span className="soft-chip" style={{ background: '#fee2e2', color: '#b91c1c' }}>
+                  PDF con errore: {sourceFileErrorCount}
                 </span>
               ) : null}
               <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
@@ -746,8 +808,59 @@ export default function PdfImportModal({
               <button type="button" className="button-secondary" style={compactButtonStyle} onClick={toggleSelectAll}>
                 {readyRows.length > 0 && readyRows.every((r) => r.selected) ? 'Deseleziona tutto' : 'Seleziona tutto'}
               </button>
+              <button type="button" className="button-secondary" style={compactButtonStyle} onClick={clearAllSources} disabled={!sourceFileCount}>
+                Svuota selezione
+              </button>
             </div>
           </div>
+
+          {sourceFiles.length ? (
+            <div className="panel panel-section" style={{ marginBottom: 16, padding: 14, display: 'grid', gap: 10, flexShrink: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: '#1f2937' }}>
+                PDF caricati
+              </div>
+              <div style={{ display: 'grid', gap: 8 }}>
+                {sourceFiles.map((file, index) => (
+                  <div
+                    key={file.filePath || `${file.fileName || 'pdf'}-${index}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                      padding: '10px 12px',
+                      borderRadius: 8,
+                      border: '1px solid rgba(20, 33, 61, 0.08)',
+                      background: file.status === 'error' ? '#fff7f7' : '#f8fafc',
+                    }}
+                  >
+                    <div style={{ display: 'grid', gap: 4 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#111827' }}>
+                        {file.fileName || file.filePath || `PDF ${index + 1}`}
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 12, color: '#52606d' }}>
+                        <span>{file.status === 'error' ? 'Errore lettura' : `${file.recordsCount || 0} record`}</span>
+                        {file.pdfEmployer?.name ? <span>Datore PDF: {file.pdfEmployer.name}</span> : null}
+                      </div>
+                      {file.error ? (
+                        <div style={{ fontSize: 12, color: '#b91c1c', lineHeight: 1.45 }}>
+                          {file.error}
+                        </div>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      style={{ ...compactButtonStyle, minHeight: 32, padding: '0 10px' }}
+                      onClick={() => removeSourceFile(file.filePath)}
+                    >
+                      Rimuovi
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {employerResolution?.status === 'mismatch' && !dismissEmployerMismatch && (
             <div className="panel panel-section" style={{ marginBottom: 16, padding: 16, display: 'grid', gap: 12, background: '#fff8e8', border: '1px solid rgba(180, 83, 9, 0.18)', flexShrink: 0 }}>
@@ -843,15 +956,16 @@ export default function PdfImportModal({
 
             <div className="table-shell pdf-import-table-shell" style={{ border: 0, borderRadius: 0, boxShadow: 'none', background: 'transparent', display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
               <div className="table-scroll pdf-import-table-scroll" style={{ flex: 1, minHeight: 0, maxHeight: 'none', overflowX: 'auto', overflowY: 'auto', paddingBottom: 12 }}>
-                <table className="table pdf-import-table" style={{ fontSize: 12, minWidth: 1280, tableLayout: 'fixed' }}>
+                <table className="table pdf-import-table" style={{ fontSize: 12, minWidth: 1460, tableLayout: 'fixed' }}>
                 <colgroup>
                   <col style={{ width: 36 }} />
                   <col style={{ width: 40 }} />
                   <col style={{ width: 115 }} />
+                  <col style={{ width: 170 }} />
                   <col style={{ width: 140 }} />
                   <col style={{ width: 120 }} />
                   <col style={{ width: 190 }} />
-                  <col style={{ width: 95 }} />
+                  <col style={{ width: 170 }} />
                   <col style={{ width: 110 }} />
                   <col style={{ width: 108 }} />
                   <col style={{ width: 108 }} />
@@ -863,6 +977,7 @@ export default function PdfImportModal({
                     <th style={thStyle}>#</th>
                     <th style={thStyle}></th>
                     <th style={thStyle}>Stato</th>
+                    <th style={thStyle}>PDF</th>
                     <th style={thStyle}>Cognome</th>
                     <th style={thStyle}>Nome</th>
                     <th style={thStyle}>Cod. Fiscale</th>
@@ -920,6 +1035,16 @@ export default function PdfImportModal({
                               </div>
                             ) : null}
                           </td>
+                          <td style={{ ...tdStyle, fontSize: 11, color: '#475467', lineHeight: 1.45 }}>
+                            <div style={{ fontWeight: 700, color: '#1f2937' }}>
+                              {row.source_file_name || '-'}
+                            </div>
+                            {row.source_file_path ? (
+                              <div style={{ marginTop: 3, color: '#667085' }}>
+                                PDF #{Number(row.source_file_index ?? 0) + 1}
+                              </div>
+                            ) : null}
+                          </td>
                           <td style={tdStyle}>
                             <EditableCell value={row.last_name} onChange={(v) => updateRow(row._key, 'last_name', v)} placeholder="Cognome" minWidth={120} />
                           </td>
@@ -941,8 +1066,15 @@ export default function PdfImportModal({
                               <div key={i} style={{ color: '#d97706', fontSize: 10, marginTop: 2, whiteSpace: 'normal', lineHeight: 1.3 }}>⚠ {w}</div>
                             ))}
                           </td>
-                          <td style={{ ...tdStyle, fontSize: 11, color: '#6b7280' }}>
-                            {row.hired_by_detected || '—'}
+                          <td style={{ ...tdStyle, fontSize: 11, color: '#6b7280', whiteSpace: 'normal', lineHeight: 1.45 }}>
+                            <div style={{ fontWeight: 700, color: '#1f2937' }}>
+                              {row.pdf_employer?.name || row.hired_by_detected || '—'}
+                            </div>
+                            {row.pdf_employer?.tax_id ? (
+                              <div style={{ marginTop: 3 }}>
+                                {row.pdf_employer.tax_id}
+                              </div>
+                            ) : null}
                           </td>
                           <td style={tdStyle}>
                             <DatoreToggle value={row.hired_by} onChange={(v) => updateRow(row._key, 'hired_by', v)} employerOptions={currentEmployerOptions} />
@@ -988,7 +1120,7 @@ export default function PdfImportModal({
                         </tr>
                         {textExpanded && row.original_text ? (
                           <tr style={{ background: '#f9fafb' }}>
-                            <td colSpan={12} style={{ padding: '8px 16px 12px 56px', fontSize: 11, color: '#52606d', lineHeight: 1.55, whiteSpace: 'pre-wrap', borderBottom: '1px solid #e5e7eb' }}>
+                            <td colSpan={13} style={{ padding: '8px 16px 12px 56px', fontSize: 11, color: '#52606d', lineHeight: 1.55, whiteSpace: 'pre-wrap', borderBottom: '1px solid #e5e7eb' }}>
                               {row.original_text}
                             </td>
                           </tr>

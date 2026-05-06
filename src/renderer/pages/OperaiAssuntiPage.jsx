@@ -118,7 +118,7 @@ export default function OperaiAssuntiPage() {
               Elenco Operai Assunti
             </div>
             <div style="margin-top:6px; font-size:13px; color:#475569;">
-              ${settings?.company?.document_header || settings?.company?.name || 'GPA versione 1'}
+              ${settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.0'}
             </div>
           </div>
 
