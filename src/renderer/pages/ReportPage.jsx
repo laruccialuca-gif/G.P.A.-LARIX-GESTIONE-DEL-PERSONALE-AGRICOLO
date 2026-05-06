@@ -177,6 +177,10 @@ function getMonthKeysInRange(start, end) {
   return keys;
 }
 
+function createLocalDraftKey(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function createEmptyAdvance() {
   return {
     amount: '',
@@ -195,6 +199,7 @@ function createEmptyTeamAdvance() {
 
 function createEmptyDebtInstallment() {
   return {
+    client_key: createLocalDraftKey('debt-installment'),
     target_month: '',
     amount: '',
     note: '',
@@ -204,6 +209,7 @@ function createEmptyDebtInstallment() {
 function createEmptyDebtPlan() {
   return {
     id: null,
+    client_key: createLocalDraftKey('debt-plan'),
     label: '',
     total_amount: '',
     created_from_month: '',
@@ -256,6 +262,7 @@ function isDebtPlanDraftEmpty(plan) {
 function normalizeDebtPlansForEditor(plans = [], fallbackMonth = '') {
   return (plans || []).map((plan) => ({
     id: plan.id,
+    client_key: plan.client_key || (plan.id ? `debt-plan-${plan.id}` : createLocalDraftKey('debt-plan')),
     label: plan.label || '',
     total_amount: String(plan.total_amount || ''),
     status: plan.status || 'active',
@@ -263,6 +270,9 @@ function normalizeDebtPlansForEditor(plans = [], fallbackMonth = '') {
     installments: (plan.installments || []).length
       ? plan.installments.map((installment) => ({
           id: installment.id,
+          client_key:
+            installment.client_key ||
+            (installment.id ? `debt-installment-${installment.id}` : createLocalDraftKey('debt-installment')),
           target_month: installment.target_month || '',
           amount: String(installment.amount || ''),
           note: installment.note || '',
@@ -1327,14 +1337,18 @@ export default function ReportPage() {
       const savedActiveDebtPlans = normalizedSavedPlans.filter((plan) => (plan.status || 'active') === 'active');
       const nextActiveDebtPlans = buildEditorDebtPlans(savedActiveDebtPlans, debtPlans, currentMonthKey);
       const nextResolvedDebtPlans = normalizedSavedPlans.filter((plan) => (plan.status || 'active') !== 'active');
+      const syncedActiveDebtPlans = options.autosave ? debtPlans : nextActiveDebtPlans;
+      const syncedResolvedDebtPlans = options.autosave ? resolvedDebtPlans : nextResolvedDebtPlans;
 
       setCurrentPayrollRecord(saved || null);
       setPayrollDocument(saved?.payroll_document || null);
       setRestoPaidDate(normalizedRestoPaidDate);
       const nextEditorAdvances = buildEditorAdvances(saved?.advances, advances);
       setAdvances(nextEditorAdvances);
-      setDebtPlans(nextActiveDebtPlans);
-      setResolvedDebtPlans(nextResolvedDebtPlans);
+      if (!options.autosave) {
+        setDebtPlans(nextActiveDebtPlans);
+        setResolvedDebtPlans(nextResolvedDebtPlans);
+      }
       if (options.autosave) {
         setIsEditUnlocked(true);
       } else {
@@ -1357,8 +1371,8 @@ export default function ReportPage() {
         currentPayrollRecord: saved || null,
         giftAmount,
         giftLabel,
-        debtPlans: nextActiveDebtPlans,
-        resolvedDebtPlans: nextResolvedDebtPlans,
+        debtPlans: syncedActiveDebtPlans,
+        resolvedDebtPlans: syncedResolvedDebtPlans,
         overtimeRateOverride,
         showOvertimePanel,
         showOvertimeInReport,
@@ -1565,18 +1579,15 @@ export default function ReportPage() {
     setDebtPlans((current) => {
       const targetPlan = current[planIndex];
       if (!targetPlan) return current;
-
-      if (targetPlan.id) {
-        setResolvedDebtPlans((resolvedCurrent) => [
-          ...resolvedCurrent,
-          {
-            ...targetPlan,
-            status: 'paid',
-          },
-        ]);
-      }
-
-      return current.filter((_, currentIndex) => currentIndex !== planIndex);
+      const nextInstallments = targetPlan.installments.filter((_, currentInstallmentIndex) => currentInstallmentIndex !== installmentIndex);
+      return current.map((plan, currentIndex) =>
+        currentIndex === planIndex
+          ? {
+              ...plan,
+              installments: nextInstallments.length ? nextInstallments : [createEmptyDebtInstallment()],
+            }
+          : plan
+      );
     });
   }
 
@@ -1598,6 +1609,7 @@ export default function ReportPage() {
             ? Number((total - baseAmount * (count - 1)).toFixed(2))
             : Number(baseAmount.toFixed(2));
           return {
+            client_key: createLocalDraftKey('debt-installment'),
             target_month: monthString(currentDate),
             amount: String(amount),
             note: '',
@@ -2703,7 +2715,7 @@ export default function ReportPage() {
               ) : (
                 <div style={{ display: 'grid', gap: 12 }}>
                   {debtPlans.map((plan, planIndex) => (
-                    <div key={`debt-plan-${plan.id || planIndex}`} style={{ display: 'grid', gap: 10, padding: 12, borderRadius: 12, border: '1px solid #e5e7eb', background: '#fff' }}>
+                    <div key={plan.client_key || `debt-plan-${plan.id || planIndex}`} style={{ display: 'grid', gap: 10, padding: 12, borderRadius: 12, border: '1px solid #e5e7eb', background: '#fff' }}>
                       <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'minmax(0, 1.2fr) 140px 140px auto', alignItems: 'end' }}>
                         <input value={plan.label} onChange={(e) => updateDebtPlan(planIndex, 'label', e.target.value)} placeholder="Nome debito / causale" />
                         <input type="number" step="0.01" min="0" value={plan.total_amount} onChange={(e) => updateDebtPlan(planIndex, 'total_amount', e.target.value)} placeholder="Totale debito" />
@@ -2720,7 +2732,7 @@ export default function ReportPage() {
 
                       <div style={{ display: 'grid', gap: 8 }}>
                         {plan.installments.map((installment, installmentIndex) => (
-                          <div key={`debt-installment-${planIndex}-${installmentIndex}`} style={{ display: 'grid', gap: 10, gridTemplateColumns: '140px 140px minmax(0, 1fr) auto', alignItems: 'center' }}>
+                          <div key={installment.client_key || `debt-installment-${planIndex}-${installmentIndex}`} style={{ display: 'grid', gap: 10, gridTemplateColumns: '140px 140px minmax(0, 1fr) auto', alignItems: 'center' }}>
                             <input type="month" value={installment.target_month} onChange={(e) => updateDebtInstallment(planIndex, installmentIndex, 'target_month', e.target.value)} />
                             <input type="number" step="0.01" min="0" value={installment.amount} onChange={(e) => updateDebtInstallment(planIndex, installmentIndex, 'amount', e.target.value)} placeholder="Importo rata" />
                             <input value={installment.note} onChange={(e) => updateDebtInstallment(planIndex, installmentIndex, 'note', e.target.value)} placeholder="Nota rata (facoltativa)" />
@@ -3257,7 +3269,6 @@ function EmployeePrintArea({
   const selectedEmployerLabel = selectedEmployer?.short_name || selectedEmployer?.value || datore || '';
   const payrollDifference = totalCalculatedPay - importoBustaPagaNum;
   const totalTrattenute = totalAdvances + currentInstallmentTotal;
-  const hasDeductions = visibleAdvances.length > 0 || currentInstallments.length > 0;
   const displayTotalHours = showOvertimeInReport
     ? employeeTotals.totalHours
     : employeeTotals.totalRegularHours;
@@ -3269,7 +3280,7 @@ function EmployeePrintArea({
     currentInstallmentTotal -
     Math.abs(Math.min(restoPrecedenteNum, 0)) -
     totalAdvances;
-  const economicRows = [
+  const creditRows = [
     {
       label: 'Retribuzione calcolata',
       detail:
@@ -3309,42 +3320,82 @@ function EmployeePrintArea({
       hidden: giftAmountNum === 0,
     },
     {
-      label: 'Acconti',
-      detail: visibleAdvances.length
-        ? `${visibleAdvances.length} registrazion${visibleAdvances.length > 1 ? 'i' : 'e'} nel mese`
-        : 'Nessun acconto',
-      value: totalAdvances > 0 ? formatCurrency(totalAdvances) : '—',
-      tone: 'negative',
-      order: 7,
-      hidden: totalAdvances <= 0,
-    },
-    {
-      label: 'Rate',
-      detail: currentInstallments.length
-        ? `${currentInstallments.length} rat${currentInstallments.length > 1 ? 'e' : 'a'} in corso`
-        : 'Nessuna rata',
-      value: currentInstallmentTotal > 0 ? formatCurrency(currentInstallmentTotal) : '—',
-      tone: 'negative',
-      order: 6,
-      hidden: currentInstallmentTotal <= 0,
-    },
-    {
-      label: restoPrecedenteNum > 0 ? 'Crediti precedenti' : 'Debiti precedenti',
+      label: 'Credito precedente',
       detail: restoPrecedenteNum !== 0 ? 'Saldo importato dal mese precedente' : 'Nessun saldo precedente',
-      value: restoPrecedenteNum > 0 ? formatCurrency(restoPrecedenteNum) : formatNegativeCurrency(restoPrecedenteNum),
-      tone: restoPrecedenteNum > 0 ? 'positive' : restoPrecedenteNum < 0 ? 'negative' : 'muted',
-      order: restoPrecedenteNum > 0 ? 3 : 8,
-      hidden: restoPrecedenteNum === 0,
-    },
-    {
-      label: 'Compenso del mese',
-      detail: 'Importo teorico da regolare nel mese corrente',
-      value: formatCurrency(compensationMonthAmount),
-      tone: compensationMonthAmount >= 0 ? 'base' : 'negative',
-      strong: true,
-      hidden: true,
+      value: restoPrecedenteNum > 0 ? formatCurrency(restoPrecedenteNum) : '—',
+      tone: 'positive',
+      order: 3,
+      hidden: restoPrecedenteNum <= 0,
     },
   ].filter((row) => !row.hidden).sort((a, b) => a.order - b.order);
+  const debitRows = [
+    {
+      label: 'Busta paga',
+      detail: payslipDaysNum
+        ? `${payslipDaysNum} giornate${hasMultipleEmployers && selectedEmployerLabel ? ` · ${selectedEmployerLabel}` : ''}`
+        : 'Non inserita',
+      value: importoBustaPagaNum > 0 ? formatCurrency(importoBustaPagaNum) : '—',
+      tone: 'negative',
+      order: 1,
+      hidden: importoBustaPagaNum <= 0,
+    },
+    ...visibleAdvances.map((advance, index) => ({
+      label: `Acconto${visibleAdvances.length > 1 ? ` ${index + 1}` : ''}`,
+      detail: advance.date ? `Data: ${formatDateLabel(advance.date)}` : 'Senza data',
+      value: formatCurrency(advance.amount),
+      tone: 'negative',
+      order: 2 + index,
+    })),
+    ...currentInstallments.map((installment, index) => ({
+      label: `Rata ${installment.installmentNumber || index + 1}`,
+      detail: `${installment.planLabel} · Residuo ${formatCurrency(installment.residualAfterCurrent)}`,
+      value: formatCurrency(installment.amount),
+      tone: 'negative',
+      order: 100 + index,
+    })),
+    {
+      label: 'Debito precedente',
+      detail: restoPrecedenteNum !== 0 ? 'Saldo importato dal mese precedente' : 'Nessun saldo precedente',
+      value: restoPrecedenteNum < 0 ? formatCurrency(Math.abs(restoPrecedenteNum)) : '—',
+      tone: 'negative',
+      order: 200,
+      hidden: restoPrecedenteNum >= 0,
+    },
+  ].filter((row) => !row.hidden).sort((a, b) => a.order - b.order);
+  const totalCredits = totalCalculatedPay + totaleTrasporto + giftAmountNum + Math.max(restoPrecedenteNum, 0);
+  const totalDebits = importoBustaPagaNum + totalAdvances + currentInstallmentTotal + Math.abs(Math.min(restoPrecedenteNum, 0));
+  const balanceFormulaLabel = (() => {
+    const positiveTerms = ['Crediti operaio'];
+    const negativeTerms = [];
+
+    if (totaleTrasporto !== 0) {
+      positiveTerms.push('trasporto');
+    }
+    if (giftAmountNum !== 0) {
+      positiveTerms.push('extra');
+    }
+    if (restoPrecedenteNum > 0) {
+      positiveTerms.push('credito precedente');
+    }
+
+    if (importoBustaPagaNum > 0) {
+      negativeTerms.push('busta paga');
+    }
+    if (totalAdvances > 0) {
+      negativeTerms.push('acconti');
+    }
+    if (currentInstallmentTotal > 0) {
+      negativeTerms.push('rate');
+    }
+    if (restoPrecedenteNum < 0) {
+      negativeTerms.push('debito precedente');
+    }
+
+    return [
+      ...positiveTerms.map((term, index) => (index === 0 ? term : `+ ${term}`)),
+      ...negativeTerms.map((term) => `− ${term}`),
+    ].join(' ');
+  })();
 
   return (
     <div className="print-area employee-print-area">
@@ -3414,9 +3465,9 @@ function EmployeePrintArea({
         </div>
 
         <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
-          <div style={rp2SectionLabelStyle}>Riepilogo economico</div>
+          <div style={rp2SectionLabelStyle}>Crediti dell'operaio</div>
           <div style={rp2EconomicTableStyle}>
-            {economicRows.map((row) => (
+            {creditRows.map((row) => (
               <div key={row.label} style={rp2EconRowStyle(row.strong)}>
                 <div style={{ minWidth: 0 }}>
                   <div style={rp2EconLabelStyle(row.strong)}>{row.label}</div>
@@ -3427,36 +3478,31 @@ function EmployeePrintArea({
                 </div>
               </div>
             ))}
+            <div style={rp2DeductionBoxStyle}>
+              <span>Totale crediti operaio</span>
+              <span>{formatCurrency(totalCredits)}</span>
+            </div>
           </div>
         </div>
 
-        {hasDeductions ? (
+        {debitRows.length ? (
           <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
-            <div style={rp2SectionLabelStyle}>Dettaglio trattenute</div>
-            {visibleAdvances.map((advance, index) => (
-              <div key={`print-adv-${index}`} style={rp2EconRowStyle()}>
+            <div style={rp2SectionLabelStyle}>Debiti / Trattenute dell'operaio</div>
+            {debitRows.map((row) => (
+              <div key={row.label + row.detail} style={rp2EconRowStyle()}>
                 <div>
-                  <div style={rp2EconLabelStyle()}>Acconto {visibleAdvances.length > 1 ? index + 1 : ''}</div>
-                  <div style={rp2EconSubStyle}>{advance.date ? `Data: ${formatDateLabel(advance.date)}` : 'Senza data'}</div>
+                  <div style={rp2EconLabelStyle()}>{row.label}</div>
+                  <div style={rp2EconSubStyle}>{row.detail}</div>
                 </div>
-                <div style={rp2EconAmountStyle('negative')}>{formatCurrency(advance.amount)}</div>
+                <div style={rp2EconAmountStyle('negative')}>
+                  - {row.value}
+                </div>
               </div>
             ))}
-            {currentInstallments.map((installment, index) => (
-              <div key={`print-inst-${index}`} style={rp2EconRowStyle()}>
-                <div>
-                  <div style={rp2EconLabelStyle()}>Rata {installment.installmentNumber}</div>
-                  <div style={rp2EconSubStyle}>{installment.planLabel} · Residuo {formatCurrency(installment.residualAfterCurrent)}</div>
-                </div>
-                <div style={rp2EconAmountStyle('negative')}>{formatCurrency(installment.amount)}</div>
-              </div>
-            ))}
-            {totalTrattenute > 0 ? (
-              <div style={rp2DeductionBoxStyle}>
-                <span>Totale trattenute</span>
-                <span>{formatCurrency(totalTrattenute)}</span>
-              </div>
-            ) : null}
+            <div style={rp2DeductionBoxStyle}>
+              <span>Totale debiti / trattenute</span>
+              <span>- {formatCurrency(totalDebits)}</span>
+            </div>
           </div>
         ) : null}
 
@@ -3466,7 +3512,7 @@ function EmployeePrintArea({
             <div style={rp2ResultFormulaStyle}>
               {differenzaFinale > 0 && restoPaid && restoPaidDate
                 ? `Pagato il ${formatDateLabel(restoPaidDate)}`
-                : 'Retribuzione − busta paga + saldo precedente + trasporto + extra − acconti − rate'}
+                : balanceFormulaLabel}
             </div>
           </div>
           <div style={rp2ResultValueStyle(differenzaFinale)}>
@@ -4402,7 +4448,7 @@ const employeeMiniMetricCardStyle = {
 const employeePrintSheetStyle = {
   ...printCardStyle,
   width: '100%',
-  maxWidth: 620,
+  maxWidth: 540,
   padding: '28px 28px 22px',
   borderRadius: 22,
   border: '1px solid rgba(31, 41, 55, 0.1)',

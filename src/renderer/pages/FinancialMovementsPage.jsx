@@ -380,63 +380,59 @@ export default function FinancialMovementsPage() {
         </label>
       </div>
 
-      <div className="panel" style={{ overflow: 'hidden' }}>
+      <div className="panel" style={historyPanelStyle}>
         <div style={tableHeaderStyle}>
           <div style={sectionTitleStyle}>Storico movimenti</div>
           <div style={hintStyle}>{loading ? 'Caricamento...' : `${movements.length} movimenti`}</div>
         </div>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th>Data</th>
-                <th>Tipo</th>
-                <th>Dipendente / Squadra</th>
-                <th>Datore</th>
-                <th>Importo</th>
-                <th>Stato</th>
-                <th>Note</th>
-                <th>Azioni</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div style={historyTableViewportStyle}>
+          <div style={historyTableStyle}>
+            <div className="financial-movements-grid-header" style={historyTableHeadStyle}>
+              <div style={historyHeadCellStyle}>Data</div>
+              <div style={historyHeadCellStyle}>Tipo</div>
+              <div style={historyHeadCellStyle}>Dipendente / Squadra</div>
+              <div style={historyHeadCellStyle}>Datore</div>
+              <div style={{ ...historyHeadCellStyle, textAlign: 'right' }}>Importo</div>
+              <div style={historyHeadCellStyle}>Stato</div>
+              <div style={historyHeadCellStyle}>Note</div>
+              <div style={historyHeadCellStyle}>Azioni</div>
+            </div>
+
+            <div style={historyTableBodyStyle}>
               {movements.map((movement) => (
-                <tr key={movement.id}>
-                  <td>{formatDateLabel(movement.movement_date)}</td>
-                  <td>{movementTypeLabel(movement.type)}</td>
-                  <td>
+                <div key={movement.id} className="financial-movements-grid-row" style={historyRowStyle}>
+                  <div style={historyDateCellStyle}>{formatDateLabel(movement.movement_date)}</div>
+                  <div style={historyTypeCellStyle}>{movementTypeLabel(movement.type)}</div>
+                  <div style={historyPersonCellStyle}>
                     <strong>{movement.employee_name}</strong>
                     {movement.team_name ? <div style={mutedStyle}>{movement.team_name}</div> : null}
-                  </td>
-                  <td>{movement.employer_key || '-'}</td>
-                  <td style={{ fontWeight: 800 }}>{formatCurrency(movement.amount)}</td>
-                  <td>
+                  </div>
+                  <div style={historyEmployerCellStyle}>{movement.employer_key || '—'}</div>
+                  <div style={historyAmountCellStyle}>{formatCurrency(movement.amount)}</div>
+                  <div>
                     <span style={statusBadgeStyle(movement.status)}>
                       {statusLabel(movement.status)}
                     </span>
-                  </td>
-                  <td>{movement.notes || '-'}</td>
-                  <td>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button type="button" className="button-secondary" onClick={() => editMovement(movement)}>
-                        Modifica
-                      </button>
-                      <button type="button" className="button-danger" onClick={() => deleteMovement(movement.id)}>
-                        Elimina
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+                  </div>
+                  <div style={historyNotesCellStyle(movement.notes)}>{movement.notes || '—'}</div>
+                  <div style={historyActionsCellStyle}>
+                    <button type="button" className="button-secondary" style={historyActionButtonStyle} onClick={() => editMovement(movement)}>
+                      Modifica
+                    </button>
+                    <button type="button" className="button-danger" style={historyActionButtonStyle} onClick={() => deleteMovement(movement.id)}>
+                      Elimina
+                    </button>
+                  </div>
+                </div>
               ))}
+
               {!movements.length ? (
-                <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: 24, color: '#667085' }}>
-                    Nessun movimento trovato.
-                  </td>
-                </tr>
+                <div style={historyEmptyStateStyle}>
+                  Nessun movimento trovato.
+                </div>
               ) : null}
-            </tbody>
-          </table>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -470,7 +466,7 @@ const filterPanelStyle = {
   display: 'grid',
   gap: 12,
   gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-  padding: 14,
+  padding: '12px 14px',
   borderRadius: 12,
   border: '1px solid rgba(31, 41, 55, 0.08)',
   background: 'rgba(248, 250, 252, 0.95)',
@@ -513,12 +509,8 @@ const tableHeaderStyle = {
   justifyContent: 'space-between',
   gap: 12,
   alignItems: 'center',
-  marginBottom: 12,
-};
-
-const tableStyle = {
-  width: '100%',
-  borderCollapse: 'collapse',
+  marginTop: 24,
+  marginBottom: 10,
 };
 
 const mutedStyle = {
@@ -527,13 +519,128 @@ const mutedStyle = {
   marginTop: 2,
 };
 
+const historyGridTemplate = '120px 110px minmax(220px, 1.6fr) 90px 130px 110px minmax(120px, 1fr) 180px';
+
+const historyPanelStyle = {
+  overflow: 'hidden',
+  width: '100%',
+};
+
+const historyTableViewportStyle = {
+  overflowX: 'auto',
+  width: '100%',
+};
+
+const historyTableStyle = {
+  minWidth: 1050,
+  width: '100%',
+};
+
+const historyTableHeadStyle = {
+  display: 'grid',
+  gridTemplateColumns: historyGridTemplate,
+  alignItems: 'center',
+  columnGap: 16,
+  padding: '14px 18px',
+  borderBottom: '1px solid rgba(31, 41, 55, 0.08)',
+};
+
+const historyHeadCellStyle = {
+  fontSize: 11,
+  fontWeight: 800,
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
+  color: '#344054',
+};
+
+const historyTableBodyStyle = {
+  display: 'grid',
+  gap: 10,
+  paddingTop: 12,
+};
+
+const historyRowStyle = {
+  display: 'grid',
+  gridTemplateColumns: historyGridTemplate,
+  alignItems: 'center',
+  columnGap: 16,
+  minHeight: 64,
+  padding: '14px 18px',
+  borderBottom: '1px solid rgba(31, 41, 55, 0.08)',
+  background: 'rgba(255, 255, 255, 0.96)',
+};
+
+const historyDateCellStyle = {
+  fontSize: 13,
+  fontWeight: 700,
+  color: '#111827',
+};
+
+const historyTypeCellStyle = {
+  fontSize: 13,
+  fontWeight: 700,
+  color: '#1f2937',
+};
+
+const historyPersonCellStyle = {
+  minWidth: 0,
+  display: 'grid',
+  gap: 2,
+  lineHeight: 1.35,
+};
+
+const historyEmployerCellStyle = {
+  fontSize: 13,
+  fontWeight: 700,
+  color: '#1f2937',
+};
+
+const historyAmountCellStyle = {
+  fontSize: 16,
+  fontWeight: 900,
+  textAlign: 'right',
+  color: '#111827',
+  whiteSpace: 'nowrap',
+};
+
+const historyNotesCellStyle = (notes) => ({
+  minWidth: 0,
+  fontSize: 13,
+  color: notes ? '#1f2937' : 'rgba(31, 41, 55, 0.45)',
+  lineHeight: 1.4,
+  overflowWrap: 'anywhere',
+  textAlign: notes ? 'left' : 'center',
+});
+
+const historyActionsCellStyle = {
+  display: 'flex',
+  gap: 10,
+  alignItems: 'center',
+  justifyContent: 'flex-end',
+  minWidth: 0,
+};
+
+const historyActionButtonStyle = {
+  minHeight: 36,
+  padding: '0 12px',
+  fontSize: 12,
+};
+
+const historyEmptyStateStyle = {
+  padding: '28px 18px',
+  border: '1px dashed rgba(31, 41, 55, 0.14)',
+  textAlign: 'center',
+  color: '#667085',
+  background: 'rgba(248, 250, 252, 0.7)',
+};
+
 const statusBadgeStyle = (status) => ({
   display: 'inline-flex',
   alignItems: 'center',
-  padding: '4px 8px',
+  padding: '6px 12px',
   borderRadius: 999,
   fontSize: 11,
   fontWeight: 800,
-  color: status === 'inserted' ? '#166534' : '#92400e',
-  background: status === 'inserted' ? '#dcfce7' : '#fef3c7',
+  color: status === 'inserted' ? '#14532d' : '#9a3412',
+  background: status === 'inserted' ? '#bbf7d0' : '#fed7aa',
 });

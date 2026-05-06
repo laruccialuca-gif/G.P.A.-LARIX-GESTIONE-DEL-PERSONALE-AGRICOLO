@@ -45,17 +45,38 @@ function AttendanceIcon() {
   );
 }
 
+function MoneyIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3.75" y="6.25" width="16.5" height="11.5" rx="2.25" />
+      <path d="M7 12h.01" />
+      <path d="M17 12h.01" />
+      <circle cx="12" cy="12" r="2.65" />
+    </svg>
+  );
+}
+
 const links = [
-  { path: '/', label: 'Dashboard', icon: 'DB' },
+  { path: '/', label: 'Dashboard', icon: '◫' },
   { path: '/dipendenti', label: 'Dipendenti', icon: <PersonIcon /> },
   { path: '/presenze', label: 'Presenze', icon: <AttendanceIcon /> },
-  { path: '/report', label: 'Report', icon: 'RP' },
-  { path: '/acconti-rate', label: 'Acconti e Rate', icon: 'EUR' },
-  { path: '/buste-paga', label: 'Buste paga', icon: 'BP' },
-  { path: '/comunicazione', label: 'Comunicazione', icon: '@' },
-  { path: '/storico-operaio', label: 'Storico', icon: 'ST' },
-  { path: '/operai-assunti', label: 'Operai assunti', icon: 'OA' },
-  { path: '/impostazioni', label: 'Impostazioni', icon: 'IM' },
+  { path: '/report', label: 'Report', icon: '◪' },
+  { path: '/acconti-rate', label: 'Acconti e Rate', icon: <MoneyIcon /> },
+  { path: '/buste-paga', label: 'Buste paga', icon: '▤' },
+  { path: '/comunicazione', label: 'Comunicazione', icon: '✉' },
+  { path: '/storico-operaio', label: 'Storico', icon: '◎' },
+  { path: '/operai-assunti', label: 'Operai assunti', icon: '▣' },
+  { path: '/impostazioni', label: 'Impostazioni', icon: '⚙' },
 ];
 
 export default function Sidebar() {
@@ -94,7 +115,7 @@ export default function Sidebar() {
               <span className="sidebar-link-icon">{link.icon}</span>
               {link.label}
             </span>
-            <span>{'>'}</span>
+            <span>{'›'}</span>
           </Link>
         ))}
       </nav>
