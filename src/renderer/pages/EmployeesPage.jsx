@@ -916,6 +916,7 @@ export default function EmployeesPage() {
   async function handleConfirmPdfImport(rows) {
     const res = await window.api.employees.confirmPdfImport({
       filePath: pdfImportData.filePath,
+      filePaths: pdfImportData.filePaths || [],
       rows,
     });
     await loadData();
@@ -1619,6 +1620,7 @@ export default function EmployeesPage() {
           onClose={handleClosePdfImport}
           onConfirm={handleConfirmPdfImport}
           records={pdfImportData?.records || []}
+          files={pdfImportData?.files || []}
           employerOptions={settings?.employer_options || []}
           settings={settings}
           filePath={pdfImportData?.filePath || ''}

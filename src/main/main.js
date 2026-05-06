@@ -12,8 +12,8 @@ if (!app || typeof app.whenReady !== 'function') {
 
 const variantConfig = getVariantConfig();
 const APP_ERROR_TITLE = variantConfig.variant === 'demo'
-  ? 'Errore avvio GPA versione 1 demo'
-  : 'Errore avvio Gestionale';
+  ? 'Errore avvio GPA 1.0.0 Demo'
+  : 'Errore avvio GPA 1.0.0';
 const TRANSIENT_DEMO_PATHS = [
   'Cache',
   'Code Cache',
@@ -771,7 +771,7 @@ function buildPdfHtml(contentHtml, landscape = false) {
           padding: 6mm 8mm 5mm !important;
           border-radius: 8px !important;
           box-shadow: none !important;
-          border: 1px solid rgba(31,41,55,0.08) !important;
+          border: 2px solid #111827 !important;
           overflow: visible !important;
           page-break-after: avoid !important;
           break-after: avoid !important;
@@ -796,6 +796,11 @@ function buildPdfHtml(contentHtml, landscape = false) {
           font-size: 11px !important;
           margin-top: 2px !important;
         }
+        .employee-print-sheet > div:first-child > div:first-child > div:nth-child(3) {
+          font-size: 14px !important;
+          margin-top: 4px !important;
+          font-weight: 900 !important;
+        }
         .employee-print-sheet > div:first-child > div:last-child {
           font-size: 11px !important;
           padding: 5px 10px !important;
@@ -819,7 +824,7 @@ function buildPdfHtml(contentHtml, landscape = false) {
           letter-spacing: 0.04em !important;
         }
         .employee-print-sheet > div:nth-child(2) > div > div:nth-child(2) {
-          font-size: 16px !important;
+          font-size: 18px !important;
           line-height: 1 !important;
           white-space: nowrap !important;
         }
@@ -923,7 +928,10 @@ function buildPdfHtml(contentHtml, landscape = false) {
         .employee-print-sheet [style*="font-size: 13px"][style*="font-weight: 800"][style*="white-space: nowrap"] {
           font-size: 11px !important;
         }
-        .employee-print-sheet [style*="font-size: 15px"][style*="font-weight: 800"][style*="white-space: nowrap"] {
+        .employee-print-sheet [style*="font-size: 20px"][style*="font-weight: 900"][style*="white-space: nowrap"] {
+          font-size: 14px !important;
+        }
+        .employee-print-sheet [style*="font-size: 14px"][style*="font-weight: 900"] {
           font-size: 12px !important;
         }
 
@@ -937,8 +945,8 @@ function buildPdfHtml(contentHtml, landscape = false) {
           font-size: 11px !important;
           margin-bottom: 1px !important;
         }
-        .employee-print-sheet [style*="font-size: 28px"][style*="font-weight: 900"] {
-          font-size: 19px !important;
+        .employee-print-sheet [style*="font-size: 34px"][style*="font-weight: 900"] {
+          font-size: 22px !important;
           line-height: 1 !important;
         }
 
@@ -963,6 +971,95 @@ function buildPdfHtml(contentHtml, landscape = false) {
           display: grid;
           grid-template-columns: 1fr;
           gap: 6px;
+        }
+
+        /* Keep generated PDF aligned with the on-screen preview component */
+        .employee-print-sheet {
+          padding: 28px 28px 22px !important;
+          border-radius: 10px !important;
+          border: 2px solid #111827 !important;
+        }
+        .employee-print-sheet > div:first-child {
+          margin-bottom: 16px !important;
+          gap: 16px !important;
+          align-items: flex-start !important;
+        }
+        .employee-print-sheet > div:first-child > div:first-child > div:first-child {
+          font-size: 30px !important;
+          line-height: 1.02 !important;
+          font-weight: 900 !important;
+        }
+        .employee-print-sheet > div:first-child > div:first-child > div:nth-child(2) {
+          font-size: 15px !important;
+          line-height: 1 !important;
+          margin-top: 0 !important;
+          font-weight: 900 !important;
+        }
+        .employee-print-sheet > div:first-child > div:first-child > div:nth-child(3) {
+          font-size: 11.5px !important;
+          margin-top: 1px !important;
+          font-weight: 400 !important;
+        }
+        .employee-print-sheet > div:first-child > div:last-child {
+          font-size: 11px !important;
+          padding: 8px 14px !important;
+          white-space: nowrap !important;
+          text-transform: uppercase !important;
+        }
+        .employee-print-sheet > div:nth-child(2) {
+          gap: 12px !important;
+          margin-bottom: 14px !important;
+        }
+        .employee-print-sheet > div:nth-child(2) > div {
+          padding: 14px 16px !important;
+          border-radius: 10px !important;
+        }
+        .employee-print-sheet > div:nth-child(2) > div > div:first-child {
+          font-size: 11px !important;
+          margin-bottom: 6px !important;
+        }
+        .employee-print-sheet > div:nth-child(2) > div > div:nth-child(2) {
+          font-size: 24px !important;
+          line-height: 1.1 !important;
+        }
+        .employee-print-sheet > div:nth-child(2) > div > div:nth-child(3) {
+          font-size: 11px !important;
+          margin-top: 6px !important;
+        }
+        .employee-print-sheet > div:nth-child(3) {
+          gap: 10px !important;
+          margin-bottom: 6px !important;
+          flex-wrap: wrap !important;
+        }
+        .employee-print-sheet > div:nth-child(3) > div {
+          padding: 8px 12px !important;
+          font-size: 12px !important;
+          gap: 8px !important;
+        }
+        .employee-print-sheet .employee-print-section,
+        .employee-print-sheet .print-block {
+          margin-top: 16px !important;
+          padding: 18px !important;
+          border-radius: 10px !important;
+        }
+        .employee-print-sheet [style*="grid-template-columns: repeat(7"] {
+          gap: 6px !important;
+        }
+        .employee-print-sheet [style*="grid-template-rows: auto auto minmax(14px, auto) minmax(10px, auto)"] {
+          padding: 6px 5px 5px !important;
+          min-height: 88px !important;
+          gap: 3px !important;
+        }
+        .employee-print-sheet [style*="width: 28px"][style*="height: 28px"] {
+          width: 28px !important;
+          height: 28px !important;
+          font-size: 12px !important;
+        }
+        .employee-print-sheet [style*="display: flex"][style*="padding-top: 10px"] {
+          margin-top: 14px !important;
+          padding-top: 10px !important;
+          gap: 18px !important;
+          font-size: 10.5px !important;
         }
 
         table {
@@ -997,74 +1094,17 @@ function buildPdfHtml(contentHtml, landscape = false) {
 async function normalizeEmployeeReportPrintWindow(printWindow) {
   await printWindow.webContents.executeJavaScript(`
     (() => {
-      const isEmptyAmount = (value) => {
-        const text = String(value || '').trim();
-        return !text || text === '-' || text === '—' || text === 'â€”';
-      };
-      const normalizeAmount = (value, negative = false) => {
-        const text = String(value || '').trim();
-        if (!negative || isEmptyAmount(text) || text.startsWith('-')) return text;
-        return '- ' + text;
-      };
-
       document.querySelectorAll('.employee-print-sheet, .employee-print-sheet *').forEach((node) => {
         if (node.style) node.style.color = '#111827';
       });
 
-      document.querySelectorAll('.employee-print-sheet [style*="justify-items: center"]').forEach((cell) => {
-        const children = Array.from(cell.children);
-        const indicator = children.find((child) => child.textContent.trim() === 'X');
-        if (indicator) {
-          children.slice(children.indexOf(indicator) + 1).forEach((child) => {
-            if (!/straord/i.test(child.textContent)) child.remove();
-          });
-          return;
-        }
-
-        const detail = children.find((child) => ['Riposo', 'Domenica'].includes(child.textContent.trim()));
-        if (detail) {
-          children.slice(children.indexOf(detail) + 1).forEach((child) => {
-            if (['Riposo', 'Domenica', ''].includes(child.textContent.trim())) child.remove();
-          });
+      const blockedDemoLabels = new Set(['Gestionale Demo', 'GPA 1.0.0 Demo']);
+      document.querySelectorAll('.employee-print-sheet span, .employee-print-sheet div').forEach((node) => {
+        if (blockedDemoLabels.has(node.textContent.trim())) {
+          node.remove();
         }
       });
 
-      const sections = Array.from(document.querySelectorAll('.employee-print-section'));
-      const economicSection = sections.find((section) => /Riepilogo economico/i.test(section.textContent));
-      const table = economicSection?.children?.[1];
-      if (!table) return;
-
-      const orderedRows = [];
-      Array.from(table.children).forEach((row) => {
-        const labelNode = row.querySelector('div div:first-child');
-        const amountNode = row.lastElementChild;
-        const label = labelNode?.textContent.trim() || '';
-        const detail = labelNode?.nextElementSibling?.textContent.trim() || '';
-        const amount = amountNode?.textContent.trim() || '';
-        let order = null;
-        let hidden = false;
-        let negative = false;
-
-        if (/Retribuzione/i.test(label)) order = 1;
-        else if (/Trasporto/i.test(label)) { order = 2; hidden = isEmptyAmount(amount) || /Non incluso/i.test(detail); }
-        else if (/Crediti/i.test(label)) { order = 3; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); }
-        else if (/Regalo|Extra/i.test(label)) { order = 4; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); }
-        else if (/Busta paga/i.test(label)) { order = 5; hidden = isEmptyAmount(amount) || /Non inserita/i.test(detail); negative = true; }
-        else if (/Rate/i.test(label)) { order = 6; hidden = isEmptyAmount(amount) || /Nessuna/i.test(detail); negative = true; }
-        else if (/Acconti/i.test(label)) { order = 7; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); negative = true; }
-        else if (/Debiti|debiti precedenti/i.test(label)) { order = 8; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); negative = true; }
-        else if (/Compenso del mese/i.test(label)) hidden = true;
-        else hidden = true;
-
-        if (!hidden && order !== null) {
-          if (negative && amountNode) amountNode.textContent = normalizeAmount(amount, true);
-          orderedRows.push({ order, row });
-        } else {
-          row.remove();
-        }
-      });
-
-      orderedRows.sort((a, b) => a.order - b.order).forEach(({ row }) => table.appendChild(row));
     })();
   `);
 }
@@ -1732,9 +1772,10 @@ app.whenReady().then(async () => {
         const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
           title: 'Seleziona PDF assunzioni',
           filters: [{ name: 'PDF', extensions: ['pdf'] }],
-          properties: ['openFile'],
+          properties: ['openFile', 'multiSelections'],
         });
-        if (canceled || !filePaths[0]) {
+        const normalizedFilePaths = Array.from(new Set((filePaths || []).filter(Boolean)));
+        if (canceled || !normalizedFilePaths.length) {
           logMainProcessEvent('employees:pdf-import:cancelled', {
             job_id: operationJobId,
             stage: 'file_dialog',
@@ -1758,149 +1799,182 @@ app.whenReady().then(async () => {
           status: 'running',
           step: 'file_read',
           percent: 12,
-          message: `Lettura file: ${path.basename(filePaths[0])}`,
-          file_path: filePaths[0],
+          message: normalizedFilePaths.length === 1
+            ? `Lettura file: ${path.basename(normalizedFilePaths[0])}`
+            : `Lettura ${normalizedFilePaths.length} PDF selezionati`,
+          file_path: normalizedFilePaths[0],
         });
+        const parsedFiles = [];
+        const mergedRecords = [];
 
-        let records;
-        try {
-          records = await pdfImportService.parsePdfAssunzioniWithProgress(filePaths[0], {
-            onProgress: progress,
-            signal,
+        for (let fileIndex = 0; fileIndex < normalizedFilePaths.length; fileIndex += 1) {
+          const currentFilePath = normalizedFilePaths[fileIndex];
+          const currentFileName = path.basename(currentFilePath);
+          progress({
+            status: 'running',
+            step: 'file_read',
+            percent: 12 + Math.round((fileIndex / Math.max(1, normalizedFilePaths.length)) * 52),
+            message: `Analisi PDF ${fileIndex + 1} di ${normalizedFilePaths.length}: ${currentFileName}`,
+            file_path: currentFilePath,
           });
-        } catch (error) {
+
+          let records;
+          let parseDiagnostics = {};
+          try {
+            records = await pdfImportService.parsePdfAssunzioniWithProgress(currentFilePath, {
+              onProgress: progress,
+              signal,
+            });
+          } catch (error) {
+            logMainProcessEvent('employees:pdf-import:parse-result', {
+              job_id: operationJobId,
+              file_path: currentFilePath,
+              error_code: error?.code || '',
+              detected_model: error?.detected_model || '',
+              records_length: 0,
+              text_length: error?.text_length || 0,
+              ocr_attempted: !!error?.ocr_attempted,
+              ocr_available: !!error?.ocr_available,
+              ocr_enabled: !!error?.ocr_enabled,
+              ocr_error: error?.ocr_error || error?.message || String(error),
+              ocr_text_length: error?.ocr_text_length || 0,
+              fallback_used: !!error?.fallback_used,
+              reason: error?.reason || '',
+              tessdata_path: error?.tessdataPath || '',
+              tessdata_source: error?.tessdata_source || '',
+            });
+            if (pdfImportService.isAbortError(error) || signal.aborted) {
+              logMainProcessEvent('employees:pdf-import:cancelled', {
+                job_id: operationJobId,
+                stage: 'parse_or_ocr',
+              });
+              return { canceled: true };
+            }
+            const canTryOnlineAfterLocalFailure = [
+              'OCR_REQUIRED',
+              'OCR_UNAVAILABLE',
+              'OCR_NO_RECORDS',
+            ].includes(error?.code) || String(error?.message || '').includes('OCR');
+            if (canTryOnlineAfterLocalFailure) {
+              const currentSettings = settingsService.getSettings();
+              if (currentSettings?.ocr?.online_fallback_enabled) {
+                const onlineParse = await parseWithOcrSpaceFallback(currentFilePath, currentSettings, operationJobId);
+                if (onlineParse?.records?.length > 0) {
+                  records = onlineParse.records;
+                  parseDiagnostics = onlineParse.diagnostics || {};
+                }
+              }
+            }
+            if (!Array.isArray(records)) {
+              parsedFiles.push({
+                filePath: currentFilePath,
+                fileName: currentFileName,
+                status: 'error',
+                error: error?.message || String(error),
+                recordsCount: 0,
+                pdfEmployer: null,
+                employerResolution: null,
+                importDiagnostics: {
+                  ...parseDiagnostics,
+                  detected_model: parseDiagnostics.detected_model || error?.detected_model || '',
+                  records_length: 0,
+                },
+              });
+              continue;
+            }
+          }
+
+          parseDiagnostics = records?.importDiagnostics || parseDiagnostics || {};
           logMainProcessEvent('employees:pdf-import:parse-result', {
             job_id: operationJobId,
-            error_code: error?.code || '',
-            detected_model: error?.detected_model || '',
-            records_length: 0,
-            text_length: error?.text_length || 0,
-            ocr_attempted: !!error?.ocr_attempted,
-            ocr_available: !!error?.ocr_available,
-            ocr_enabled: !!error?.ocr_enabled,
-            ocr_error: error?.ocr_error || error?.message || String(error),
-            ocr_text_length: error?.ocr_text_length || 0,
-            fallback_used: !!error?.fallback_used,
-            reason: error?.reason || '',
-            tessdata_path: error?.tessdataPath || '',
-            tessdata_source: error?.tessdata_source || '',
+            file_path: currentFilePath,
+            detected_model: parseDiagnostics.detected_model || '',
+            records_length: Array.isArray(records) ? records.length : 0,
+            text_length: parseDiagnostics.text_length || 0,
+            ocr_attempted: !!parseDiagnostics.ocr_attempted,
+            ocr_available: !!parseDiagnostics.ocr_available,
+            ocr_enabled: !!parseDiagnostics.ocr_enabled,
+            ocr_error: parseDiagnostics.ocr_error || '',
+            ocr_text_length: parseDiagnostics.ocr_text_length || 0,
+            fallback_used: !!parseDiagnostics.fallback_used,
+            reason: parseDiagnostics.reason || '',
+            tessdata_path: parseDiagnostics.tessdata_path || '',
+            tessdata_source: parseDiagnostics.tessdata_source || '',
           });
-          if (pdfImportService.isAbortError(error) || signal.aborted) {
-            logMainProcessEvent('employees:pdf-import:cancelled', {
+          if (shouldOfferOnlineOcrFallback(records, parseDiagnostics)) {
+            const currentSettings = settingsService.getSettings();
+            if (currentSettings?.ocr?.online_fallback_enabled) {
+              const localRecordCount = Array.isArray(records) ? records.length : 0;
+              try {
+                const onlineParse = await parseWithOcrSpaceFallback(currentFilePath, currentSettings, operationJobId);
+                if (onlineParse) {
+                  if (onlineParse.records.length > localRecordCount) {
+                    records = onlineParse.records;
+                    parseDiagnostics = onlineParse.diagnostics;
+                  }
+                }
+              } catch (error) {
+                parseDiagnostics = {
+                  ...parseDiagnostics,
+                  fallback_used: true,
+                  ocr_online_error: error?.message || String(error),
+                };
+              }
+            }
+          }
+          if (signal.aborted) {
+            logMainProcessEvent('employees:pdf-import:ignored-after-cancel', {
               job_id: operationJobId,
-              stage: 'parse_or_ocr',
+              stage: 'after_parse',
+              record_count: Array.isArray(records) ? records.length : 0,
             });
             return { canceled: true };
           }
-          const canTryOnlineAfterLocalFailure = [
-            'OCR_REQUIRED',
-            'OCR_UNAVAILABLE',
-            'OCR_NO_RECORDS',
-          ].includes(error?.code) || String(error?.message || '').includes('OCR');
-          if (canTryOnlineAfterLocalFailure) {
-            const currentSettings = settingsService.getSettings();
-            if (currentSettings?.ocr?.online_fallback_enabled) {
-              const onlineParse = await parseWithOcrSpaceFallback(filePaths[0], currentSettings, operationJobId);
-              if (onlineParse?.records?.length > 0) {
-                records = onlineParse.records;
-              } else if (onlineParse) {
-                const onlineError = new Error(
-                  onlineParse.text_length > 0
-                    ? 'OCR online eseguito ma nessun lavoratore riconosciuto.'
-                    : 'OCR online completato ma non ha restituito testo leggibile.'
-                );
-                onlineError.code = 'OCR_NO_RECORDS';
-                throw onlineError;
-              }
-            }
-          }
-          if (!Array.isArray(records)) {
-            if (error?.code === 'OCR_REQUIRED' || String(error?.message || '').includes('PDF scansionato')) {
-              const readableError = new Error(
-                error?.message || 'PDF scansionato: per leggerlo serve OCR. Installa/abilita dati OCR oppure inserisci manualmente.'
-              );
-              readableError.code = 'OCR_REQUIRED';
-              throw readableError;
-            }
-            if (error?.code === 'OCR_UNAVAILABLE' || String(error?.message || '').includes('OCR non disponibile')) {
-              throw new Error('OCR non disponibile su questo sistema');
-            }
-            throw new Error(`PDF non leggibile o parsing fallito. ${error?.message || error}`);
-          }
-        }
-        let parseDiagnostics = records?.importDiagnostics || {};
-        logMainProcessEvent('employees:pdf-import:parse-result', {
-          job_id: operationJobId,
-          detected_model: parseDiagnostics.detected_model || '',
-          records_length: Array.isArray(records) ? records.length : 0,
-          text_length: parseDiagnostics.text_length || 0,
-          ocr_attempted: !!parseDiagnostics.ocr_attempted,
-          ocr_available: !!parseDiagnostics.ocr_available,
-          ocr_enabled: !!parseDiagnostics.ocr_enabled,
-          ocr_error: parseDiagnostics.ocr_error || '',
-          ocr_text_length: parseDiagnostics.ocr_text_length || 0,
-          fallback_used: !!parseDiagnostics.fallback_used,
-          reason: parseDiagnostics.reason || '',
-          tessdata_path: parseDiagnostics.tessdata_path || '',
-          tessdata_source: parseDiagnostics.tessdata_source || '',
-        });
-        if (shouldOfferOnlineOcrFallback(records, parseDiagnostics)) {
-          const currentSettings = settingsService.getSettings();
-          if (currentSettings?.ocr?.online_fallback_enabled) {
-            const localRecordCount = Array.isArray(records) ? records.length : 0;
-            try {
-              const onlineParse = await parseWithOcrSpaceFallback(filePaths[0], currentSettings, operationJobId);
-              if (onlineParse) {
-                if (onlineParse.records.length > localRecordCount) {
-                  records = onlineParse.records;
-                  parseDiagnostics = onlineParse.diagnostics;
-                } else if (!Array.isArray(records) || records.length === 0) {
-                  const onlineError = new Error(
-                    onlineParse.text_length > 0
-                      ? 'OCR online eseguito ma nessun lavoratore riconosciuto.'
-                      : 'OCR online completato ma non ha restituito testo leggibile.'
-                  );
-                  onlineError.code = 'OCR_NO_RECORDS';
-                  throw onlineError;
-                }
-              }
-            } catch (error) {
-              if (!Array.isArray(records) || records.length === 0) {
-                throw error;
-              }
-              parseDiagnostics = {
-                ...parseDiagnostics,
-                fallback_used: true,
-                ocr_online_error: error?.message || String(error),
-              };
-            }
-          }
-          if (Array.isArray(records) && records.length === 0) {
-            const message = parseDiagnostics.ocr_text_length > 0
-              ? 'OCR eseguito ma nessun lavoratore riconosciuto.'
-              : parseDiagnostics.ocr_error
-              ? `OCR non riuscito: ${parseDiagnostics.ocr_error}`
-              : 'OCR eseguito ma nessun testo leggibile nel PDF.';
-            const noRecordsError = new Error(message);
-            noRecordsError.code = 'OCR_NO_RECORDS';
-            throw noRecordsError;
-          }
-        }
-        if (signal.aborted) {
-          logMainProcessEvent('employees:pdf-import:ignored-after-cancel', {
-            job_id: operationJobId,
-            stage: 'after_parse',
-            record_count: Array.isArray(records) ? records.length : 0,
+
+          const pdfEmployer = (records || []).find((record) => record.pdf_employer?.name || record.pdf_employer?.tax_id)?.pdf_employer
+            || { name: '', tax_id: '', workplace: '' };
+          const employerResolution = settingsService.resolvePdfEmployer(pdfEmployer);
+          const rowsWithResolvedEmployer = employerResolution.employer_short_name
+            ? records.map((record) => ({
+                ...record,
+                hired_by_detected: record.hired_by_detected || employerResolution.employer_short_name,
+                hired_by: record.hired_by || record.hired_by_detected || employerResolution.employer_short_name,
+              }))
+            : records;
+          const sourceTaggedRows = rowsWithResolvedEmployer.map((record, recordIndex) => ({
+            ...record,
+            source_file_path: currentFilePath,
+            source_file_name: currentFileName,
+            source_file_index: fileIndex,
+            _source_row_index: recordIndex,
+          }));
+          mergedRecords.push(...sourceTaggedRows);
+          parsedFiles.push({
+            filePath: currentFilePath,
+            fileName: currentFileName,
+            status: 'parsed',
+            error: '',
+            recordsCount: sourceTaggedRows.length,
+            pdfEmployer,
+            employerResolution,
+            importDiagnostics: {
+              ...parseDiagnostics,
+              records_length: sourceTaggedRows.length,
+            },
           });
+        }
+
+        if (signal.aborted) {
           return { canceled: true };
         }
 
-        const enriched = pdfImportService.checkDuplicates(records, {
+        const enriched = pdfImportService.checkDuplicates(mergedRecords, {
           targetYear: getTargetYear(options),
           onProgress: progress,
         });
         const importDiagnostics = {
-          ...parseDiagnostics,
+          file_count: normalizedFilePaths.length,
+          file_error_count: parsedFiles.filter((file) => file.status === 'error').length,
           records_length: enriched.length,
           records_ready_count: enriched.filter((record) =>
             record.status === 'pronto' || record.status === 'nuovo_rapporto_datore'
@@ -1917,49 +1991,39 @@ app.whenReady().then(async () => {
           });
           return { canceled: true };
         }
-        const pdfEmployer = enriched.find((record) => record.pdf_employer?.name || record.pdf_employer?.tax_id)?.pdf_employer
-          || { name: '', tax_id: '', workplace: '' };
-        const employerResolution = settingsService.resolvePdfEmployer(pdfEmployer);
-        const rowsWithResolvedEmployer = employerResolution.employer_short_name
-          ? enriched.map((record) => ({
-              ...record,
-              hired_by_detected: record.hired_by_detected || employerResolution.employer_short_name,
-              hired_by: record.hired_by || record.hired_by_detected || employerResolution.employer_short_name,
-            }))
-          : enriched;
-        const resolvedRows = employerResolution.employer_short_name
-          ? pdfImportService.checkDuplicates(rowsWithResolvedEmployer, {
-              targetYear: getTargetYear(options),
-            })
-          : rowsWithResolvedEmployer;
         progress({
           status: 'running',
           step: 'duplicate_check',
           percent: 96,
           message: 'Controllo duplicati completato.',
-          record_count: resolvedRows.length,
+          record_count: enriched.length,
         });
         logMainProcessEvent('employees:pdf-import:completed', {
           job_id: operationJobId,
-          file_path: filePaths[0],
-          record_count: resolvedRows.length,
+          file_count: normalizedFilePaths.length,
+          record_count: enriched.length,
         });
+        const matchedEmployers = parsedFiles
+          .map((file) => file.employerResolution)
+          .filter((resolution) => resolution?.employer_short_name);
+        const sharedEmployerResolution =
+          matchedEmployers.length === parsedFiles.filter((file) => file.status === 'parsed').length &&
+          new Set(matchedEmployers.map((resolution) => resolution.employer_short_name)).size === 1
+            ? matchedEmployers[0]
+            : null;
+        const sharedPdfEmployer =
+          parsedFiles.filter((file) => file.status === 'parsed').length === 1
+            ? parsedFiles.find((file) => file.status === 'parsed')?.pdfEmployer || null
+            : null;
         return {
           canceled: false,
-          filePath: filePaths[0],
-          records: resolvedRows,
-          pdfEmployer,
-          employerResolution,
-          importDiagnostics: {
-            ...importDiagnostics,
-            records_length: resolvedRows.length,
-            records_ready_count: resolvedRows.filter((record) =>
-              record.status === 'pronto' || record.status === 'nuovo_rapporto_datore'
-            ).length,
-            records_to_fix_count: resolvedRows.filter((record) =>
-              record.status === 'da_correggere' || record.status === 'duplicato'
-            ).length,
-          },
+          filePath: normalizedFilePaths[0],
+          filePaths: normalizedFilePaths,
+          files: parsedFiles,
+          records: enriched,
+          pdfEmployer: sharedPdfEmployer,
+          employerResolution: sharedEmployerResolution,
+          importDiagnostics,
         };
       },
     });
@@ -2076,12 +2140,14 @@ app.whenReady().then(async () => {
         );
         const results = [];
         const totalRows = Math.max(1, selectedRows.length);
-        const fileFingerprint = filePath && fs.existsSync(filePath) ? hashFile(filePath) : `pdf-import-${Date.now()}`;
-
         for (let index = 0; index < selectedRows.length; index += 1) {
           const row = selectedRows[index];
           const datori = row.hired_by === 'entrambi' ? ['LC', 'LG'] : [row.hired_by];
           const normDate = pdfImportService.normDateToISO;
+          const rowFilePath = String(row.source_file_path || filePath || '').trim();
+          const fileFingerprint = rowFilePath && fs.existsSync(rowFilePath)
+            ? hashFile(rowFilePath)
+            : `pdf-import-${Date.now()}-${index}`;
           const sourcePagesLabel = Array.isArray(row.page_numbers) && row.page_numbers.length
             ? row.page_numbers.join('-')
             : String(Number(row.page_index ?? index));
@@ -2132,7 +2198,7 @@ app.whenReady().then(async () => {
               }
               if (periodTargets.length) {
                 await pdfImportService.attachEmployeePages(
-                  filePath,
+                  rowFilePath,
                   row.page_numbers || row.page_index,
                   row.existing_employee_id,
                   row.first_name,
@@ -2184,7 +2250,7 @@ app.whenReady().then(async () => {
                 });
               }
               await pdfImportService.attachEmployeePages(
-                filePath,
+                rowFilePath,
                 row.page_numbers || row.page_index,
                 emp.id,
                 row.first_name,
