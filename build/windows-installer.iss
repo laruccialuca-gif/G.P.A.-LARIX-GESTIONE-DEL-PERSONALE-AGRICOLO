@@ -1,12 +1,12 @@
-#define MyAppName "Gestionale"
+#define MyAppName "GPA 1.0.0"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Publisher modificabile"
-#define MyAppExeName "Gestionale.exe"
+#define MyAppExeName "GPA 1.0.0.exe"
 #define MyAppId "com.company.gestionaledipendentioffline"
 #define MyAppDataDirName "Gestionale"
 #define MySourceDir "..\\release\\win-unpacked"
 #define MyOutputDir "..\\release\\inno"
-#define MyIconFile "..\\build\\resources\\icon.ico"
+#define MyIconFile "..\\build\\resources\\icon-demo.ico"
 
 [Setup]
 AppId={#MyAppId}

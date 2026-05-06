@@ -1,19 +1,19 @@
-#define MyAppName "Gestionale Demo"
+#define MyAppName "GPA 1.0.0 Demo"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Publisher modificabile"
-#define MyAppExeName "Gestionale Demo.exe"
+#define MyAppExeName "GPA 1.0.0 Demo.exe"
 #define MyAppId "com.company.gestionale.demo"
 #define MyAppDataDirName "GestionaleDemo"
 #define MySourceDir "..\\release-demo\\win-unpacked"
 #define MyOutputDir "..\\release-demo\\inno"
-#define MyIconFile "..\\build\\resources\\icon.ico"
+#define MyIconFile "..\\build\\resources\\icon-demo.ico"
 
 [Setup]
 AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\Gestionale\Demo
+DefaultDirName={autopf}\GPA 1.0.0\Demo
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir={#MyOutputDir}

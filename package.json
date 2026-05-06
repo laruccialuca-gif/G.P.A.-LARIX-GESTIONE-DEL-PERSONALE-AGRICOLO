@@ -40,7 +40,7 @@
   },
   "build": {
     "appId": "com.company.gestionale.demo",
-    "productName": "GPA versione 1 demo",
+    "productName": "GPA 1.0.0 Demo",
     "directories": {
       "output": "release-demo",
       "buildResources": "build/resources"
@@ -74,9 +74,9 @@
       "main": "src/main/main.js",
       "appVariant": "demo"
     },
-    "artifactName": "GPA-Demo-${version}-Setup.${ext}",
+    "artifactName": "GPA-1.0.0-Demo-${version}-Setup.${ext}",
     "win": {
-      "executableName": "GPA Demo",
+      "executableName": "GPA 1.0.0 Demo",
       "icon": "build/resources/icon-demo.ico",
       "target": [
         {
@@ -101,8 +101,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "GPA versione 1 demo",
-      "uninstallDisplayName": "GPA versione 1 demo",
+      "shortcutName": "GPA 1.0.0 Demo",
+      "uninstallDisplayName": "GPA 1.0.0 Demo",
       "deleteAppDataOnUninstall": false,
       "displayLanguageSelector": false
     }

@@ -402,7 +402,7 @@ export default function AppLayout() {
       {showDemoWelcome ? (
         <div className="demo-overlay no-print">
           <div className="demo-modal">
-            <div className="page-kicker" style={{ marginBottom: 8 }}>Gestionale Demo</div>
+            <div className="page-kicker" style={{ marginBottom: 8 }}>GPA 1.0.0 Demo</div>
             <h2 className="demo-modal-title">Benvenuto nella modalita demo</h2>
             <div className="demo-modal-text">
               <p>Questa versione usa dati di esempio separati dal gestionale standard.</p>

@@ -1,6 +1,6 @@
 {
   "appId": "com.company.gestionaledipendentioffline",
-  "productName": "Gestionale",
+  "productName": "GPA 1.0.0",
   "directories": {
     "output": "release",
     "buildResources": "build/resources"
@@ -36,7 +36,7 @@
   },
   "artifactName": "${productName}-${version}-${arch}.${ext}",
   "win": {
-    "executableName": "Gestionale",
+    "executableName": "GPA 1.0.0",
     "target": [
       {
         "target": "nsis",
@@ -51,7 +51,7 @@
         ]
       }
     ],
-    "icon": "build/resources/icon.ico",
+    "icon": "build/resources/icon-demo.ico",
     "publisherName": "Publisher modificabile",
     "requestedExecutionLevel": "asInvoker"
   },
@@ -61,8 +61,8 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "Gestionale",
-    "uninstallDisplayName": "Gestionale",
+    "shortcutName": "GPA 1.0.0",
+    "uninstallDisplayName": "GPA 1.0.0",
     "deleteAppDataOnUninstall": false,
     "displayLanguageSelector": false
   }
