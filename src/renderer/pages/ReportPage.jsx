@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import DocumentActions from '../components/DocumentActions';
+import EmployeeForm from '../components/EmployeeForm';
 import { calculateAttendanceTotals, formatHoursValue, formatWorkedSummary, getSafeStandardHours } from '../utils/attendanceSummary';
 import { formatDisplayDate, formatDisplayDateTime } from '../utils/dateFormat';
 import { useYearContext } from '../context/YearContext';
@@ -500,6 +501,7 @@ export default function ReportPage() {
     items: [],
     selectedIds: [],
   });
+  const [editingEmployeeFromReport, setEditingEmployeeFromReport] = useState(null);
   const [pendingSavePrompt, setPendingSavePrompt] = useState(null);
   const [importedFinancialMovementIds, setImportedFinancialMovementIds] = useState([]);
   const autosaveTimeoutRef = useRef(null);
@@ -1034,7 +1036,7 @@ export default function ReportPage() {
       });
   }
 
-  async function handleSavePdf() {
+async function handleSavePdf() {
     const printArea = document.querySelector('.print-area');
     if (!printArea) {
       alert('Area report non trovata');
@@ -1055,6 +1057,30 @@ export default function ReportPage() {
     } catch (err) {
       console.error(err);
       alert('Errore apertura PDF');
+    }
+  }
+
+  async function handlePrintPdf() {
+    const printArea = document.querySelector('.print-area');
+    if (!printArea) {
+      alert('Area report non trovata');
+      return;
+    }
+
+    const suggestedName = isTeamMode && selectedTeam
+      ? sanitizeFileName(`${selectedTeam.name} - ${teamPeriodStart}_${teamPeriodEnd}.pdf`)
+      : employee
+      ? sanitizeFileName(`${employee.first_name || ''} ${employee.last_name || ''} - ${formatMonthLabelForFile(currentMonth)}.pdf`)
+      : 'report.pdf';
+
+    try {
+      await window.api.reports.printHtml({
+        fileName: suggestedName,
+        html: printArea.outerHTML,
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Errore stampa report');
     }
   }
 
@@ -1179,6 +1205,25 @@ export default function ReportPage() {
       alert(err?.message || 'Errore aggiornamento retribuzione');
     } finally {
       setSavingDailyPay(false);
+    }
+  }
+
+  async function handleUpdateEmployeeFromReport(data) {
+    if (!editingEmployeeFromReport?.id) return;
+
+    try {
+      const updated = await window.api.employees.update(editingEmployeeFromReport.id, data);
+      setEmployees((current) =>
+        current.map((item) => (
+          String(item.id) === String(editingEmployeeFromReport.id)
+            ? { ...item, ...updated }
+            : item
+        ))
+      );
+      setEditingEmployeeFromReport(null);
+    } catch (err) {
+      console.error(err);
+      alert('Errore modifica dipendente');
     }
   }
 
@@ -2010,7 +2055,7 @@ export default function ReportPage() {
           {selectedEntity ? (
             <div className="page-actions">
               <button className="button" onClick={handleSavePdf}>Genera PDF</button>
-              <button className="button-secondary" onClick={() => window.print()}>Stampa</button>
+              <button className="button-secondary" onClick={handlePrintPdf}>Stampa</button>
             </div>
           ) : null}
         </section>
@@ -2134,14 +2179,15 @@ export default function ReportPage() {
                     <span style={{ fontSize: 13, fontWeight: 800 }}>
                       {employee.first_name} {employee.last_name}
                     </span>
-                    <a
+                    <button
+                      type="button"
                       className="button-secondary"
-                      href={`#/dipendenti?employee=${employee.id}`}
+                      onClick={() => setEditingEmployeeFromReport(employee)}
                       title="Apri scheda dipendente"
                       style={{ minHeight: 30, width: 34, padding: 0, borderRadius: 10, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
                     >
                       {'->'}
-                    </a>
+                    </button>
                   </div>
                 </div>
                 <label style={{ ...checkboxLabelStyle, padding: '8px 10px', borderRadius: 12, background: '#fff', border: '1px solid rgba(31, 41, 55, 0.08)' }}>
@@ -2872,7 +2918,7 @@ export default function ReportPage() {
               {loading ? (
                 <div style={emptyBoxStyle}>Caricamento...</div>
               ) : (
-                <EmployeePrintArea
+                <ReportPrintPreview
                   employee={employee}
                   currentMonth={currentMonth}
                   datore={datore}
@@ -2913,6 +2959,15 @@ export default function ReportPage() {
             </div>
           </div>
         </div>
+      ) : null}
+
+      {editingEmployeeFromReport ? (
+        <EmployeeForm
+          open={!!editingEmployeeFromReport}
+          onClose={() => setEditingEmployeeFromReport(null)}
+          employee={editingEmployeeFromReport}
+          onSubmit={handleUpdateEmployeeFromReport}
+        />
       ) : null}
 
       {isTeamMode && selectedTeam ? (
@@ -3122,6 +3177,19 @@ function getMarkerMeta(markerCode, markers) {
   return markers.find((m) => m.value === markerCode) || null;
 }
 
+function hasMeaningfulEmployeeRole(role) {
+  const normalizedRole = String(role || '').trim().toLowerCase();
+  return !!normalizedRole && normalizedRole !== 'nessuna mansione';
+}
+
+function formatReportCellPrimaryValue(value) {
+  const numericValue = Number(value || 0);
+  if (!Number.isFinite(numericValue) || numericValue <= 0) return '';
+  return Number.isInteger(numericValue)
+    ? String(numericValue)
+    : numericValue.toFixed(2).replace(/\.?0+$/, '');
+}
+
 function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers, showOvertimeInReport = true }) {
   return (
     <div style={rp2WeekGridStyle}>
@@ -3129,12 +3197,13 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers, showOvertimeIn
         const isSunday = colIndex === 6;
         if (!day) {
           return (
-            <div key={colIndex} style={{ ...rp2DayCellStyle(isSunday), opacity: 0 }}>
+            <div key={colIndex} style={{ ...rp2DayCellStyle(isSunday, 'empty'), opacity: 0 }}>
               <div style={rp2DayHeaderTopStyle}>
                 <span style={rp2DayHeaderLabelStyle}>—</span>
                 <span style={rp2DayHeaderNumberStyle}>—</span>
               </div>
               <div style={rp2DayIndicatorStyle('neutral')}>•</div>
+              <div style={rp2DayDetailStyle(false)}> </div>
               <div style={rp2DayMetaMutedStyle}> </div>
             </div>
           );
@@ -3158,33 +3227,31 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers, showOvertimeIn
         }
 
         const markerMeta = getMarkerMeta(att?.marker_code, dayMarkers);
+        const markerLabel = markerMeta?.symbol || markerMeta?.text || markerMeta?.value || '';
         const hasHours = normalHours > 0 || overtimeHours > 0;
-        const hasContent = specialCode !== null || hasHours || !!markerMeta;
-        const isWorkedDay = hasHours || att?.status === 'presente';
-        const isEmptyDay = !hasContent;
-        const indicatorTone = isWorkedDay
+        const primaryValue = specialCode || formatReportCellPrimaryValue(normalHours) || '';
+        const hasRenderableData = !!primaryValue || hasHours || !!markerLabel;
+        const isWorkedDay = hasRenderableData;
+        const isEmptyDay = !hasRenderableData;
+        const indicatorTone = hasRenderableData
           ? 'worked'
-          : specialCode
-          ? 'special'
-          : isSunday || isEmptyDay
+          : isSunday
           ? 'neutral'
           : 'empty';
-        const indicatorLabel = isWorkedDay ? 'X' : specialCode || (isSunday || isEmptyDay ? '•' : '—');
-        const rawHelperLabel = markerMeta?.symbol || markerMeta?.text || markerMeta?.value || '';
-        const helperLabel =
-          rawHelperLabel && rawHelperLabel !== indicatorLabel && !isWorkedDay
-            ? rawHelperLabel
+        const indicatorLabel = primaryValue || (isSunday && !hasRenderableData ? '—' : '');
+        const overtimeLabel = overtimeHours > 0 ? `+${formatHoursValue(overtimeHours, hoursFormat)} str.` : '';
+        const markerMetaLabel =
+          markerLabel && markerLabel !== indicatorLabel
+            ? markerLabel
             : '';
-        const detailLabel = isWorkedDay
-          ? ''
-          : specialCode
+        const detailLabel = hasRenderableData
           ? ''
           : isSunday
           ? 'Riposo'
           : 'Assenza';
 
         return (
-          <div key={dateStr} style={rp2DayCellStyle(isSunday)}>
+          <div key={dateStr} style={rp2DayCellStyle(isSunday, indicatorTone)}>
             <div style={rp2DayHeaderTopStyle}>
               <span style={rp2DayHeaderLabelStyle}>{DAY_ABBR_SHORT[colIndex]}</span>
               <span style={rp2DayHeaderNumberStyle}>{day.getDate()}</span>
@@ -3192,15 +3259,21 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers, showOvertimeIn
             <div style={rp2DayIndicatorStyle(indicatorTone, markerMeta?.color)}>
               {indicatorLabel}
             </div>
-            {detailLabel ? (
-              <div style={rp2DayDetailStyle(!isWorkedDay && !isEmptyDay)}>
-                {detailLabel}
+            <div style={rp2DayMetaSlotStyle}>
+              {detailLabel ? (
+                <div style={rp2DayDetailStyle(!isWorkedDay && !isEmptyDay, isEmptyDay)}>
+                  {detailLabel}
+                </div>
+              ) : overtimeLabel ? (
+                <div style={rp2DayMetaAccentStyle}>{overtimeLabel}</div>
+              ) : (
+                <div style={rp2DayMetaMutedStyle}> </div>
+              )}
+            </div>
+            {markerMetaLabel ? (
+              <div style={rp2DayMarkerStyle(markerMeta?.color)}>
+                {markerMetaLabel}
               </div>
-            ) : null}
-            {overtimeHours > 0 ? (
-              <div style={rp2DayMetaAccentStyle}>+{formatHoursValue(overtimeHours, hoursFormat)} straord.</div>
-            ) : helperLabel ? (
-              <div style={rp2DayMetaStyle(markerMeta?.color)}>{helperLabel}</div>
             ) : (
               <div style={rp2DayMetaMutedStyle}> </div>
             )}
@@ -3211,7 +3284,7 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers, showOvertimeIn
   );
 }
 
-function EmployeePrintArea({
+function ReportPrintPreview({
   employee,
   currentMonth,
   datore,
@@ -3286,7 +3359,7 @@ function EmployeePrintArea({
       detail:
         showOvertimeInReport && overtimeView?.displayMode === 'separate'
           ? `${formatCurrency(totalRegularPay)} ordinario + ${formatCurrency(totalOvertimePay)} straordinario`
-          : `${workedDays} gg · ${formatHoursValue(displayTotalHours, hoursFormat)}`,
+          : formatWorkedSummary(displayTotalHours, attendanceBaseHours, hoursFormat),
       value: formatCurrency(totalCalculatedPay),
       tone: 'base',
       order: 1,
@@ -3354,6 +3427,7 @@ function EmployeePrintArea({
   ].filter((row) => !row.hidden).sort((a, b) => a.order - b.order);
   const totalCredits = totalCalculatedPay + totaleTrasporto + giftAmountNum + Math.max(restoPrecedenteNum, 0);
   const totalDebits = importoBustaPagaNum + totalAdvances + currentInstallmentTotal + Math.abs(Math.min(restoPrecedenteNum, 0));
+  const denseFinancialLayout = creditRows.length + debitRows.length >= 7;
   const balanceFormulaLabel = (() => {
     const positiveTerms = ['Crediti operaio'];
     const negativeTerms = [];
@@ -3391,9 +3465,12 @@ function EmployeePrintArea({
     <div className="print-area employee-print-area">
       <div className="print-sheet employee-print-sheet" style={employeePrintSheetStyle}>
         <div style={rp2HeaderStyle}>
-          <div>
+          <div style={rp2HeaderIdentityStyle}>
             <div style={rp2NameStyle}>{employee.first_name} {employee.last_name}</div>
-            <div style={rp2SubtitleStyle}>{employee.role || 'Nessuna mansione'} · {monthName} {yearStr}</div>
+            <div style={rp2MonthStyle}>{String(monthName).toUpperCase()} {yearStr}</div>
+            {hasMeaningfulEmployeeRole(employee.role) ? (
+              <div style={rp2SubtitleStyle}>{employee.role}</div>
+            ) : null}
           </div>
           <div style={rp2BadgeStyle(isPagato)}>{isPagato ? 'PAGATO' : 'NON PAGATO'}</div>
         </div>
@@ -3456,22 +3533,24 @@ function EmployeePrintArea({
 
         <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
           <div style={rp2SectionLabelStyle}>Crediti dell'operaio</div>
-          <div style={rp2EconomicTableStyle}>
+          <div style={rp2EconomicTableStyle(denseFinancialLayout)}>
             {creditRows.map((row) => (
-              <div key={row.label} style={rp2EconRowStyle(row.strong)}>
+              <div key={row.label} style={rp2EconRowStyle(row.strong, denseFinancialLayout)}>
                 <div style={{ minWidth: 0 }}>
-                  <div style={rp2EconLabelStyle(row.strong)}>{row.label}</div>
-                  <div style={rp2EconSubStyle}>{row.detail}</div>
+                  <div style={rp2EconLabelStyle(row.strong, denseFinancialLayout)}>{row.label}</div>
+                  <div style={rp2EconSubStyle(denseFinancialLayout)}>{row.detail}</div>
                 </div>
-                <div style={rp2EconAmountStyle(row.tone, row.strong)}>
+                <div style={rp2EconAmountStyle(row.tone, row.strong, denseFinancialLayout)}>
                   {row.tone === 'negative' && !String(row.value).trim().startsWith('-') ? `- ${row.value}` : row.value}
                 </div>
               </div>
             ))}
-            <div style={rp2DeductionBoxStyle}>
-              <span>Totale crediti operaio</span>
-              <span>{formatCurrency(totalCredits)}</span>
-            </div>
+            {creditRows.length > 1 ? (
+              <div style={rp2DeductionBoxStyle(denseFinancialLayout)}>
+                <span>Totale crediti operaio</span>
+                <span>{formatCurrency(totalCredits)}</span>
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -3479,24 +3558,26 @@ function EmployeePrintArea({
           <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
             <div style={rp2SectionLabelStyle}>Debiti / Trattenute dell'operaio</div>
             {debitRows.map((row) => (
-              <div key={row.label + row.detail} style={rp2EconRowStyle()}>
+              <div key={row.label + row.detail} style={rp2EconRowStyle(false, denseFinancialLayout)}>
                 <div>
-                  <div style={rp2EconLabelStyle()}>{row.label}</div>
-                  <div style={rp2EconSubStyle}>{row.detail}</div>
+                  <div style={rp2EconLabelStyle(false, denseFinancialLayout)}>{row.label}</div>
+                  <div style={rp2EconSubStyle(denseFinancialLayout)}>{row.detail}</div>
                 </div>
-                <div style={rp2EconAmountStyle('negative')}>
+                <div style={rp2EconAmountStyle('negative', false, denseFinancialLayout)}>
                   - {row.value}
                 </div>
               </div>
             ))}
-            <div style={rp2DeductionBoxStyle}>
-              <span>Totale debiti / trattenute</span>
-              <span>- {formatCurrency(totalDebits)}</span>
-            </div>
+            {debitRows.length > 1 ? (
+              <div style={rp2DeductionBoxStyle(denseFinancialLayout)}>
+                <span>Totale debiti / trattenute</span>
+                <span>- {formatCurrency(totalDebits)}</span>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
-        <div className="print-block employee-print-section" style={rp2ResultCardStyle(differenzaFinale)}>
+        <div className="print-block employee-print-section" style={rp2ResultCardStyle(differenzaFinale, denseFinancialLayout)}>
           <div>
             <div style={rp2ResultLabelStyle}>{mainBalanceLabel}</div>
             <div style={rp2ResultFormulaStyle}>
@@ -3505,7 +3586,7 @@ function EmployeePrintArea({
                 : balanceFormulaLabel}
             </div>
           </div>
-          <div style={rp2ResultValueStyle(differenzaFinale)}>
+          <div style={rp2ResultValueStyle(differenzaFinale, denseFinancialLayout)}>
             {differenzaFinale !== 0 ? formatSignedCurrency(differenzaFinale) : '€ 0,00'}
           </div>
         </div>
@@ -3513,8 +3594,8 @@ function EmployeePrintArea({
         {noteExtra ? <div style={rp2NoteStyle}>{noteExtra}</div> : null}
 
         <div style={rp2FooterStyle}>
-          <span>Gestionale Demo</span>
-          <span>{monthName} {yearStr}</span>
+          <span style={rp2FooterBrandStyle}>GPA 1.0.0</span>
+          <span style={rp2FooterMonthStyle}>{monthName} {yearStr}</span>
         </div>
       </div>
     </div>
@@ -4440,10 +4521,10 @@ const employeePrintSheetStyle = {
   width: '100%',
   maxWidth: 540,
   padding: '28px 28px 22px',
-  borderRadius: 22,
-  border: '1px solid rgba(31, 41, 55, 0.1)',
+  borderRadius: 10,
+  border: '2px solid #111827',
   background: '#ffffff',
-  boxShadow: '0 20px 44px rgba(15, 23, 42, 0.08)',
+  boxShadow: 'none',
 };
 
 const employeePrintBodyGridStyle = {
@@ -4533,8 +4614,8 @@ const tdCenterCompact = {
 };
 
 const rp2SectionBoxStyle = {
-  border: '1px solid rgba(31, 41, 55, 0.08)',
-  borderRadius: 18,
+  border: '1.5px solid #111827',
+  borderRadius: 10,
   padding: 18,
   background: '#fff',
   marginTop: 16,
@@ -4552,27 +4633,36 @@ const rp2HeaderStyle = {
   justifyContent: 'space-between',
   alignItems: 'flex-start',
   gap: 16,
-  marginBottom: 18,
+  marginBottom: 16,
 };
-const rp2NameStyle = { fontSize: 28, fontWeight: 800, color: '#111827', lineHeight: 1.05 };
-const rp2SubtitleStyle = { fontSize: 13, color: '#111827', marginTop: 6 };
+const rp2HeaderIdentityStyle = { display: 'grid', gap: 3 };
+const rp2MonthStyle = {
+  fontSize: 15,
+  fontWeight: 900,
+  color: '#111827',
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  lineHeight: 1,
+};
+const rp2NameStyle = { fontSize: 30, fontWeight: 900, color: '#111827', lineHeight: 1.02 };
+const rp2SubtitleStyle = { fontSize: 11.5, color: '#4b5563', marginTop: 1 };
 const rp2BadgeStyle = (isPaid) => ({
   fontSize: 11,
   fontWeight: 800,
   padding: '8px 14px',
   borderRadius: 999,
-  background: isPaid ? 'rgba(22, 163, 74, 0.12)' : 'rgba(239, 68, 68, 0.12)',
-  color: isPaid ? '#166534' : '#b91c1c',
-  border: `1px solid ${isPaid ? 'rgba(22, 163, 74, 0.18)' : 'rgba(239, 68, 68, 0.18)'}`,
+  background: '#fff',
+  color: '#111827',
+  border: '1.5px solid #111827',
   textTransform: 'uppercase',
   whiteSpace: 'nowrap',
 });
 const rp2SummaryRowStyle = { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 12, marginBottom: 14 };
 const rp2SummaryCardStyle = {
-  border: '1px solid rgba(31, 41, 55, 0.08)',
-  borderRadius: 16,
+  border: '1.5px solid #111827',
+  borderRadius: 10,
   padding: '14px 16px',
-  background: 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
+  background: '#fff',
 };
 const rp2CardLabelStyle = { fontSize: 11, fontWeight: 800, color: '#111827', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 };
 const rp2CardValueStyle = { fontSize: 24, fontWeight: 800, color: '#111827', lineHeight: 1.1 };
@@ -4584,84 +4674,117 @@ const rp2TariffPillStyle = {
   gap: 8,
   padding: '8px 12px',
   borderRadius: 999,
-  border: '1px solid rgba(31, 41, 55, 0.08)',
-  background: '#f8fafc',
+  border: '1.5px solid #374151',
+  background: '#fff',
   fontSize: 12,
 };
 const rp2TariffLabelStyle = { color: '#111827' };
-const rp2WeekBlockStyle = { display: 'grid', gap: 6, marginTop: 10 };
-const rp2WeekLabelStyle = { fontSize: 10, fontWeight: 800, color: '#111827', textTransform: 'uppercase', letterSpacing: '0.08em' };
-const rp2WeekGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 8 };
-const rp2DayCellStyle = (isSunday) => ({
-  border: '1px solid rgba(31, 41, 55, 0.08)',
-  borderRadius: 14,
-  padding: '8px 6px',
+const rp2WeekBlockStyle = { display: 'grid', gap: 4, marginTop: 8 };
+const rp2WeekLabelStyle = { fontSize: 9, fontWeight: 800, color: '#111827', textTransform: 'uppercase', letterSpacing: '0.08em' };
+const rp2WeekGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 6 };
+const rp2DayCellStyle = (isSunday, tone = 'worked') => ({
+  border: `${tone === 'worked' || tone === 'special' ? 2 : 1}px solid ${tone === 'empty' ? '#d1d5db' : '#111827'}`,
+  borderRadius: 8,
+  padding: '6px 5px 5px',
   textAlign: 'center',
-  background: isSunday ? '#f8fafc' : '#fff',
+  background: '#fff',
   minWidth: 0,
   display: 'grid',
-  gap: 5,
+  gridTemplateRows: 'auto auto minmax(12px, auto) minmax(12px, auto)',
+  gap: 3,
   justifyItems: 'center',
+  alignItems: 'start',
+  minHeight: 88,
 });
-const rp2DayHeaderTopStyle = { display: 'grid', gap: 1, justifyItems: 'center' };
-const rp2DayHeaderLabelStyle = { fontSize: 9, color: '#111827', fontWeight: 700, textTransform: 'uppercase' };
-const rp2DayHeaderNumberStyle = { fontSize: 13, color: '#111827', fontWeight: 800, lineHeight: 1 };
+const rp2DayHeaderTopStyle = { display: 'grid', gap: 0, justifyItems: 'center', minHeight: 28, alignContent: 'start' };
+const rp2DayHeaderLabelStyle = { fontSize: 8, color: '#111827', fontWeight: 800, textTransform: 'uppercase', lineHeight: 1.1 };
+const rp2DayHeaderNumberStyle = { fontSize: 13, color: '#111827', fontWeight: 900, lineHeight: 1.05, marginTop: 2 };
 const rp2DayIndicatorStyle = (tone, markerColor) => {
   const palette =
     tone === 'worked'
-      ? { background: '#dcfce7', color: '#111827', border: '#bbf7d0' }
+      ? { background: '#fff', color: '#111827', border: '#111827' }
       : tone === 'special'
-      ? { background: 'rgba(59, 130, 246, 0.12)', color: '#111827', border: 'rgba(59, 130, 246, 0.18)' }
+      ? { background: '#f3f4f6', color: '#111827', border: '#111827' }
       : tone === 'neutral'
-      ? { background: '#f3f4f6', color: '#111827', border: '#e5e7eb' }
-      : { background: '#fff7ed', color: '#111827', border: '#fed7aa' };
+      ? { background: '#f3f4f6', color: '#6b7280', border: '#9ca3af' }
+      : { background: '#fff', color: '#9ca3af', border: '#d1d5db' };
   return {
     width: 28,
     height: 28,
-    borderRadius: 999,
+    padding: '0 4px',
+    borderRadius: 6,
     display: 'grid',
     placeItems: 'center',
     fontSize: 12,
     fontWeight: 800,
     background: palette.background,
     color: palette.color,
-    border: `1px solid ${palette.border}`,
+    border: `${tone === 'worked' || tone === 'special' ? 2 : 1}px solid ${palette.border}`,
+    alignSelf: 'center',
   };
 };
-const rp2DayDetailStyle = (active) => ({
+const rp2DayMetaSlotStyle = {
+  minHeight: 12,
+  display: 'grid',
+  alignItems: 'start',
+  justifyItems: 'center',
+  width: '100%',
+};
+const rp2DayDetailStyle = (active, muted = false) => ({
+  fontSize: 9,
+  color: muted ? '#6b7280' : '#111827',
+  fontWeight: active ? 700 : 600,
+  lineHeight: 1.15,
+  minHeight: 14,
+  display: 'grid',
+  alignItems: 'start',
+});
+const rp2DayMetaAccentStyle = { fontSize: 8.5, color: '#111827', fontWeight: 800, lineHeight: 1.05, minHeight: 10 };
+const rp2DayMetaStyle = () => ({ fontSize: 8.5, color: '#111827', fontWeight: 700, lineHeight: 1.05, minHeight: 10 });
+const rp2DayMetaMutedStyle = { fontSize: 8.5, color: '#9ca3af', lineHeight: 1.05, minHeight: 10 };
+const rp2DayMarkerStyle = (markerColor) => ({
   fontSize: 10,
   color: '#111827',
-  fontWeight: active ? 700 : 600,
-  lineHeight: 1.2,
-  minHeight: 24,
+  fontWeight: 800,
+  lineHeight: 1.05,
+  minHeight: 12,
   display: 'grid',
-  alignItems: 'center',
+  alignItems: 'start',
+  justifyItems: 'center',
+  width: '100%',
 });
-const rp2DayMetaAccentStyle = { fontSize: 9, color: '#b45309', fontWeight: 700, lineHeight: 1.1 };
-const rp2DayMetaStyle = () => ({ fontSize: 9, color: '#111827', fontWeight: 700, lineHeight: 1.1 });
-const rp2DayMetaMutedStyle = { fontSize: 9, color: '#111827', lineHeight: 1.1, minHeight: 11 };
-const rp2AttendanceLegendStyle = { display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12, fontSize: 11, color: '#111827' };
-const rp2LegendItemStyle = { display: 'inline-flex', alignItems: 'center', gap: 6 };
+const rp2AttendanceLegendStyle = {
+  display: 'flex',
+  gap: 18,
+  flexWrap: 'wrap',
+  marginTop: 14,
+  paddingTop: 10,
+  borderTop: '1px solid #d1d5db',
+  fontSize: 10.5,
+  color: '#111827',
+};
+const rp2LegendItemStyle = { display: 'inline-flex', alignItems: 'center', gap: 7, lineHeight: 1.2 };
 const rp2LegendDotStyle = (tone) => ({
   width: 10,
   height: 10,
-  borderRadius: 999,
-  background: tone === 'worked' ? '#16a34a' : tone === 'neutral' ? '#9ca3af' : '#f59e0b',
+  borderRadius: 2,
+  border: '1.5px solid #111827',
+  background: tone === 'worked' ? '#111827' : tone === 'neutral' ? '#d1d5db' : '#fff',
 });
-const rp2EconomicTableStyle = { display: 'grid', gap: 0 };
-const rp2EconRowStyle = (strong = false) => ({
+const rp2EconomicTableStyle = (dense = false) => ({ display: 'grid', gap: dense ? 0 : 1 });
+const rp2EconRowStyle = (strong = false, dense = false) => ({
   display: 'flex',
   alignItems: 'flex-start',
   justifyContent: 'space-between',
   gap: 14,
-  padding: strong ? '12px 0 0' : '12px 0',
-  borderTop: strong ? '1px solid rgba(31, 41, 55, 0.08)' : 'none',
-  borderBottom: strong ? 'none' : '1px solid rgba(241, 245, 249, 0.95)',
+  padding: strong ? (dense ? '10px 0 0' : '12px 0 0') : (dense ? '9px 0' : '12px 0'),
+  borderTop: strong ? '1.5px solid #111827' : 'none',
+  borderBottom: strong ? 'none' : '1px solid #d1d5db',
 });
-const rp2EconLabelStyle = (strong = false) => ({ fontSize: strong ? 13 : 12, fontWeight: strong ? 800 : 700, color: '#111827' });
-const rp2EconSubStyle = { fontSize: 11, color: '#111827', marginTop: 4, lineHeight: 1.35 };
-const rp2EconAmountStyle = (tone = 'base', strong = false) => ({
-  fontSize: strong ? 15 : 13,
+const rp2EconLabelStyle = (strong = false, dense = false) => ({ fontSize: strong ? (dense ? 13 : 14) : (dense ? 12 : 13), fontWeight: strong ? 800 : 700, color: '#111827' });
+const rp2EconSubStyle = (dense = false) => ({ fontSize: dense ? 10.5 : 11.5, color: '#111827', marginTop: 4, lineHeight: 1.3 });
+const rp2EconAmountStyle = (tone = 'base', strong = false, dense = false) => ({
+  fontSize: strong ? (dense ? 15 : 16) : (dense ? 13 : 14),
   fontWeight: 800,
   color: '#111827',
   whiteSpace: 'nowrap',
@@ -4681,36 +4804,36 @@ const rp2CreditBoxStyle = {
   fontWeight: 800,
   color: '#166534',
 };
-const rp2DeductionBoxStyle = {
+const rp2DeductionBoxStyle = (dense = false) => ({
   display: 'flex',
   justifyContent: 'space-between',
   alignItems: 'center',
-  background: '#fff7ed',
-  border: '1px solid #fed7aa',
-  borderRadius: 14,
-  padding: '10px 12px',
+  background: '#fff',
+  border: '1.5px solid #111827',
+  borderRadius: 8,
+  padding: dense ? '8px 10px' : '10px 12px',
   marginTop: 10,
-  fontSize: 12,
+  fontSize: dense ? 12 : 12.5,
   fontWeight: 800,
-  color: '#b45309',
-};
-const rp2ResultCardStyle = (value) => ({
-  border: '1px solid rgba(31, 41, 55, 0.08)',
-  borderRadius: 18,
-  padding: '18px 20px',
-  background: value > 0 ? '#ecfdf3' : value < 0 ? '#fff7ed' : '#f8fafc',
+  color: '#111827',
+});
+const rp2ResultCardStyle = (value, dense = false) => ({
+  border: '2px solid #111827',
+  borderRadius: 10,
+  padding: dense ? '15px 18px' : '18px 20px',
+  background: '#fff',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
   gap: 14,
   marginTop: 16,
 });
-const rp2ResultLabelStyle = { fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 4 };
-const rp2ResultFormulaStyle = { fontSize: 11, color: '#111827', lineHeight: 1.35 };
-const rp2ResultValueStyle = (value) => ({
-  fontSize: 28,
+const rp2ResultLabelStyle = { fontSize: 15, fontWeight: 800, color: '#111827', marginBottom: 4 };
+const rp2ResultFormulaStyle = { fontSize: 11.5, color: '#111827', lineHeight: 1.35 };
+const rp2ResultValueStyle = (value, dense = false) => ({
+  fontSize: dense ? 23 : 25,
   fontWeight: 900,
-  color: value > 0 ? '#166534' : value < 0 ? '#b45309' : '#111827',
+  color: '#111827',
   lineHeight: 1,
   whiteSpace: 'nowrap',
   flexShrink: 0,
@@ -4718,9 +4841,9 @@ const rp2ResultValueStyle = (value) => ({
 const rp2NoteStyle = {
   marginTop: 14,
   padding: '12px 14px',
-  borderRadius: 14,
-  background: '#f8fafc',
-  border: '1px solid rgba(31, 41, 55, 0.06)',
+  borderRadius: 8,
+  background: '#fff',
+  border: '1.5px solid #374151',
   fontSize: 11,
   color: '#111827',
   lineHeight: 1.5,
@@ -4728,7 +4851,7 @@ const rp2NoteStyle = {
 const rp2FooterStyle = {
   marginTop: 18,
   paddingTop: 14,
-  borderTop: '1px solid rgba(31, 41, 55, 0.08)',
+  borderTop: '1.5px solid #111827',
   display: 'flex',
   justifyContent: 'space-between',
   gap: 12,
@@ -4736,6 +4859,8 @@ const rp2FooterStyle = {
   fontSize: 11,
   color: '#111827',
   textTransform: 'uppercase',
-  letterSpacing: '0.06em',
+  letterSpacing: '0.08em',
   fontWeight: 700,
 };
+const rp2FooterBrandStyle = { fontSize: 10.5, color: '#374151', fontWeight: 800, letterSpacing: '0.12em' };
+const rp2FooterMonthStyle = { fontSize: 10, color: '#4b5563', fontWeight: 700 };

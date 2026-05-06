@@ -1,6 +1,7 @@
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatDisplayDateTime } from '../utils/dateFormat';
+import { formatWorkedSummary } from '../utils/attendanceSummary';
 import { useYearContext } from '../context/YearContext';
 
 const MONTH_NAMES = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
@@ -149,6 +150,63 @@ function HistoryPayrollActions({
       </button>
     </div>
   );
+}
+
+function getSnapshot(record) {
+  return typeof record?.report_snapshot_json === 'string'
+    ? (() => {
+        try {
+          return JSON.parse(record.report_snapshot_json);
+        } catch {
+          return null;
+        }
+      })()
+    : record?.report_snapshot_json || null;
+}
+
+function getRecordPaymentSummary(record) {
+  const snapshot = getSnapshot(record);
+  const grossBalance = getRecordEffectiveBalance(record);
+  const residual = record?.resto_pagato ? 0 : grossBalance;
+  const basePaidAmount =
+    Number(record?.importo_busta_paga || 0) +
+    Number(record?.acconti || 0) +
+    Number(snapshot?.current_installments_total || 0);
+  const residualPaidAmount = record?.resto_pagato ? Math.abs(grossBalance) : 0;
+  const paidAmount = basePaidAmount + residualPaidAmount;
+
+  let status = 'non_pagato';
+  let label = 'Non pagato';
+  if (Math.abs(grossBalance) <= 0.009) {
+    status = record?.is_pagato ? 'pagato' : 'pareggio';
+    label = record?.is_pagato ? 'Pagato' : 'Pareggio';
+  } else if (record?.resto_pagato) {
+    status = 'saldato';
+    label = 'Saldato';
+  } else if (basePaidAmount > 0 || record?.is_pagato) {
+    status = 'parziale';
+    label = 'Parziale';
+  }
+
+  return {
+    snapshot,
+    grossBalance,
+    residual,
+    originAmount: Math.abs(grossBalance),
+    paidAmount,
+    residualAmount: Math.abs(residual),
+    status,
+    label,
+    paidDate:
+      record?.resto_pagato_data ||
+      (record?.is_pagato ? record?.processed_at || record?.updated_at || record?.created_at || '' : ''),
+    overtimeHours: Number(snapshot?.totalOvertimeHours || 0),
+    overtimeAmount: Number(snapshot?.totalOvertimePay || 0),
+    regularHours: Number(
+      snapshot?.totalRegularHours ??
+        Math.max(Number(record?.ore_totali || 0) - Number(snapshot?.totalOvertimeHours || 0), 0)
+    ),
+  };
 }
 
 export default function StoricoOperaioPage() {
@@ -343,11 +401,11 @@ export default function StoricoOperaioPage() {
   const totalGiornate = filteredRecords.reduce((sum, record) => sum + Number(record.giornate_effettuate || 0), 0);
   const uniqueEmployees = new Set(filteredRecords.map((record) => record.employee_id)).size;
   const totalDaPagare = filteredRecords.reduce((sum, record) => {
-    const balance = getRecordEffectiveBalance(record);
+    const balance = getRecordPaymentSummary(record).residual;
     return sum + (balance > 0 ? balance : 0);
   }, 0);
   const totalDaRicevere = filteredRecords.reduce((sum, record) => {
-    const balance = getRecordEffectiveBalance(record);
+    const balance = getRecordPaymentSummary(record).residual;
     return sum + (balance < 0 ? Math.abs(balance) : 0);
   }, 0);
   const currentPage = Math.floor(historyOffset / HISTORY_PAGE_SIZE) + 1;
@@ -457,6 +515,22 @@ export default function StoricoOperaioPage() {
       alert('Errore eliminazione report storico');
     }
   }
+
+  const previewPaymentSummary = previewRecord ? getRecordPaymentSummary(previewRecord) : null;
+  const previewSnapshot = previewPaymentSummary?.snapshot || null;
+  const previewStandardHours = Number(
+    previewSnapshot?.standardHours || previewRecord?.employee?.standard_hours || 7
+  );
+  const previewWorkedSummary = previewRecord
+    ? formatWorkedSummary(
+        Number(previewSnapshot?.totalHours ?? previewRecord?.ore_totali ?? 0),
+        previewStandardHours
+      )
+    : '';
+  const previewCreditAmount =
+    previewPaymentSummary?.grossBalance > 0 ? previewPaymentSummary.originAmount : 0;
+  const previewDebtAmount =
+    previewPaymentSummary?.grossBalance < 0 ? previewPaymentSummary.originAmount : 0;
 
   return (
     <div className="page">
@@ -607,7 +681,8 @@ export default function StoricoOperaioPage() {
                     <div style={{ display: 'grid', gap: 0 }}>
                       {group.records.map((record) => {
                         const employee = record.employee || {};
-                        const diff = getRecordEffectiveBalance(record);
+                        const paymentSummary = getRecordPaymentSummary(record);
+                        const diff = paymentSummary.residual;
                         const currentStatus = employeeStatusLabel(employee);
                         const statusStyle =
                           currentStatus === 'attivo'
@@ -615,6 +690,12 @@ export default function StoricoOperaioPage() {
                             : currentStatus === 'inattivo'
                             ? { background: '#fef3c7', color: '#92400e' }
                             : { background: '#e5e7eb', color: '#374151' };
+                        const paymentStatusStyle =
+                          paymentSummary.status === 'saldato' || paymentSummary.status === 'pagato' || paymentSummary.status === 'pareggio'
+                            ? { background: '#e5e7eb', color: '#374151' }
+                            : paymentSummary.status === 'parziale'
+                            ? { background: '#fef3c7', color: '#92400e' }
+                            : { background: '#fee2e2', color: '#b91c1c' };
 
                         return (
                           <div
@@ -649,6 +730,9 @@ export default function StoricoOperaioPage() {
                                       {record.datore}
                                     </span>
                                   ) : null}
+                                  <span className="soft-chip" style={paymentStatusStyle}>
+                                    {paymentSummary.label}
+                                  </span>
                                 </div>
                                 <div style={{ color: '#667085', fontSize: 14 }}>
                                   {buildHistoryDetail(record)}
@@ -662,8 +746,8 @@ export default function StoricoOperaioPage() {
                                 <MiniInfo label="Compenso" value={formatCurrency(record.retribuzione_calcolata)} />
                                 <MiniInfo label="Busta paga" value={formatCurrency(record.importo_busta_paga)} />
                                 <MiniInfo
-                                  label={diff > 0 ? 'Da pagare' : diff < 0 ? 'Da ricevere' : 'Pareggio'}
-                                  value={diff === 0 ? '—' : formatCurrency(Math.abs(diff))}
+                                  label={diff === 0 ? 'Residuo' : diff > 0 ? 'Da pagare' : 'Da ricevere'}
+                                  value={formatCurrency(Math.abs(diff))}
                                   color={diff > 0 ? '#dc2626' : diff < 0 ? '#059669' : '#374151'}
                                 />
                               </div>
@@ -754,20 +838,25 @@ export default function StoricoOperaioPage() {
                       <HistorySummaryRow label="Dipendente" value={`${previewRecord.employee?.first_name || ''} ${previewRecord.employee?.last_name || ''}`.trim() || '—'} />
                       <HistorySummaryRow label="Mese" value={formatMonth(previewRecord.month)} />
                       <HistorySummaryRow label="Giornate lavorate" value={String(Number(previewRecord.giornate_effettuate || 0))} />
-                      <HistorySummaryRow label="Totale ore" value={formatHours(previewRecord.ore_totali)} />
+                      <HistorySummaryRow label="Ore ordinarie" value={formatHours(previewPaymentSummary?.regularHours)} />
+                      <HistorySummaryRow label="Ore totali" value={formatHours(previewRecord.ore_totali)} />
+                      <HistorySummaryRow label="Giornate + ore residue" value={previewWorkedSummary} />
+                      <HistorySummaryRow label="Retribuzione calcolata" value={formatCurrency(previewRecord.retribuzione_calcolata)} />
+                      <HistorySummaryRow label="Straordinario" value={formatHours(previewPaymentSummary?.overtimeHours)} />
+                      <HistorySummaryRow label="Importo straordinario" value={formatCurrency(previewPaymentSummary?.overtimeAmount)} />
+                      <HistorySummaryRow label="Acconti" value={formatCurrency(previewRecord.acconti)} />
+                      <HistorySummaryRow label="Rate / trattenute" value={formatCurrency(previewSnapshot?.current_installments_total)} />
+                      <HistorySummaryRow label="Recuperi" value={formatCurrency(previewSnapshot?.recoveries_total)} />
+                      <HistorySummaryRow label="Resto precedente" value={formatCurrency(previewRecord.resto_precedente)} />
                       <HistorySummaryRow label="Busta paga" value={formatCurrency(previewRecord.importo_busta_paga)} />
-                      <HistorySummaryRow label="Saldo finale" value={formatCurrency(Math.abs(getRecordEffectiveBalance(previewRecord)))} />
-                      <HistorySummaryRow label="Stato pagamento" value={previewRecord.is_pagato ? 'Pagato' : 'Non pagato'} />
-                      <HistorySummaryRow
-                        label="Credito / debito"
-                        value={
-                          getRecordEffectiveBalance(previewRecord) > 0
-                            ? 'Credito operaio'
-                            : getRecordEffectiveBalance(previewRecord) < 0
-                            ? 'Debito operaio'
-                            : 'Pareggio'
-                        }
-                      />
+                      <HistorySummaryRow label="Credito da dare all'operaio" value={formatCurrency(previewCreditAmount)} />
+                      <HistorySummaryRow label="Debito da ricevere dall'operaio" value={formatCurrency(previewDebtAmount)} />
+                      <HistorySummaryRow label="Importo originario aperto" value={formatCurrency(previewPaymentSummary?.originAmount)} />
+                      <HistorySummaryRow label="Importo pagato" value={formatCurrency(previewPaymentSummary?.paidAmount)} />
+                      <HistorySummaryRow label="Importo residuo" value={formatCurrency(previewPaymentSummary?.residualAmount)} />
+                      <HistorySummaryRow label="Saldo finale" value={formatCurrency(previewPaymentSummary?.residualAmount)} />
+                      <HistorySummaryRow label="Stato finale" value={previewPaymentSummary?.label} />
+                      <HistorySummaryRow label="Data pagamento" value={previewPaymentSummary?.paidDate ? formatDisplayDateTime(previewPaymentSummary.paidDate) : '—'} />
                     </div>
                   </div>
 

@@ -39,6 +39,10 @@ export function formatWorkedSummary(totalHours, standardHours, hoursFormat = 'de
     return `${fullDays} gg`;
   }
 
+  if (fullDays <= 0) {
+    return formatHoursValue(remainingHours, hoursFormat);
+  }
+
   return `${fullDays} gg + ${formatHoursValue(remainingHours, hoursFormat)}`;
 }
 

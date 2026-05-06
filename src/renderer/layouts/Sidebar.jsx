@@ -67,16 +67,16 @@ function MoneyIcon() {
 }
 
 const links = [
-  { path: '/', label: 'Dashboard', icon: '◫' },
+  { path: '/', label: 'Dashboard', icon: '\u25eb' },
   { path: '/dipendenti', label: 'Dipendenti', icon: <PersonIcon /> },
   { path: '/presenze', label: 'Presenze', icon: <AttendanceIcon /> },
-  { path: '/report', label: 'Report', icon: '◪' },
   { path: '/acconti-rate', label: 'Acconti e Rate', icon: <MoneyIcon /> },
-  { path: '/buste-paga', label: 'Buste paga', icon: '▤' },
-  { path: '/comunicazione', label: 'Comunicazione', icon: '✉' },
-  { path: '/storico-operaio', label: 'Storico', icon: '◎' },
-  { path: '/operai-assunti', label: 'Operai assunti', icon: '▣' },
-  { path: '/impostazioni', label: 'Impostazioni', icon: '⚙' },
+  { path: '/report', label: 'Report', icon: '\u25ea' },
+  { path: '/storico-operaio', label: 'Storico', icon: '\u25ce' },
+  { path: '/buste-paga', label: 'Buste paga', icon: '\u25a4' },
+  { path: '/comunicazione', label: 'Comunicazione', icon: '\u2709' },
+  { path: '/operai-assunti', label: 'Operai assunti', icon: '\u25a3' },
+  { path: '/impostazioni', label: 'Impostazioni', icon: '\u2699' },
 ];
 
 export default function Sidebar() {
