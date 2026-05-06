@@ -118,6 +118,25 @@ function buildRecordMergeKey(row) {
   return pages ? `page:${pages}` : '';
 }
 
+function isReadyImportStatus(status) {
+  return status === 'pronto' || status === 'nuovo_rapporto_datore';
+}
+
+function hasMinimumValidData(row) {
+  const firstName = String(row?.first_name || '').trim();
+  const lastName = String(row?.last_name || '').trim();
+  const fiscalCode = String(row?.fiscal_code || '').replace(/\s+/g, '').toUpperCase();
+  const hireDateFrom = toIsoDate(row?.hire_date_from);
+  return !!firstName && !!lastName && /^[A-Z0-9]{16}$/.test(fiscalCode) && !!hireDateFrom;
+}
+
+function hasValidEmployerAssociation(row, employerOptions = []) {
+  const employer = String(row?.hired_by || '').trim().toUpperCase();
+  if (!employer) return false;
+  if (employer === 'ENTRAMBI') return employerOptions.length > 1;
+  return employerOptions.some((option) => String(option.short_name || option.value || '').trim().toUpperCase() === employer);
+}
+
 export default function PdfImportModal({
   open,
   onClose,
@@ -140,6 +159,9 @@ export default function PdfImportModal({
   const [resolvingEmployer, setResolvingEmployer] = useState(false);
   const [employerResolution, setEmployerResolution] = useState(initialEmployerResolution || null);
   const [selectedEmployerShortName, setSelectedEmployerShortName] = useState('');
+  const [employerAssociationMode, setEmployerAssociationMode] = useState('');
+  const [employerFeedback, setEmployerFeedback] = useState(null);
+  const [dismissEmployerMismatch, setDismissEmployerMismatch] = useState(false);
   const recheckTimerRef = useRef(null);
   const [expandedTextKeys, setExpandedTextKeys] = useState(new Set());
 
@@ -151,6 +173,9 @@ export default function PdfImportModal({
       setResolvingEmployer(false);
       setEmployerResolution(initialEmployerResolution || null);
       setSelectedEmployerShortName('');
+      setEmployerAssociationMode('');
+      setEmployerFeedback(null);
+      setDismissEmployerMismatch(false);
       setExpandedTextKeys(new Set());
       if (recheckTimerRef.current) {
         clearTimeout(recheckTimerRef.current);
@@ -195,11 +220,15 @@ export default function PdfImportModal({
     setCurrentDiagnostics(importDiagnostics);
     setEmployerResolution(initialEmployerResolution || null);
     setSelectedEmployerShortName(initialEmployerResolution?.employer_short_name || employerOptions[0]?.short_name || employerOptions[0]?.value || '');
+    setEmployerAssociationMode('');
+    setEmployerFeedback(null);
+    setDismissEmployerMismatch(false);
   }, [open, records, importDiagnostics]);
 
   useEffect(() => {
     setEmployerResolution(initialEmployerResolution || null);
     setSelectedEmployerShortName(initialEmployerResolution?.employer_short_name || employerOptions[0]?.short_name || employerOptions[0]?.value || '');
+    setDismissEmployerMismatch(false);
   }, [initialEmployerResolution, employerOptions]);
 
   useEffect(() => () => {
@@ -211,13 +240,47 @@ export default function PdfImportModal({
 
   const isEmployerResolved = employerResolution?.status === 'matched' || employerResolution?.status === 'mapped';
   const currentEmployerOptions = employerResolution?.employer_options || employerOptions;
-
-  const selectedCount = rows.filter((r) => r.selected && (r.status === 'pronto' || r.status === 'nuovo_rapporto_datore')).length;
-  const readyCount = rows.filter((r) => r.status === 'pronto' || r.status === 'nuovo_rapporto_datore').length;
+  const selectedRows = rows.filter((row) => row.selected);
+  const readyRows = rows.filter((row) => isReadyImportStatus(row.status));
+  const selectedReadyRows = rows.filter((row) =>
+    row.selected &&
+    isReadyImportStatus(row.status) &&
+    hasMinimumValidData(row) &&
+    hasValidEmployerAssociation(row, currentEmployerOptions)
+  );
+  const invalidSelectedRows = selectedRows.filter((row) => !selectedReadyRows.some((candidate) => candidate._key === row._key));
+  const selectedCount = selectedReadyRows.length;
+  const readyCount = readyRows.length;
   const correctionCount = rows.filter((r) => r.status === 'da_correggere' || r.status === 'duplicato').length;
+  const hasEmployerAssociation = selectedReadyRows.length > 0
+    ? selectedReadyRows.every((row) => hasValidEmployerAssociation(row, currentEmployerOptions))
+    : selectedRows.every((row) => hasValidEmployerAssociation(row, currentEmployerOptions));
+  const disabledReason =
+    confirming
+      ? 'confirming'
+      : selectedReadyRows.length === 0
+      ? selectedRows.length === 0
+        ? 'no_selected_rows'
+        : invalidSelectedRows.length > 0
+        ? 'selected_rows_not_ready'
+        : 'no_ready_selected_rows'
+      : !hasEmployerAssociation
+      ? 'missing_employer_association'
+      : 'enabled';
   const onlineOcrEnabled = !!settings?.ocr?.online_fallback_enabled;
   const onlineOcrConfigured = !!settings?.ocr?.online_configured || !!String(settings?.ocr?.ocr_space_api_key || '').trim();
   const canRunOnlineOcr = onlineOcrEnabled && onlineOcrConfigured && !!filePath && !onlineOcrBusy;
+
+  useEffect(() => {
+    console.info('[pdf-import] employer state debug', {
+      selectedEmployerShortName,
+      pdfEmployer,
+      employerAssociationMode,
+      hasEmployerAssociation,
+      readySelectedCount: selectedReadyRows.length,
+      disabledReason,
+    });
+  }, [selectedEmployerShortName, pdfEmployer, employerAssociationMode, hasEmployerAssociation, selectedReadyRows.length, disabledReason]);
 
   if (!open) return null;
 
@@ -341,15 +404,54 @@ export default function PdfImportModal({
     if (!pdfEmployer) return;
     try {
       setResolvingEmployer(true);
+      setEmployerAssociationMode(action);
+      setEmployerFeedback(null);
+      console.info('[pdf-import] employer action click', {
+        action,
+        selectedEmployerShortName,
+        pdfEmployer,
+        employerAssociationMode: action,
+        hasEmployerAssociation,
+        readySelectedCount: selectedReadyRows.length,
+        disabledReason,
+      });
       const payload = {
         action,
         pdfEmployer,
         employerShortName: selectedEmployerShortName,
       };
       const nextResolution = await window.api.employees.resolvePdfEmployer(payload);
+      console.info('[pdf-import] employer action resolved', {
+        action,
+        selectedEmployerShortName,
+        pdfEmployer,
+        nextResolution,
+      });
       setEmployerResolution(nextResolution);
       applyResolvedEmployer(nextResolution);
+      setDismissEmployerMismatch(false);
+      if (action === 'associate_existing') {
+        setEmployerFeedback({
+          tone: 'success',
+          message: `Datore associato correttamente: ${nextResolution.employer_short_name} - ${nextResolution.employer_name}`,
+        });
+      } else {
+        setEmployerFeedback({
+          tone: 'success',
+          message: `Nuovo datore creato e associato correttamente: ${nextResolution.employer_short_name} - ${nextResolution.employer_name}`,
+        });
+      }
     } catch (err) {
+      console.error('[pdf-import] employer action failed', {
+        action,
+        selectedEmployerShortName,
+        pdfEmployer,
+        message: err?.message || String(err),
+      });
+      setEmployerFeedback({
+        tone: 'error',
+        message: `Errore associazione datore: ${err.message}`,
+      });
       alert(`Errore associazione datore: ${err.message}`);
     } finally {
       setResolvingEmployer(false);
@@ -357,11 +459,11 @@ export default function PdfImportModal({
   }
 
   function toggleSelectAll() {
-    const readyRows = rows.filter((r) => r.status === 'pronto' || r.status === 'nuovo_rapporto_datore');
+    const readyRows = rows.filter((r) => isReadyImportStatus(r.status));
     const allSelected = readyRows.length > 0 && readyRows.every((r) => r.selected);
     setRows((prev) => prev.map((r) => ({
       ...r,
-      selected: (r.status === 'pronto' || r.status === 'nuovo_rapporto_datore') ? !allSelected : false,
+      selected: isReadyImportStatus(r.status) ? !allSelected : false,
     })));
   }
 
@@ -481,9 +583,27 @@ export default function PdfImportModal({
   }
 
   async function handleConfirm() {
+    const submitRows = rows
+      .map(normalizeRowForEvaluation)
+      .filter((row) =>
+        row.selected &&
+        isReadyImportStatus(row.status) &&
+        hasMinimumValidData(row) &&
+        hasValidEmployerAssociation(row, currentEmployerOptions)
+      );
+    console.info('[pdf-import] confirm submit debug', {
+      totalRows: rows.length,
+      selectedRows: selectedRows.length,
+      readyRows: readyRows.length,
+      selectedReadyRows: submitRows.length,
+      invalidSelectedRows: invalidSelectedRows.length,
+      hasEmployerAssociation,
+      disabledReason,
+    });
+    if (!submitRows.length) return;
     setConfirming(true);
     try {
-      const res = await onConfirm(rows.map(normalizeRowForEvaluation));
+      const res = await onConfirm(submitRows);
       setResults(res);
     } catch (err) {
       setResults([{ action: 'errore', error: err.message }]);
@@ -584,6 +704,19 @@ export default function PdfImportModal({
                   {onlineOcrMessage}
                 </span>
               ) : null}
+              {employerFeedback ? (
+                <span
+                  className="soft-chip"
+                  style={{
+                    background: employerFeedback.tone === 'error' ? '#fee2e2' : '#dcfce7',
+                    color: employerFeedback.tone === 'error' ? '#b91c1c' : '#166534',
+                    maxWidth: 520,
+                    whiteSpace: 'normal',
+                  }}
+                >
+                  {employerFeedback.message}
+                </span>
+              ) : null}
             </div>
             <div className="toolbar-group pdf-import-toolbar-group">
               <button
@@ -611,20 +744,31 @@ export default function PdfImportModal({
                 </button>
               ))}
               <button type="button" className="button-secondary" style={compactButtonStyle} onClick={toggleSelectAll}>
-                {rows.every((r) => r.selected) ? 'Deseleziona tutto' : 'Seleziona tutto'}
+                {readyRows.length > 0 && readyRows.every((r) => r.selected) ? 'Deseleziona tutto' : 'Seleziona tutto'}
               </button>
             </div>
           </div>
 
-          {employerResolution?.status === 'mismatch' && (
+          {employerResolution?.status === 'mismatch' && !dismissEmployerMismatch && (
             <div className="panel panel-section" style={{ marginBottom: 16, padding: 16, display: 'grid', gap: 12, background: '#fff8e8', border: '1px solid rgba(180, 83, 9, 0.18)', flexShrink: 0 }}>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 800, color: '#92400e' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: '#92400e' }}>
                   Il datore indicato nel PDF non corrisponde ai datori configurati nel gestionale.
                 </div>
                 <div style={{ fontSize: 13, color: '#7c2d12', marginTop: 6 }}>
                   Scegli come associare il datore prima di importare. Nessun dipendente verrà salvato finché non completi questa scelta.
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={() => setDismissEmployerMismatch(true)}
+                  title="Nascondi avviso"
+                  style={{ minHeight: 32, width: 32, padding: 0, borderRadius: 999, flexShrink: 0, fontSize: 16, fontWeight: 800 }}
+                >
+                  ×
+                </button>
               </div>
               <div style={{ display: 'grid', gap: 4, fontSize: 13, color: '#374151' }}>
                 <div><strong>Datore PDF:</strong> {pdfEmployer?.name || '—'}</div>
@@ -651,7 +795,9 @@ export default function PdfImportModal({
                     disabled={!selectedEmployerShortName || resolvingEmployer}
                     onClick={() => handleResolveEmployer('associate_existing')}
                   >
-                    Associa a datore esistente
+                    {resolvingEmployer && employerAssociationMode === 'associate_existing'
+                      ? 'Associazione in corso...'
+                      : 'Associa a datore esistente'}
                   </button>
                   <button
                     type="button"
@@ -659,13 +805,20 @@ export default function PdfImportModal({
                     disabled={resolvingEmployer}
                     onClick={() => handleResolveEmployer('create_new')}
                   >
-                    Aggiungi come nuovo datore
+                    {resolvingEmployer && employerAssociationMode === 'create_new'
+                      ? 'Creazione in corso...'
+                      : 'Aggiungi come nuovo datore'}
                   </button>
                   <button type="button" className="button-secondary" onClick={onClose}>
                     Annulla import
                   </button>
                 </div>
               </div>
+              {resolvingEmployer ? (
+                <div style={{ fontSize: 12, color: '#92400e', fontWeight: 700 }}>
+                  Operazione sul datore in corso...
+                </div>
+              ) : null}
             </div>
           )}
 
@@ -738,7 +891,7 @@ export default function PdfImportModal({
                             <input
                               type="checkbox"
                               checked={row.selected}
-                              disabled={!(row.status === 'pronto' || row.status === 'nuovo_rapporto_datore')}
+                              disabled={!isReadyImportStatus(row.status)}
                               onChange={(e) => updateRow(row._key, 'selected', e.target.checked)}
                             />
                           </td>
@@ -865,7 +1018,8 @@ export default function PdfImportModal({
               type="button"
               className="button"
               onClick={handleConfirm}
-              disabled={!isEmployerResolved || selectedCount === 0 || confirming}
+              disabled={selectedReadyRows.length === 0 || !hasEmployerAssociation || confirming}
+              title={disabledReason === 'enabled' ? 'Importa le righe selezionate e pronte' : `Importazione non disponibile: ${disabledReason}`}
             >
               {confirming ? (
                 <>

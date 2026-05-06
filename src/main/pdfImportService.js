@@ -819,6 +819,48 @@ function buildLabelRegex(label, captureRest = true) {
   );
 }
 
+function buildInlineLabelPattern(label) {
+  return escapeRegExp(String(label || '').trim())
+    .replace(/\\\./g, '[.]?')
+    .replace(/\s+/g, '\\s+');
+}
+
+function extractLabeledInlineValue(text = '', labels = [], stopLabels = [], valueType = 'text') {
+  const normalizedText = normalizeOcrText(text);
+  if (!normalizedText) {
+    return {
+      value: valueType === 'fiscal_code' ? null : '',
+      source: '',
+    };
+  }
+
+  const stopPattern = Array.from(new Set(stopLabels.filter(Boolean)))
+    .map(buildInlineLabelPattern)
+    .join('|');
+
+  for (const label of labels) {
+    const labelPattern = buildInlineLabelPattern(label);
+    const regex = new RegExp(
+      `(?:^|\\b)${labelPattern}(?![a-z0-9])\\s*[:\\-]?\\s*(.+?)${stopPattern ? `(?=\\s*(?:${stopPattern})(?![a-z0-9])|$)` : '$'}`,
+      'i'
+    );
+    const match = regex.exec(normalizedText);
+    if (!match?.[1]) continue;
+    const value = normalizeDetectedFieldValue(match[1], valueType);
+    if (value) {
+      return {
+        value,
+        source: 'inline_text',
+      };
+    }
+  }
+
+  return {
+    value: valueType === 'fiscal_code' ? null : '',
+    source: '',
+  };
+}
+
 function extractLabeledValue(lines = [], labels = [], stopLabels = [], valueType = 'text') {
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const lineText = normalizeOcrText(lines[lineIndex].text);
@@ -923,33 +965,94 @@ function parseEmploymentSection(section4Lines = []) {
   const expectedDaysField = extractLabeledValue(section4Lines, ['giornate previste'], ['tipo lavorazione', 'data inizio', 'data fine'], 'number');
 
   const sectionText = normalizeOcrText(section4Lines.map((line) => line.text).join(' '));
+  const inlineStartDateField = extractLabeledInlineValue(sectionText, ['data inizio', 'inizio rapporto'], ['data fine', 'fine rapporto', 'tipo lavorazione', 'lavorazione', 'retribuzione'], 'date');
+  const inlineEndDateField = extractLabeledInlineValue(sectionText, ['data fine', 'fine rapporto'], ['data inizio', 'inizio rapporto', 'tipo lavorazione', 'lavorazione', 'retribuzione'], 'date');
+  const inlineWorkTypeField = extractLabeledInlineValue(sectionText, ['tipo lavorazione', 'lavorazione'], ['giornate previste', 'data inizio', 'inizio rapporto', 'data fine', 'fine rapporto', 'retribuzione'], 'text');
+  const inlineExpectedDaysField = extractLabeledInlineValue(sectionText, ['giornate previste'], ['tipo lavorazione', 'lavorazione', 'retribuzione', 'data inizio', 'data fine'], 'number');
+  const payField = extractLabeledInlineValue(sectionText, ['retribuzione', 'paga giornaliera', 'importo retribuzione'], ['livello', 'qualifica', 'tipo lavorazione', 'lavorazione'], 'number');
   const sectionDates = [...new Set((sectionText.match(/\b\d{2}\/\d{2}\/\d{4}\b/g) || []))];
-  const fallbackStart = startDateField.value || sectionDates[0] || null;
-  const fallbackEnd = endDateField.value || (sectionDates.length > 1 ? sectionDates[sectionDates.length - 1] : null);
+  const fallbackStart = startDateField.value || inlineStartDateField.value || sectionDates[0] || null;
+  const fallbackEnd = endDateField.value || inlineEndDateField.value || (sectionDates.length > 1 ? sectionDates[sectionDates.length - 1] : null);
 
   return {
     hire_date_from: fallbackStart,
     hire_date_to: fallbackEnd,
-    tipo_lavorazione: workTypeField.value || '',
-    giornate_previste: expectedDaysField.value || '',
+    tipo_lavorazione: workTypeField.value || inlineWorkTypeField.value || '',
+    giornate_previste: expectedDaysField.value || inlineExpectedDaysField.value || '',
+    daily_pay: payField.value || '',
   };
 }
 
 function parseEmployerSection(section1Lines = []) {
+  const sectionText = normalizeOcrText(section1Lines.map((line) => line.text).join(' '));
   const nameField = extractLabeledValue(
     section1Lines,
     ['denominazione', 'ragione sociale'],
-    ['codice fiscale', 'p.iva', 'partita iva', 'comune sede di lavoro', 'indirizzo sede di lavoro'],
+    ['azienda artigiana', 'codice fiscale', 'p.iva', 'partita iva', 'comune sede legale', 'indirizzo sede legale', 'comune sede di lavoro', 'indirizzo sede di lavoro'],
     'text'
   );
   const taxCodeField = extractLabeledValue(
     section1Lines,
-    ['codice fiscale', 'p.iva', 'partita iva'],
-    ['denominazione', 'comune sede di lavoro', 'indirizzo sede di lavoro'],
+    ['codice fiscale'],
+    ['p.iva', 'partita iva', 'denominazione', 'ragione sociale', 'comune sede legale', 'indirizzo sede legale', 'comune sede di lavoro', 'indirizzo sede di lavoro'],
+    'text'
+  );
+  const vatField = extractLabeledValue(
+    section1Lines,
+    ['p.iva', 'partita iva'],
+    ['denominazione', 'ragione sociale', 'comune sede legale', 'indirizzo sede legale', 'comune sede di lavoro', 'indirizzo sede di lavoro'],
+    'text'
+  );
+  const inlineNameField = extractLabeledInlineValue(
+    sectionText,
+    ['denominazione', 'ragione sociale'],
+    ['azienda artigiana', 'codice fiscale', 'p.iva', 'partita iva', 'comune sede legale', 'indirizzo sede legale', 'comune sede di lavoro', 'indirizzo sede di lavoro'],
+    'text'
+  );
+  const inlineTaxCodeField = extractLabeledInlineValue(
+    sectionText,
+    ['codice fiscale'],
+    ['p.iva', 'partita iva', 'denominazione', 'ragione sociale', 'comune sede legale', 'indirizzo sede legale', 'comune sede di lavoro', 'indirizzo sede di lavoro'],
+    'text'
+  );
+  const inlineVatField = extractLabeledInlineValue(
+    sectionText,
+    ['p.iva', 'partita iva'],
+    ['denominazione', 'ragione sociale', 'azienda artigiana', 'comune sede legale', 'indirizzo sede legale', 'comune sede di lavoro', 'indirizzo sede di lavoro'],
+    'text'
+  );
+  const legalComuneField = extractLabeledValue(
+    section1Lines,
+    ['comune sede legale'],
+    ['c.a.p. sede legale', 'indirizzo sede legale', 'telefono sede legale', 'fax sede legale'],
+    'text'
+  );
+  const inlineLegalComuneField = extractLabeledInlineValue(
+    sectionText,
+    ['comune sede legale'],
+    ['c.a.p. sede legale', 'indirizzo sede legale', 'telefono sede legale', 'fax sede legale'],
+    'text'
+  );
+  const legalAddressField = extractLabeledValue(
+    section1Lines,
+    ['indirizzo sede legale'],
+    ['telefono sede legale', 'fax sede legale', 'e-mail sede legale', 'email sede legale', 'comune sede di lavoro'],
+    'text'
+  );
+  const inlineLegalAddressField = extractLabeledInlineValue(
+    sectionText,
+    ['indirizzo sede legale'],
+    ['telefono sede legale', 'fax sede legale', 'e-mail sede legale', 'email sede legale', 'comune sede di lavoro'],
     'text'
   );
   const workplaceComuneField = extractLabeledValue(
     section1Lines,
+    ['comune sede di lavoro'],
+    ['c.a.p. sede di lavoro', 'indirizzo sede di lavoro', 'telefono sede di lavoro', 'fax sede operativa'],
+    'text'
+  );
+  const inlineWorkplaceComuneField = extractLabeledInlineValue(
+    sectionText,
     ['comune sede di lavoro'],
     ['c.a.p. sede di lavoro', 'indirizzo sede di lavoro', 'telefono sede di lavoro', 'fax sede operativa'],
     'text'
@@ -960,14 +1063,48 @@ function parseEmployerSection(section1Lines = []) {
     ['telefono sede di lavoro', 'fax sede operativa', 'e - mail sede di lavoro', 'email sede di lavoro'],
     'text'
   );
+  const inlineWorkplaceAddressField = extractLabeledInlineValue(
+    sectionText,
+    ['indirizzo sede di lavoro'],
+    ['telefono sede di lavoro', 'fax sede operativa', 'e-mail sede di lavoro', 'email sede di lavoro'],
+    'text'
+  );
+  const emailField = extractLabeledInlineValue(
+    sectionText,
+    ['e-mail sede di lavoro', 'email sede di lavoro', 'e-mail sede legale', 'email sede legale'],
+    ['telefono sede di lavoro', 'telefono sede legale', 'fax sede operativa', 'fax sede legale'],
+    'text'
+  );
+  const phoneField = extractLabeledInlineValue(
+    sectionText,
+    ['telefono sede di lavoro', 'telefono sede legale'],
+    ['fax sede operativa', 'fax sede legale', 'e-mail sede di lavoro', 'email sede di lavoro', 'e-mail sede legale', 'email sede legale'],
+    'text'
+  );
 
   const workplace = [workplaceComuneField.value, workplaceAddressField.value].filter(Boolean).join(' · ');
-  const taxIdMatch = normalizeOcrText(taxCodeField.value).toUpperCase().match(/\b([A-Z0-9]{11,16})\b/);
+  const employerTaxCode = normalizeOcrText(taxCodeField.value || inlineTaxCodeField.value).toUpperCase().match(/\b([A-Z]{6}[0-9O]{2}[A-Z][0-9O]{2}[A-Z][0-9O]{3}[A-Z])\b/i)?.[1]?.replace(/O/g, '0') || '';
+  const employerVatNumber = normalizeOcrText(vatField.value || inlineVatField.value).match(/\b(\d{11})\b/)?.[1] || '';
+  const employerName = sanitizeDetectedNamePart(nameField.value || inlineNameField.value);
+  const employerLegalCity = sanitizeDetectedNamePart(legalComuneField.value || inlineLegalComuneField.value);
+  const employerLegalAddress = sanitizeDetectedNamePart(legalAddressField.value || inlineLegalAddressField.value);
+  const employerWorkCity = sanitizeDetectedNamePart(workplaceComuneField.value || inlineWorkplaceComuneField.value || employerLegalCity);
+  const employerWorkAddress = sanitizeDetectedNamePart(workplaceAddressField.value || inlineWorkplaceAddressField.value || employerLegalAddress);
+  const taxId = [employerTaxCode, employerVatNumber].filter(Boolean).join(' / ');
+  const workplaceDisplay = [employerWorkAddress, employerWorkCity].filter(Boolean).join(' - ');
 
   return {
-    name: sanitizeDetectedNamePart(nameField.value),
-    tax_id: taxIdMatch?.[1] || '',
-    workplace,
+    name: employerName,
+    tax_id: taxId,
+    workplace: workplaceDisplay,
+    tax_code: employerTaxCode,
+    vat_number: employerVatNumber,
+    legal_city: employerLegalCity,
+    legal_address: employerLegalAddress,
+    work_city: employerWorkCity,
+    work_address: employerWorkAddress,
+    email: normalizeOcrText(emailField.value),
+    phone: normalizeOcrText(phoneField.value).match(/[\d\s/+()-]{6,}/)?.[0]?.replace(/\s+/g, '') || '',
   };
 }
 
