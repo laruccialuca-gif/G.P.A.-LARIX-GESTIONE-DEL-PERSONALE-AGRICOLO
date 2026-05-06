@@ -99,6 +99,11 @@ function buildPdfHtml(contentHtml) {
           break-after: avoid !important;
         }
 
+        .employee-print-sheet,
+        .employee-print-sheet * {
+          color: #111827 !important;
+        }
+
         .employee-print-sheet > div:first-child {
           margin-bottom: 6px !important;
           gap: 8px !important;
@@ -296,6 +301,80 @@ function buildPdfHtml(contentHtml) {
   `;
 }
 
+async function normalizeEmployeeReportPrintWindow(win) {
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const isEmptyAmount = (value) => {
+        const text = String(value || '').trim();
+        return !text || text === '-' || text === '—' || text === 'â€”';
+      };
+      const normalizeAmount = (value, negative = false) => {
+        const text = String(value || '').trim();
+        if (!negative || isEmptyAmount(text) || text.startsWith('-')) return text;
+        return '- ' + text;
+      };
+
+      document.querySelectorAll('.employee-print-sheet, .employee-print-sheet *').forEach((node) => {
+        if (node.style) node.style.color = '#111827';
+      });
+
+      document.querySelectorAll('.employee-print-sheet [style*="justify-items: center"]').forEach((cell) => {
+        const children = Array.from(cell.children);
+        const indicator = children.find((child) => child.textContent.trim() === 'X');
+        if (indicator) {
+          children.slice(children.indexOf(indicator) + 1).forEach((child) => {
+            if (!/straord/i.test(child.textContent)) child.remove();
+          });
+          return;
+        }
+
+        const detail = children.find((child) => ['Riposo', 'Domenica'].includes(child.textContent.trim()));
+        if (detail) {
+          children.slice(children.indexOf(detail) + 1).forEach((child) => {
+            if (['Riposo', 'Domenica', ''].includes(child.textContent.trim())) child.remove();
+          });
+        }
+      });
+
+      const sections = Array.from(document.querySelectorAll('.employee-print-section'));
+      const economicSection = sections.find((section) => /Riepilogo economico/i.test(section.textContent));
+      const table = economicSection?.children?.[1];
+      if (!table) return;
+
+      const orderedRows = [];
+      Array.from(table.children).forEach((row) => {
+        const labelNode = row.querySelector('div div:first-child');
+        const amountNode = row.lastElementChild;
+        const label = labelNode?.textContent.trim() || '';
+        const detail = labelNode?.nextElementSibling?.textContent.trim() || '';
+        const amount = amountNode?.textContent.trim() || '';
+        let order = null;
+        let hidden = false;
+        let negative = false;
+
+        if (/Retribuzione/i.test(label)) order = 1;
+        else if (/Trasporto/i.test(label)) { order = 2; hidden = isEmptyAmount(amount) || /Non incluso/i.test(detail); }
+        else if (/Crediti/i.test(label)) { order = 3; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); }
+        else if (/Regalo|Extra/i.test(label)) { order = 4; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); }
+        else if (/Busta paga/i.test(label)) { order = 5; hidden = isEmptyAmount(amount) || /Non inserita/i.test(detail); negative = true; }
+        else if (/Rate/i.test(label)) { order = 6; hidden = isEmptyAmount(amount) || /Nessuna/i.test(detail); negative = true; }
+        else if (/Acconti/i.test(label)) { order = 7; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); negative = true; }
+        else if (/Debiti|debiti precedenti/i.test(label)) { order = 8; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); negative = true; }
+        else hidden = true;
+
+        if (!hidden && order !== null) {
+          if (negative && amountNode) amountNode.textContent = normalizeAmount(amount, true);
+          orderedRows.push({ order, row });
+        } else {
+          row.remove();
+        }
+      });
+
+      orderedRows.sort((a, b) => a.order - b.order).forEach(({ row }) => table.appendChild(row));
+    })();
+  `);
+}
+
 async function createPdfBuffer(html) {
   const win = new BrowserWindow({
     show: false,
@@ -309,6 +388,7 @@ async function createPdfBuffer(html) {
 
   await win.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(buildPdfHtml(html))}`);
   await new Promise((resolve) => setTimeout(resolve, 500));
+  await normalizeEmployeeReportPrintWindow(win);
 
   const buffer = await win.webContents.printToPDF({
     printBackground: true,

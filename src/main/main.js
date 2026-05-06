@@ -261,6 +261,7 @@ const employeeRepo = require('./employeeRepo');
 const pdfImportService = require('./pdfImportService');
 const attendanceRepo = require('./attendanceRepo');
 const payrollRepo = require('./payrollRepo');
+const financialMovementsRepo = require('./financialMovementsRepo');
 const dashboardRepo = require('./dashboardRepo');
 const teamsRepo = require('./teamsRepo');
 const communicationRepo = require('./communicationRepo');
@@ -776,6 +777,11 @@ function buildPdfHtml(contentHtml, landscape = false) {
           break-after: avoid !important;
         }
 
+        .employee-print-sheet,
+        .employee-print-sheet * {
+          color: #111827 !important;
+        }
+
         /* HEADER — max 18mm */
         .employee-print-sheet > div:first-child {
           margin-bottom: 6px !important;
@@ -988,6 +994,81 @@ function buildPdfHtml(contentHtml, landscape = false) {
   `;
 }
 
+async function normalizeEmployeeReportPrintWindow(printWindow) {
+  await printWindow.webContents.executeJavaScript(`
+    (() => {
+      const isEmptyAmount = (value) => {
+        const text = String(value || '').trim();
+        return !text || text === '-' || text === '—' || text === 'â€”';
+      };
+      const normalizeAmount = (value, negative = false) => {
+        const text = String(value || '').trim();
+        if (!negative || isEmptyAmount(text) || text.startsWith('-')) return text;
+        return '- ' + text;
+      };
+
+      document.querySelectorAll('.employee-print-sheet, .employee-print-sheet *').forEach((node) => {
+        if (node.style) node.style.color = '#111827';
+      });
+
+      document.querySelectorAll('.employee-print-sheet [style*="justify-items: center"]').forEach((cell) => {
+        const children = Array.from(cell.children);
+        const indicator = children.find((child) => child.textContent.trim() === 'X');
+        if (indicator) {
+          children.slice(children.indexOf(indicator) + 1).forEach((child) => {
+            if (!/straord/i.test(child.textContent)) child.remove();
+          });
+          return;
+        }
+
+        const detail = children.find((child) => ['Riposo', 'Domenica'].includes(child.textContent.trim()));
+        if (detail) {
+          children.slice(children.indexOf(detail) + 1).forEach((child) => {
+            if (['Riposo', 'Domenica', ''].includes(child.textContent.trim())) child.remove();
+          });
+        }
+      });
+
+      const sections = Array.from(document.querySelectorAll('.employee-print-section'));
+      const economicSection = sections.find((section) => /Riepilogo economico/i.test(section.textContent));
+      const table = economicSection?.children?.[1];
+      if (!table) return;
+
+      const orderedRows = [];
+      Array.from(table.children).forEach((row) => {
+        const labelNode = row.querySelector('div div:first-child');
+        const amountNode = row.lastElementChild;
+        const label = labelNode?.textContent.trim() || '';
+        const detail = labelNode?.nextElementSibling?.textContent.trim() || '';
+        const amount = amountNode?.textContent.trim() || '';
+        let order = null;
+        let hidden = false;
+        let negative = false;
+
+        if (/Retribuzione/i.test(label)) order = 1;
+        else if (/Trasporto/i.test(label)) { order = 2; hidden = isEmptyAmount(amount) || /Non incluso/i.test(detail); }
+        else if (/Crediti/i.test(label)) { order = 3; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); }
+        else if (/Regalo|Extra/i.test(label)) { order = 4; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); }
+        else if (/Busta paga/i.test(label)) { order = 5; hidden = isEmptyAmount(amount) || /Non inserita/i.test(detail); negative = true; }
+        else if (/Rate/i.test(label)) { order = 6; hidden = isEmptyAmount(amount) || /Nessuna/i.test(detail); negative = true; }
+        else if (/Acconti/i.test(label)) { order = 7; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); negative = true; }
+        else if (/Debiti|debiti precedenti/i.test(label)) { order = 8; hidden = isEmptyAmount(amount) || /Nessun/i.test(detail); negative = true; }
+        else if (/Compenso del mese/i.test(label)) hidden = true;
+        else hidden = true;
+
+        if (!hidden && order !== null) {
+          if (negative && amountNode) amountNode.textContent = normalizeAmount(amount, true);
+          orderedRows.push({ order, row });
+        } else {
+          row.remove();
+        }
+      });
+
+      orderedRows.sort((a, b) => a.order - b.order).forEach(({ row }) => table.appendChild(row));
+    })();
+  `);
+}
+
 async function createPrintWindow({ html, landscape = false, show = false }) {
   const printWindow = new BrowserWindow({
     show,
@@ -1006,6 +1087,7 @@ async function createPrintWindow({ html, landscape = false, show = false }) {
   );
 
   await new Promise((resolve) => setTimeout(resolve, 500));
+  await normalizeEmployeeReportPrintWindow(printWindow);
 
   if (show) {
     printWindow.show();
@@ -2177,7 +2259,17 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('payroll:saveRecord', async (_, payload) => {
     requireWritableLicense('La creazione o modifica di report e dati economici');
-    return payrollRepo.upsertPayrollRecord(payload);
+    const record = payrollRepo.upsertPayrollRecord(payload);
+    const importedMovementIds = Array.isArray(payload?.importedFinancialMovementIds)
+      ? payload.importedFinancialMovementIds
+      : [];
+    if (importedMovementIds.length) {
+      financialMovementsRepo.markInserted(importedMovementIds, {
+        report_id: record.id,
+        month: record.month,
+      });
+    }
+    return record;
   });
   ipcMain.handle('payroll:listByEmployee', async (_, employeeId) =>
     payrollRepo.listPayrollRecordsByEmployee(employeeId)
@@ -2213,6 +2305,35 @@ app.whenReady().then(async () => {
   ipcMain.handle('payroll:deleteRecord', async (_, id) => {
     requireWritableLicense('La modifica dei report economici');
     return payrollRepo.deletePayrollRecord(id);
+  });
+
+  ipcMain.handle('financialMovements:list', async (_, options) =>
+    financialMovementsRepo.listMovements(options)
+  );
+  ipcMain.handle('financialMovements:listAvailable', async (_, options) =>
+    financialMovementsRepo.listAvailableForReport(options)
+  );
+  ipcMain.handle('financialMovements:countAvailable', async (_, employeeId) =>
+    financialMovementsRepo.countAvailableForReport(employeeId)
+  );
+  ipcMain.handle('financialMovements:countPendingForMonth', async (_, employeeId, month) =>
+    financialMovementsRepo.countPendingForMonth(employeeId, month)
+  );
+  ipcMain.handle('financialMovements:save', async (_, payload) => {
+    requireWritableLicense('La modifica di acconti e rate');
+    return financialMovementsRepo.saveMovement(payload);
+  });
+  ipcMain.handle('financialMovements:createManyForEmployees', async (_, payload) => {
+    requireWritableLicense('La modifica di acconti e rate');
+    return financialMovementsRepo.createManyForEmployees(payload);
+  });
+  ipcMain.handle('financialMovements:delete', async (_, id) => {
+    requireWritableLicense('La modifica di acconti e rate');
+    return financialMovementsRepo.deleteMovement(id);
+  });
+  ipcMain.handle('financialMovements:markInserted', async (_, ids, context) => {
+    requireWritableLicense('La modifica di acconti e rate');
+    return financialMovementsRepo.markInserted(ids, context);
   });
 
   ipcMain.handle('reports:savePdf', async (_, payload) => {

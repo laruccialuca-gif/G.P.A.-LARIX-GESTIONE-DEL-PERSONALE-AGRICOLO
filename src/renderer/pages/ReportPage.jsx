@@ -311,6 +311,10 @@ function formatSignedCurrency(value) {
   }).format(amount);
 }
 
+function formatNegativeCurrency(value) {
+  return `- ${formatCurrency(Math.abs(Number(value || 0)))}`;
+}
+
 function getIpcRecoveryMessage(error, fallbackMessage) {
   const message = String(error?.message || '');
   if (message.includes('No handler registered')) {
@@ -479,6 +483,15 @@ export default function ReportPage() {
   const [previousBalanceReference, setPreviousBalanceReference] = useState(null);
   const [previousBalanceWarning, setPreviousBalanceWarning] = useState('');
   const [isBenefitsSectionCollapsed, setIsBenefitsSectionCollapsed] = useState(false);
+  const [financialImportCounts, setFinancialImportCounts] = useState({ advance: 0, installment: 0 });
+  const [financialImportModal, setFinancialImportModal] = useState({
+    open: false,
+    type: 'advance',
+    items: [],
+    selectedIds: [],
+  });
+  const [pendingSavePrompt, setPendingSavePrompt] = useState(null);
+  const [importedFinancialMovementIds, setImportedFinancialMovementIds] = useState([]);
   const autosaveTimeoutRef = useRef(null);
 
   const [teamPeriodStart, setTeamPeriodStart] = useState(formatLocalDate(startOfMonth(currentMonth)));
@@ -620,6 +633,32 @@ export default function ReportPage() {
       setSelectedEntity('');
     }
   }, [isEmployeeMode, isTeamMode, employee, selectedTeam]);
+
+  async function refreshFinancialImportCounts(targetEmployeeId = employee?.id) {
+    if (!targetEmployeeId || !window.api.financialMovements) {
+      setFinancialImportCounts({ advance: 0, installment: 0 });
+      return;
+    }
+
+    try {
+      const counts = await window.api.financialMovements.countAvailable(targetEmployeeId);
+      setFinancialImportCounts({
+        advance: Number(counts?.advance || 0),
+        installment: Number(counts?.installment || 0),
+      });
+    } catch (err) {
+      console.error(err);
+      setFinancialImportCounts({ advance: 0, installment: 0 });
+    }
+  }
+
+  useEffect(() => {
+    if (!isEmployeeMode || !employee) {
+      setFinancialImportCounts({ advance: 0, installment: 0 });
+      return;
+    }
+    refreshFinancialImportCounts(employee.id);
+  }, [isEmployeeMode, employee?.id, currentMonth]);
 
   async function loadData() {
     setLoading(true);
@@ -1009,6 +1048,102 @@ export default function ReportPage() {
     }
   }
 
+  async function openFinancialImportModal(type = 'advance') {
+    if (!employee) {
+      alert('Seleziona un dipendente');
+      return;
+    }
+
+    try {
+      const items = await window.api.financialMovements.listAvailable({
+        employee_id: employee.id,
+        type,
+      });
+      setFinancialImportModal({
+        open: true,
+        type,
+        items: items || [],
+        selectedIds: (items || []).map((item) => item.id),
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Errore caricamento movimenti da importare');
+    }
+  }
+
+  function closeFinancialImportModal() {
+    setFinancialImportModal((current) => ({ ...current, open: false, selectedIds: [] }));
+  }
+
+  function toggleFinancialImportSelection(id) {
+    setFinancialImportModal((current) => {
+      const exists = current.selectedIds.includes(id);
+      return {
+        ...current,
+        selectedIds: exists
+          ? current.selectedIds.filter((item) => item !== id)
+          : [...current.selectedIds, id],
+      };
+    });
+  }
+
+  async function importSelectedFinancialMovements() {
+    if (!employee) return;
+    const selectedItems = financialImportModal.items.filter((item) =>
+      financialImportModal.selectedIds.includes(item.id)
+    );
+    if (!selectedItems.length) {
+      alert('Seleziona almeno un movimento da importare');
+      return;
+    }
+
+    const currentMonthKey = monthString(currentMonth);
+    if (financialImportModal.type === 'advance') {
+      setAdvances((current) => {
+        const meaningful = current.filter((advance) => !isAdvanceDraftEmpty(advance));
+        return [
+          ...meaningful,
+          ...selectedItems.map((item) => ({
+            amount: String(item.amount || ''),
+            date: item.movement_date || '',
+            includeInReport: true,
+          })),
+          createEmptyAdvance(),
+        ];
+      });
+    } else {
+      setDebtPlans((current) => [
+        ...current,
+        ...selectedItems.map((item) => ({
+          ...createEmptyDebtPlan(),
+          label: item.notes || `Rata ${formatDateLabel(item.movement_date)}`,
+          total_amount: String(item.amount || ''),
+          created_from_month: currentMonthKey,
+          installments: [{
+            target_month: currentMonthKey,
+            amount: String(item.amount || ''),
+            note: item.notes || `Importata da Acconti e Rate ${formatDateLabel(item.movement_date)}`,
+          }],
+        })),
+      ]);
+    }
+
+    try {
+      await window.api.financialMovements.markInserted(
+        selectedItems.map((item) => item.id),
+        { month: currentMonthKey }
+      );
+      setImportedFinancialMovementIds((current) => [
+        ...new Set([...current, ...selectedItems.map((item) => item.id)]),
+      ]);
+      closeFinancialImportModal();
+      await refreshFinancialImportCounts(employee.id);
+    } catch (err) {
+      console.error(err);
+      alert('Movimenti importati nel report, ma non e stato possibile aggiornare lo stato storico.');
+    }
+  }
+
   async function handleSaveDailyPay() {
     if (!employee) return;
 
@@ -1041,6 +1176,25 @@ export default function ReportPage() {
     if (!employee) {
       alert('Seleziona un dipendente');
       return null;
+    }
+
+    if (!options.skipPendingFinancialCheck && !options.silent && !options.autosave) {
+      try {
+        const pending = await window.api.financialMovements.countPendingForMonth(
+          employee.id,
+          monthString(currentMonth)
+        );
+        if (Number(pending?.total || 0) > 0) {
+          setPendingSavePrompt({
+            options,
+            advance: Number(pending?.advance || 0),
+            installment: Number(pending?.installment || 0),
+          });
+          return null;
+        }
+      } catch (err) {
+        console.error(err);
+      }
     }
 
     if (isProcessedRecord && !isEditUnlocked && !options.silent) {
@@ -1118,6 +1272,7 @@ export default function ReportPage() {
         importo_busta_paga: importoBustaPagaNum,
         acconti: totalAdvances,
         advances: normalizedAdvances,
+        importedFinancialMovementIds,
         resto_precedente: restoPrecedenteNum,
         differenza_finale: differenzaFinale,
         n_macchine_mese: trasportoAttivo ? nMacchineMeseNum : 0,
@@ -1238,6 +1393,8 @@ export default function ReportPage() {
         })
       );
       setSaveState('saved');
+      setImportedFinancialMovementIds([]);
+      await refreshFinancialImportCounts(employee.id);
 
       if (!options.silent) {
         alert('Report processato e salvato nello storico');
@@ -2402,9 +2559,14 @@ export default function ReportPage() {
                   </div>
                 </div>
                 {!isBenefitsSectionCollapsed ? (
-                  <button type="button" className="button-secondary" onClick={addAdvance}>
-                    Aggiungi acconto
-                  </button>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button type="button" className="button-secondary" onClick={() => openFinancialImportModal('advance')}>
+                      Importa{financialImportCounts.advance ? ` (${financialImportCounts.advance})` : ''}
+                    </button>
+                    <button type="button" className="button-secondary" onClick={addAdvance}>
+                      Aggiungi acconto
+                    </button>
+                  </div>
                 ) : null}
               </div>
 
@@ -2526,9 +2688,14 @@ export default function ReportPage() {
                   <div style={editorBlockTitleStyle}>4. Rateizzazione debito</div>
                   <div style={fieldSubtleStyle}>Programma le trattenute future e tieni traccia delle rate mensili.</div>
                 </div>
-                <button type="button" className="button-secondary" onClick={addDebtPlan}>
-                  Nuova rateizzazione
-                </button>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button type="button" className="button-secondary" onClick={() => openFinancialImportModal('installment')}>
+                    Importa{financialImportCounts.installment ? ` (${financialImportCounts.installment})` : ''}
+                  </button>
+                  <button type="button" className="button-secondary" onClick={addDebtPlan}>
+                    Nuova rateizzazione
+                  </button>
+                </div>
               </div>
 
               {!debtPlans.length ? (
@@ -2828,6 +2995,94 @@ export default function ReportPage() {
       ) : (
         <div style={emptyBoxStyle}>Selezione non disponibile.</div>
       )}
+
+      {financialImportModal.open ? (
+        <div className="no-print" style={modalBackdropStyle}>
+          <div style={modalCardStyle}>
+            <div style={sectionToolbarStyle}>
+              <div>
+                <div style={editorBlockTitleStyle}>
+                  Importa {financialImportModal.type === 'installment' ? 'rate' : 'acconti'}
+                </div>
+                <div style={fieldSubtleStyle}>
+                  Movimenti non inseriti disponibili per {employee?.first_name} {employee?.last_name}.
+                </div>
+              </div>
+              <button type="button" className="button-secondary" onClick={closeFinancialImportModal}>
+                Chiudi
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gap: 8, marginTop: 14, maxHeight: 320, overflow: 'auto' }}>
+              {financialImportModal.items.map((item) => (
+                <label key={item.id} style={importMovementRowStyle}>
+                  <input
+                    type="checkbox"
+                    checked={financialImportModal.selectedIds.includes(item.id)}
+                    onChange={() => toggleFinancialImportSelection(item.id)}
+                  />
+                  <span style={{ minWidth: 0 }}>
+                    <strong>{formatDateLabel(item.movement_date)} · {formatCurrency(item.amount)}</strong>
+                    <span style={{ display: 'block', color: '#4b5563', fontSize: 12 }}>
+                      {item.employer_key || datore || 'Datore'}{item.notes ? ` · ${item.notes}` : ''}
+                    </span>
+                  </span>
+                </label>
+              ))}
+              {!financialImportModal.items.length ? (
+                <div style={emptyBoxStyle}>Nessun movimento disponibile da importare.</div>
+              ) : null}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
+              <button type="button" className="button-secondary" onClick={closeFinancialImportModal}>
+                Annulla
+              </button>
+              <button type="button" className="button" onClick={importSelectedFinancialMovements}>
+                Importa nel report
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {pendingSavePrompt ? (
+        <div className="no-print" style={modalBackdropStyle}>
+          <div style={modalCardStyle}>
+            <div style={editorBlockTitleStyle}>Movimenti non inseriti</div>
+            <div style={{ ...fieldSubtleStyle, marginTop: 8 }}>
+              Attenzione: ci sono acconti o rate non ancora inseriti nel report. Vuoi controllarli prima di salvare?
+            </div>
+            <div style={{ ...fieldSubtleStyle, marginTop: 8 }}>
+              Acconti: {pendingSavePrompt.advance} · Rate: {pendingSavePrompt.installment}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={async () => {
+                  const nextOptions = pendingSavePrompt.options || {};
+                  setPendingSavePrompt(null);
+                  await handleSavePayrollRecord({ ...nextOptions, skipPendingFinancialCheck: true });
+                }}
+              >
+                Salva comunque
+              </button>
+              <button
+                type="button"
+                className="button"
+                onClick={() => {
+                  const type = pendingSavePrompt.advance > 0 ? 'advance' : 'installment';
+                  setPendingSavePrompt(null);
+                  openFinancialImportModal(type);
+                }}
+              >
+                Controlla ora
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2903,11 +3158,15 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers, showOvertimeIn
           ? 'neutral'
           : 'empty';
         const indicatorLabel = isWorkedDay ? 'X' : specialCode || (isSunday || isEmptyDay ? '•' : '—');
-        const helperLabel = markerMeta?.symbol || markerMeta?.text || markerMeta?.value || '';
-        const detailLabel = hasHours
-          ? formatHoursValue(normalHours + overtimeHours, hoursFormat)
+        const rawHelperLabel = markerMeta?.symbol || markerMeta?.text || markerMeta?.value || '';
+        const helperLabel =
+          rawHelperLabel && rawHelperLabel !== indicatorLabel && !isWorkedDay
+            ? rawHelperLabel
+            : '';
+        const detailLabel = isWorkedDay
+          ? ''
           : specialCode
-          ? specialCode
+          ? ''
           : isSunday
           ? 'Riposo'
           : 'Assenza';
@@ -2921,15 +3180,17 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers, showOvertimeIn
             <div style={rp2DayIndicatorStyle(indicatorTone, markerMeta?.color)}>
               {indicatorLabel}
             </div>
-            <div style={rp2DayDetailStyle(isWorkedDay || specialCode !== null)}>
-              {detailLabel}
-            </div>
+            {detailLabel ? (
+              <div style={rp2DayDetailStyle(!isWorkedDay && !isEmptyDay)}>
+                {detailLabel}
+              </div>
+            ) : null}
             {overtimeHours > 0 ? (
               <div style={rp2DayMetaAccentStyle}>+{formatHoursValue(overtimeHours, hoursFormat)} straord.</div>
             ) : helperLabel ? (
               <div style={rp2DayMetaStyle(markerMeta?.color)}>{helperLabel}</div>
             ) : (
-              <div style={rp2DayMetaMutedStyle}>{isSunday ? 'Domenica' : ' '}</div>
+              <div style={rp2DayMetaMutedStyle}> </div>
             )}
           </div>
         );
@@ -2988,7 +3249,6 @@ function EmployeePrintArea({
       : differenzaFinale < 0
       ? "Resto da ricevere dall'operaio"
       : 'Saldo perfetto';
-  const previousBalanceLabel = getPreviousBalanceLabel(restoPrecedenteNum);
   const payslipDaysNum = Number(giornateBustaPaga || 0);
   const hasMultipleEmployers = Array.isArray(employerOptions) && employerOptions.length > 1;
   const selectedEmployer = hasMultipleEmployers
@@ -3018,6 +3278,7 @@ function EmployeePrintArea({
           : `${workedDays} gg · ${formatHoursValue(displayTotalHours, hoursFormat)}`,
       value: formatCurrency(totalCalculatedPay),
       tone: 'base',
+      order: 1,
     },
     {
       label: 'Busta paga',
@@ -3025,7 +3286,9 @@ function EmployeePrintArea({
         ? `${payslipDaysNum} giornate${hasMultipleEmployers && selectedEmployerLabel ? ` · ${selectedEmployerLabel}` : ''}`
         : 'Non inserita',
       value: importoBustaPagaNum > 0 ? formatCurrency(importoBustaPagaNum) : '—',
-      tone: 'base',
+      tone: 'negative',
+      order: 5,
+      hidden: importoBustaPagaNum <= 0,
     },
     {
       label: 'Trasporto',
@@ -3033,13 +3296,17 @@ function EmployeePrintArea({
         ? `${nMacchineMeseNum} macchine × ${formatCurrency(prezzoPerMacchinaNum)}`
         : 'Non incluso',
       value: totaleTrasporto !== 0 ? formatCurrency(totaleTrasporto) : '—',
-      tone: totaleTrasporto !== 0 ? 'positive' : 'muted',
+      tone: 'positive',
+      order: 2,
+      hidden: !trasportoAttivo || totaleTrasporto === 0,
     },
     {
       label: giftLabel || 'Regalo / Extra',
       detail: giftAmountNum !== 0 ? 'Voce aggiuntiva del mese' : 'Nessun extra',
       value: giftAmountNum !== 0 ? formatCurrency(giftAmountNum) : '—',
-      tone: giftAmountNum !== 0 ? 'positive' : 'muted',
+      tone: 'positive',
+      order: 4,
+      hidden: giftAmountNum === 0,
     },
     {
       label: 'Acconti',
@@ -3047,7 +3314,9 @@ function EmployeePrintArea({
         ? `${visibleAdvances.length} registrazion${visibleAdvances.length > 1 ? 'i' : 'e'} nel mese`
         : 'Nessun acconto',
       value: totalAdvances > 0 ? formatCurrency(totalAdvances) : '—',
-      tone: totalAdvances > 0 ? 'negative' : 'muted',
+      tone: 'negative',
+      order: 7,
+      hidden: totalAdvances <= 0,
     },
     {
       label: 'Rate',
@@ -3055,13 +3324,17 @@ function EmployeePrintArea({
         ? `${currentInstallments.length} rat${currentInstallments.length > 1 ? 'e' : 'a'} in corso`
         : 'Nessuna rata',
       value: currentInstallmentTotal > 0 ? formatCurrency(currentInstallmentTotal) : '—',
-      tone: currentInstallmentTotal > 0 ? 'negative' : 'muted',
+      tone: 'negative',
+      order: 6,
+      hidden: currentInstallmentTotal <= 0,
     },
     {
-      label: previousBalanceLabel || 'Crediti / debiti precedenti',
+      label: restoPrecedenteNum > 0 ? 'Crediti precedenti' : 'Debiti precedenti',
       detail: restoPrecedenteNum !== 0 ? 'Saldo importato dal mese precedente' : 'Nessun saldo precedente',
-      value: restoPrecedenteNum !== 0 ? formatSignedCurrency(restoPrecedenteNum) : '—',
+      value: restoPrecedenteNum > 0 ? formatCurrency(restoPrecedenteNum) : formatNegativeCurrency(restoPrecedenteNum),
       tone: restoPrecedenteNum > 0 ? 'positive' : restoPrecedenteNum < 0 ? 'negative' : 'muted',
+      order: restoPrecedenteNum > 0 ? 3 : 8,
+      hidden: restoPrecedenteNum === 0,
     },
     {
       label: 'Compenso del mese',
@@ -3069,8 +3342,9 @@ function EmployeePrintArea({
       value: formatCurrency(compensationMonthAmount),
       tone: compensationMonthAmount >= 0 ? 'base' : 'negative',
       strong: true,
+      hidden: true,
     },
-  ];
+  ].filter((row) => !row.hidden).sort((a, b) => a.order - b.order);
 
   return (
     <div className="print-area employee-print-area">
@@ -3148,7 +3422,9 @@ function EmployeePrintArea({
                   <div style={rp2EconLabelStyle(row.strong)}>{row.label}</div>
                   <div style={rp2EconSubStyle}>{row.detail}</div>
                 </div>
-                <div style={rp2EconAmountStyle(row.tone, row.strong)}>{row.value}</div>
+                <div style={rp2EconAmountStyle(row.tone, row.strong)}>
+                  {row.tone === 'negative' && !String(row.value).trim().startsWith('-') ? `- ${row.value}` : row.value}
+                </div>
               </div>
             ))}
           </div>
@@ -3878,6 +4154,38 @@ const teamEditorGridStyle = {
   gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
 };
 
+const modalBackdropStyle = {
+  position: 'fixed',
+  inset: 0,
+  zIndex: 1000,
+  display: 'grid',
+  placeItems: 'center',
+  padding: 20,
+  background: 'rgba(15, 23, 42, 0.42)',
+};
+
+const modalCardStyle = {
+  width: 'min(720px, 96vw)',
+  maxHeight: '90vh',
+  overflow: 'auto',
+  padding: 18,
+  borderRadius: 12,
+  background: '#fff',
+  boxShadow: '0 24px 60px rgba(15, 23, 42, 0.22)',
+};
+
+const importMovementRowStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'auto minmax(0, 1fr)',
+  gap: 10,
+  alignItems: 'center',
+  padding: '10px 12px',
+  borderRadius: 10,
+  border: '1px solid rgba(31, 41, 55, 0.1)',
+  background: '#f8fafc',
+  cursor: 'pointer',
+};
+
 const teamEditorCardStyle = {
   display: 'grid',
   gap: 12,
@@ -4200,7 +4508,7 @@ const rp2SectionLabelStyle = {
   fontWeight: 800,
   letterSpacing: '0.08em',
   textTransform: 'uppercase',
-  color: '#6b7280',
+  color: '#111827',
   marginBottom: 12,
 };
 const rp2HeaderStyle = {
@@ -4211,7 +4519,7 @@ const rp2HeaderStyle = {
   marginBottom: 18,
 };
 const rp2NameStyle = { fontSize: 28, fontWeight: 800, color: '#111827', lineHeight: 1.05 };
-const rp2SubtitleStyle = { fontSize: 13, color: '#6b7280', marginTop: 6 };
+const rp2SubtitleStyle = { fontSize: 13, color: '#111827', marginTop: 6 };
 const rp2BadgeStyle = (isPaid) => ({
   fontSize: 11,
   fontWeight: 800,
@@ -4230,9 +4538,9 @@ const rp2SummaryCardStyle = {
   padding: '14px 16px',
   background: 'linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)',
 };
-const rp2CardLabelStyle = { fontSize: 11, fontWeight: 800, color: '#667085', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 };
+const rp2CardLabelStyle = { fontSize: 11, fontWeight: 800, color: '#111827', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 };
 const rp2CardValueStyle = { fontSize: 24, fontWeight: 800, color: '#111827', lineHeight: 1.1 };
-const rp2CardSubStyle = { fontSize: 11, color: '#6b7280', marginTop: 6 };
+const rp2CardSubStyle = { fontSize: 11, color: '#111827', marginTop: 6 };
 const rp2TariffRowStyle = { display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 6 };
 const rp2TariffPillStyle = {
   display: 'inline-flex',
@@ -4244,9 +4552,9 @@ const rp2TariffPillStyle = {
   background: '#f8fafc',
   fontSize: 12,
 };
-const rp2TariffLabelStyle = { color: '#6b7280' };
+const rp2TariffLabelStyle = { color: '#111827' };
 const rp2WeekBlockStyle = { display: 'grid', gap: 6, marginTop: 10 };
-const rp2WeekLabelStyle = { fontSize: 10, fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' };
+const rp2WeekLabelStyle = { fontSize: 10, fontWeight: 800, color: '#111827', textTransform: 'uppercase', letterSpacing: '0.08em' };
 const rp2WeekGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 8 };
 const rp2DayCellStyle = (isSunday) => ({
   border: '1px solid rgba(31, 41, 55, 0.08)',
@@ -4260,17 +4568,17 @@ const rp2DayCellStyle = (isSunday) => ({
   justifyItems: 'center',
 });
 const rp2DayHeaderTopStyle = { display: 'grid', gap: 1, justifyItems: 'center' };
-const rp2DayHeaderLabelStyle = { fontSize: 9, color: '#94a3b8', fontWeight: 700, textTransform: 'uppercase' };
+const rp2DayHeaderLabelStyle = { fontSize: 9, color: '#111827', fontWeight: 700, textTransform: 'uppercase' };
 const rp2DayHeaderNumberStyle = { fontSize: 13, color: '#111827', fontWeight: 800, lineHeight: 1 };
 const rp2DayIndicatorStyle = (tone, markerColor) => {
   const palette =
     tone === 'worked'
-      ? { background: '#dcfce7', color: '#166534', border: '#bbf7d0' }
+      ? { background: '#dcfce7', color: '#111827', border: '#bbf7d0' }
       : tone === 'special'
-      ? { background: 'rgba(59, 130, 246, 0.12)', color: markerColor || '#2563eb', border: 'rgba(59, 130, 246, 0.18)' }
+      ? { background: 'rgba(59, 130, 246, 0.12)', color: '#111827', border: 'rgba(59, 130, 246, 0.18)' }
       : tone === 'neutral'
-      ? { background: '#f3f4f6', color: '#6b7280', border: '#e5e7eb' }
-      : { background: '#fff7ed', color: '#9a3412', border: '#fed7aa' };
+      ? { background: '#f3f4f6', color: '#111827', border: '#e5e7eb' }
+      : { background: '#fff7ed', color: '#111827', border: '#fed7aa' };
   return {
     width: 28,
     height: 28,
@@ -4286,7 +4594,7 @@ const rp2DayIndicatorStyle = (tone, markerColor) => {
 };
 const rp2DayDetailStyle = (active) => ({
   fontSize: 10,
-  color: active ? '#111827' : '#94a3b8',
+  color: '#111827',
   fontWeight: active ? 700 : 600,
   lineHeight: 1.2,
   minHeight: 24,
@@ -4294,9 +4602,9 @@ const rp2DayDetailStyle = (active) => ({
   alignItems: 'center',
 });
 const rp2DayMetaAccentStyle = { fontSize: 9, color: '#b45309', fontWeight: 700, lineHeight: 1.1 };
-const rp2DayMetaStyle = (color) => ({ fontSize: 9, color: color || '#6b7280', fontWeight: 700, lineHeight: 1.1 });
-const rp2DayMetaMutedStyle = { fontSize: 9, color: '#cbd5e1', lineHeight: 1.1, minHeight: 11 };
-const rp2AttendanceLegendStyle = { display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12, fontSize: 11, color: '#667085' };
+const rp2DayMetaStyle = () => ({ fontSize: 9, color: '#111827', fontWeight: 700, lineHeight: 1.1 });
+const rp2DayMetaMutedStyle = { fontSize: 9, color: '#111827', lineHeight: 1.1, minHeight: 11 };
+const rp2AttendanceLegendStyle = { display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12, fontSize: 11, color: '#111827' };
 const rp2LegendItemStyle = { display: 'inline-flex', alignItems: 'center', gap: 6 };
 const rp2LegendDotStyle = (tone) => ({
   width: 10,
@@ -4315,11 +4623,11 @@ const rp2EconRowStyle = (strong = false) => ({
   borderBottom: strong ? 'none' : '1px solid rgba(241, 245, 249, 0.95)',
 });
 const rp2EconLabelStyle = (strong = false) => ({ fontSize: strong ? 13 : 12, fontWeight: strong ? 800 : 700, color: '#111827' });
-const rp2EconSubStyle = { fontSize: 11, color: '#6b7280', marginTop: 4, lineHeight: 1.35 };
+const rp2EconSubStyle = { fontSize: 11, color: '#111827', marginTop: 4, lineHeight: 1.35 };
 const rp2EconAmountStyle = (tone = 'base', strong = false) => ({
   fontSize: strong ? 15 : 13,
   fontWeight: 800,
-  color: tone === 'positive' ? '#166534' : tone === 'negative' ? '#b91c1c' : tone === 'muted' ? '#94a3b8' : '#111827',
+  color: '#111827',
   whiteSpace: 'nowrap',
   marginLeft: 'auto',
   flexShrink: 0,
@@ -4362,7 +4670,7 @@ const rp2ResultCardStyle = (value) => ({
   marginTop: 16,
 });
 const rp2ResultLabelStyle = { fontSize: 14, fontWeight: 800, color: '#111827', marginBottom: 4 };
-const rp2ResultFormulaStyle = { fontSize: 11, color: '#6b7280', lineHeight: 1.35 };
+const rp2ResultFormulaStyle = { fontSize: 11, color: '#111827', lineHeight: 1.35 };
 const rp2ResultValueStyle = (value) => ({
   fontSize: 28,
   fontWeight: 900,
@@ -4378,7 +4686,7 @@ const rp2NoteStyle = {
   background: '#f8fafc',
   border: '1px solid rgba(31, 41, 55, 0.06)',
   fontSize: 11,
-  color: '#475467',
+  color: '#111827',
   lineHeight: 1.5,
 };
 const rp2FooterStyle = {
@@ -4390,7 +4698,7 @@ const rp2FooterStyle = {
   gap: 12,
   flexWrap: 'wrap',
   fontSize: 11,
-  color: '#98a2b3',
+  color: '#111827',
   textTransform: 'uppercase',
   letterSpacing: '0.06em',
   fontWeight: 700,

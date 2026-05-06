@@ -759,6 +759,13 @@ function deletePayrollRecord(id) {
     `).run(id);
 
     db.prepare(`
+      UPDATE employee_financial_movements
+      SET inserted_report_id = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE inserted_report_id = ?
+    `).run(id);
+
+    db.prepare(`
       DELETE FROM payroll_records
       WHERE id = ?
     `).run(id);

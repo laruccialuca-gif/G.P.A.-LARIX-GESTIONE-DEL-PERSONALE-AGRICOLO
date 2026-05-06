@@ -46,15 +46,16 @@ function AttendanceIcon() {
 }
 
 const links = [
-  { path: '/', label: 'Dashboard', icon: '◫' },
+  { path: '/', label: 'Dashboard', icon: 'DB' },
   { path: '/dipendenti', label: 'Dipendenti', icon: <PersonIcon /> },
   { path: '/presenze', label: 'Presenze', icon: <AttendanceIcon /> },
-  { path: '/report', label: 'Report', icon: '◪' },
-  { path: '/buste-paga', label: 'Buste paga', icon: '▤' },
-  { path: '/comunicazione', label: 'Comunicazione', icon: '✉' },
-  { path: '/storico-operaio', label: 'Storico', icon: '◎' },
-  { path: '/operai-assunti', label: 'Operai assunti', icon: '▣' },
-  { path: '/impostazioni', label: 'Impostazioni', icon: '⚙' },
+  { path: '/report', label: 'Report', icon: 'RP' },
+  { path: '/acconti-rate', label: 'Acconti e Rate', icon: 'EUR' },
+  { path: '/buste-paga', label: 'Buste paga', icon: 'BP' },
+  { path: '/comunicazione', label: 'Comunicazione', icon: '@' },
+  { path: '/storico-operaio', label: 'Storico', icon: 'ST' },
+  { path: '/operai-assunti', label: 'Operai assunti', icon: 'OA' },
+  { path: '/impostazioni', label: 'Impostazioni', icon: 'IM' },
 ];
 
 export default function Sidebar() {
@@ -93,7 +94,7 @@ export default function Sidebar() {
               <span className="sidebar-link-icon">{link.icon}</span>
               {link.label}
             </span>
-            <span>{'›'}</span>
+            <span>{'>'}</span>
           </Link>
         ))}
       </nav>

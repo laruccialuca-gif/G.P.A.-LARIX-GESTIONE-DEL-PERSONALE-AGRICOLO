@@ -1276,6 +1276,7 @@ function deleteEmployeePermanently(id) {
     db.prepare('DELETE FROM communication_details WHERE employee_id = ?').run(employeeId);
     db.prepare('DELETE FROM payroll_debt_installments WHERE employee_id = ?').run(employeeId);
     db.prepare('DELETE FROM payroll_debt_plans WHERE employee_id = ?').run(employeeId);
+    db.prepare('DELETE FROM employee_financial_movements WHERE employee_id = ?').run(employeeId);
     db.prepare('DELETE FROM attendance WHERE employee_id = ?').run(employeeId);
     db.prepare('DELETE FROM team_members WHERE employee_id = ?').run(employeeId);
     db.prepare('DELETE FROM employee_employment_periods WHERE employee_id = ?').run(employeeId);
@@ -1360,6 +1361,7 @@ function bulkDeleteEmployees(ids = []) {
     db.prepare(`DELETE FROM communication_details WHERE employee_id IN (${placeholders})`).run(...employeeIds);
     db.prepare(`DELETE FROM payroll_debt_installments WHERE employee_id IN (${placeholders})`).run(...employeeIds);
     db.prepare(`DELETE FROM payroll_debt_plans WHERE employee_id IN (${placeholders})`).run(...employeeIds);
+    db.prepare(`DELETE FROM employee_financial_movements WHERE employee_id IN (${placeholders})`).run(...employeeIds);
     db.prepare(`DELETE FROM attendance WHERE employee_id IN (${placeholders})`).run(...employeeIds);
     db.prepare(`DELETE FROM team_members WHERE employee_id IN (${placeholders})`).run(...employeeIds);
     db.prepare(`DELETE FROM employee_employment_periods WHERE employee_id IN (${placeholders})`).run(...employeeIds);

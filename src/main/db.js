@@ -254,6 +254,25 @@ function runCoreSchemaMigration(database) {
       FOREIGN KEY (payroll_record_id) REFERENCES payroll_records(id)
     );
 
+    CREATE TABLE IF NOT EXISTS employee_financial_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL CHECK (type IN ('advance', 'installment')),
+      employee_id INTEGER NOT NULL,
+      team_id INTEGER,
+      employer_key TEXT,
+      movement_date TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'inserted')),
+      inserted_report_id INTEGER,
+      inserted_month TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (employee_id) REFERENCES employees(id),
+      FOREIGN KEY (team_id) REFERENCES teams(id),
+      FOREIGN KEY (inserted_report_id) REFERENCES payroll_records(id)
+    );
+
     CREATE TABLE IF NOT EXISTS teams (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -442,6 +461,9 @@ function runCoreSchemaMigration(database) {
     CREATE INDEX IF NOT EXISTS idx_employee_documents_employee ON employee_documents(employee_id, category);
     CREATE INDEX IF NOT EXISTS idx_payroll_documents_record ON payroll_documents(payroll_record_id, category);
     CREATE INDEX IF NOT EXISTS idx_payroll_advances_record ON payroll_advances(payroll_record_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_employee_financial_movements_lookup ON employee_financial_movements(employee_id, type, status, movement_date, id);
+    CREATE INDEX IF NOT EXISTS idx_employee_financial_movements_team ON employee_financial_movements(team_id, movement_date, id);
+    CREATE INDEX IF NOT EXISTS idx_employee_financial_movements_report ON employee_financial_movements(inserted_report_id, inserted_month);
     CREATE INDEX IF NOT EXISTS idx_payroll_debt_plans_employee ON payroll_debt_plans(employee_id, status, id);
     CREATE INDEX IF NOT EXISTS idx_payroll_debt_installments_employee_month ON payroll_debt_installments(employee_id, target_month, is_paid, sort_order, id);
     CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id, sort_order, id);
@@ -627,6 +649,41 @@ function runUsersCreatedByMigration(database) {
   });
 }
 
+function runEmployeeFinancialMovementsMigration(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS employee_financial_movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL CHECK (type IN ('advance', 'installment')),
+      employee_id INTEGER NOT NULL,
+      team_id INTEGER,
+      employer_key TEXT,
+      movement_date TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'inserted')),
+      inserted_report_id INTEGER,
+      inserted_month TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (employee_id) REFERENCES employees(id),
+      FOREIGN KEY (team_id) REFERENCES teams(id),
+      FOREIGN KEY (inserted_report_id) REFERENCES payroll_records(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_employee_financial_movements_lookup
+      ON employee_financial_movements(employee_id, type, status, movement_date, id);
+    CREATE INDEX IF NOT EXISTS idx_employee_financial_movements_team
+      ON employee_financial_movements(team_id, movement_date, id);
+    CREATE INDEX IF NOT EXISTS idx_employee_financial_movements_report
+      ON employee_financial_movements(inserted_report_id, inserted_month);
+  `);
+
+  logDbEvent('schema-table-updated', {
+    table_name: 'employee_financial_movements',
+    columns_added: ['initial_schema'],
+  });
+}
+
 const MIGRATIONS = [
   {
     id: '2026-04-20-core-schema',
@@ -667,6 +724,10 @@ const MIGRATIONS = [
   {
     id: '2026-05-02-users-created-by-user-id',
     run: runUsersCreatedByMigration,
+  },
+  {
+    id: '2026-05-06-employee-financial-movements',
+    run: runEmployeeFinancialMovementsMigration,
   },
 ];
 

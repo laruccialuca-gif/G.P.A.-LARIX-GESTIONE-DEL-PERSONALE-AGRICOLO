@@ -171,6 +171,19 @@ contextBridge.exposeInMainWorld('api', {
     deleteRecord: (id) => ipcRenderer.invoke('payroll:deleteRecord', id),
   },
 
+  financialMovements: {
+    list: (options) => ipcRenderer.invoke('financialMovements:list', options),
+    listAvailable: (options) => ipcRenderer.invoke('financialMovements:listAvailable', options),
+    countAvailable: (employeeId) => ipcRenderer.invoke('financialMovements:countAvailable', employeeId),
+    countPendingForMonth: (employeeId, month) =>
+      ipcRenderer.invoke('financialMovements:countPendingForMonth', employeeId, month),
+    save: (payload) => ipcRenderer.invoke('financialMovements:save', payload),
+    createManyForEmployees: (payload) =>
+      ipcRenderer.invoke('financialMovements:createManyForEmployees', payload),
+    delete: (id) => ipcRenderer.invoke('financialMovements:delete', id),
+    markInserted: (ids, context) => ipcRenderer.invoke('financialMovements:markInserted', ids, context),
+  },
+
   reports: {
     savePdf: (payload) => ipcRenderer.invoke('reports:savePdf', payload),
     printHtml: (payload) => ipcRenderer.invoke('reports:printHtml', payload),
