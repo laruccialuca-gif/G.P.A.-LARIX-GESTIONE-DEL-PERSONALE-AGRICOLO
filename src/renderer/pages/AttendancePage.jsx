@@ -251,6 +251,11 @@ function buildTeamRows(team, year) {
     }));
 }
 
+function sameNumberArray(left = [], right = []) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => Number(value) === Number(right[index]));
+}
+
 function parseDateValue(value) {
   const [year, month, day] = String(value || '').split('-');
   if (!year || !month) return null;
@@ -751,14 +756,17 @@ export default function AttendancePage() {
     [availableMarkers]
   );
 
-  const selectedMeta = parseSelection(selectedEntity);
+  const selectedMeta = useMemo(() => parseSelection(selectedEntity), [selectedEntity]);
   const visibleTeams = useMemo(
     () => teams.filter((team) => buildTeamRows(team, selectedYear).length > 0),
     [teams, selectedYear]
   );
-  const selectedTeam = selectedMeta.type === 'team'
-    ? visibleTeams.find((team) => Number(team.id) === selectedMeta.id) || null
-    : null;
+  const selectedTeam = useMemo(
+    () => selectedMeta.type === 'team'
+      ? visibleTeams.find((team) => Number(team.id) === selectedMeta.id) || null
+      : null,
+    [selectedMeta.type, selectedMeta.id, visibleTeams]
+  );
 
   const displayRows = useMemo(() => {
     if (selectedMeta.type === 'employee') {
@@ -793,9 +801,10 @@ export default function AttendancePage() {
   }, [selectedMeta.type, selectedMeta.id, activeEmployees, visibleTeams]);
 
   useEffect(() => {
-    setSelectedEmployeeIds((current) =>
-      current.filter((employeeId) => visibleEmployeeIds.includes(Number(employeeId)))
-    );
+    setSelectedEmployeeIds((current) => {
+      const next = current.filter((employeeId) => visibleEmployeeIds.includes(Number(employeeId)));
+      return sameNumberArray(current, next) ? current : next;
+    });
   }, [visibleEmployeeIds]);
 
   useEffect(() => {

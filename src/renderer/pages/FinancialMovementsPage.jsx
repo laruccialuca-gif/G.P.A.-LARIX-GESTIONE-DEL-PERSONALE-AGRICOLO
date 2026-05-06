@@ -18,6 +18,12 @@ function formatCurrency(value) {
   }).format(Number(value || 0));
 }
 
+function parseAmountInput(value) {
+  const normalized = String(value || '').trim().replace(',', '.');
+  const amount = Number(normalized);
+  return Number.isFinite(amount) ? amount : 0;
+}
+
 function formatDateLabel(value) {
   if (!value) return '-';
   const [year, month, day] = String(value).slice(0, 10).split('-');
@@ -162,7 +168,7 @@ export default function FinancialMovementsPage() {
         id: form.id,
         type: form.type,
         movement_date: form.movement_date,
-        amount: Number(form.amount || 0),
+        amount: parseAmountInput(form.amount),
         employer_key: form.employer_key,
         notes: form.notes,
         status: form.status,
@@ -247,7 +253,13 @@ export default function FinancialMovementsPage() {
           </label>
           <label>
             <span style={fieldLabelStyle}>Importo</span>
-            <input type="number" step="0.01" min="0" value={form.amount} onChange={(event) => updateForm('amount', event.target.value)} required />
+            <input
+              type="text"
+              inputMode="decimal"
+              value={form.amount}
+              onChange={(event) => updateForm('amount', event.target.value)}
+              required
+            />
           </label>
           <label>
             <span style={fieldLabelStyle}>Datore</span>
