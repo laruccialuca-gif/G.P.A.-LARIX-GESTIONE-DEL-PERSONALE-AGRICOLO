@@ -67,8 +67,8 @@ function ensureDemoSettings() {
     ...current,
     company: {
       ...current.company,
-      name: current.company?.name || 'GPA 1.0.0 Demo',
-      document_header: current.company?.document_header || 'GPA 1.0.0 Demo',
+      name: current.company?.name || 'GPA 1.0.1 Demo',
+      document_header: current.company?.document_header || 'GPA 1.0.1 Demo',
       email: current.company?.email || 'demo@cabronlab.local',
       contacts: current.company?.contacts || 'Versione demo con dati di esempio',
     },
@@ -370,7 +370,7 @@ function seedDemoData() {
       '2026-03-01',
       '2026-03-31',
       '2026-03',
-      'GPA 1.0.0 Demo',
+      'GPA 1.0.1 Demo',
       'Elenco giornate',
       'consulente@example.demo',
       'Comunicazione demo'

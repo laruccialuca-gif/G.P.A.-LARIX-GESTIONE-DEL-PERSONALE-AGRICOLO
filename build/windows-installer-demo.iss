@@ -1,7 +1,7 @@
-#define MyAppName "GPA 1.0.0 Demo"
-#define MyAppVersion "1.0.0"
+#define MyAppName "GPA 1.0.1 Demo"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "Publisher modificabile"
-#define MyAppExeName "GPA 1.0.0 Demo.exe"
+#define MyAppExeName "GPA 1.0.1 Demo.exe"
 #define MyAppId "com.company.gestionale.demo"
 #define MyAppDataDirName "GestionaleDemo"
 #define MySourceDir "..\\release-demo\\win-unpacked"
@@ -13,7 +13,7 @@ AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\GPA 1.0.0\Demo
+DefaultDirName={autopf}\GPA 1.0.1\Demo
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir={#MyOutputDir}
