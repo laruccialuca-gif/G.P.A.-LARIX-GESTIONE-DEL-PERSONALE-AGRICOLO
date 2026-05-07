@@ -1228,6 +1228,34 @@ textarea {
   align-self: end;
 }
 
+.attendance-layout-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(20, 33, 61, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.attendance-layout-mode__label {
+  font-size: 11px;
+  font-weight: 800;
+  color: #115e59;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.attendance-layout-mode__select {
+  width: auto;
+  min-width: 118px;
+  padding: 6px 28px 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(244, 248, 243, 0.96);
+}
+
 .attendance-left-head,
 .attendance-left-cell {
   display: flex;
@@ -1256,6 +1284,24 @@ textarea {
   justify-items: center;
 }
 
+.attendance-cell-stack--compact {
+  gap: 0;
+}
+
+.attendance-day-cell {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+}
+
+.attendance-day-cell--compact {
+  gap: 0;
+  min-height: 34px;
+  align-items: center;
+  padding: 1px 0;
+}
+
 .attendance-hours-input {
   width: 38px;
   min-width: 38px;
@@ -1268,6 +1314,15 @@ textarea {
   background: #fff;
   font-weight: 600;
   color: #111827;
+}
+
+.attendance-hours-input--compact {
+  width: 34px;
+  min-width: 34px;
+  padding: 2px 1px;
+  font-size: 10px;
+  line-height: 1.05;
+  border-radius: 6px;
 }
 
 .attendance-hours-input--special {
@@ -1332,6 +1387,98 @@ textarea {
 
 .attendance-marker-placeholder {
   display: inline-block;
+}
+
+.attendance-compact-marker-badge,
+.attendance-compact-marker-select {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(20, 33, 61, 0.12);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  line-height: 1;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.attendance-compact-marker-badge {
+  background: #fff;
+}
+
+.attendance-compact-marker-select {
+  width: 18px;
+  min-width: 18px;
+  height: 16px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.96);
+  color: #314762;
+  font-size: 8px;
+  text-align: center;
+}
+
+.attendance-compact-overtime-badge {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  min-width: 18px;
+  max-width: 34px;
+  padding: 1px 3px;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  background: rgba(255, 255, 255, 0.94);
+  color: #64748b;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attendance-compact-overtime-badge--filled {
+  background: rgba(199, 210, 254, 0.4);
+  color: #1e3a8a;
+}
+
+.attendance-compact-overtime-input {
+  position: absolute;
+  left: 50%;
+  bottom: -2px;
+  transform: translateX(-50%);
+  width: 34px;
+  min-width: 34px;
+  padding: 2px 1px;
+  border-radius: 6px;
+  border: 1px solid #c7d2fe;
+  background: rgba(255, 255, 255, 0.98);
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.05;
+  color: #1e3a8a;
+  z-index: 3;
+}
+
+.attendance-table--compact .attendance-left-head,
+.attendance-table--compact .attendance-left-cell {
+  gap: 8px;
+}
+
+.attendance-table--compact .attendance-left-head input,
+.attendance-table--compact .attendance-left-cell input {
+  width: 14px;
+  height: 14px;
+}
+
+.attendance-table--compact .attendance-employee-name {
+  font-size: 12px;
+  line-height: 1.2;
 }
 
 @media print {
@@ -1869,59 +2016,170 @@ textarea {
 .employee-directory-row,
 .employee-archived-row {
   min-width: 0;
+  --employee-directory-columns: 28px 40px minmax(0, 2.6fr) minmax(108px, 1.05fr) minmax(72px, 0.72fr) minmax(72px, 0.72fr) minmax(110px, 0.95fr) minmax(92px, 0.82fr) minmax(76px, 0.72fr) minmax(92px, 0.82fr);
 }
 
 .employee-col {
   min-width: 0;
 }
 
+.employee-directory-head,
+.employee-directory-row {
+  display: grid;
+  grid-template-columns: var(--employee-directory-columns);
+  column-gap: 10px;
+  align-items: center;
+}
+
 .employee-col--name {
-  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.employee-name-block {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 100%;
 }
 
 .employee-col--contract {
-  width: 130px;
+  width: 132px;
 }
 
 .employee-col--date-from,
 .employee-col--date-to {
-  width: 90px;
+  width: 96px;
 }
 
 .employee-col--expiry {
-  width: 160px;
+  width: 132px;
 }
 
 .employee-col--pay {
   width: 110px;
 }
 
-.employee-col--checks {
-  width: 150px;
-  flex-wrap: wrap;
-}
-
 .employee-col--state {
-  width: 162px;
+  width: 96px;
 }
 
 .employee-col--actions {
-  width: 92px;
+  width: 112px;
   margin-left: auto;
 }
 
 .employee-primary-text {
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  line-height: 1.25;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
 }
 
 .employee-secondary-text {
   min-width: 0;
+  line-height: 1.25;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+.employee-secondary-text__role {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 180px;
+}
+
+.employee-inline-badge {
+  max-width: 100%;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.employee-state-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.employee-directory-row {
+  align-items: center;
+  min-height: 68px;
+}
+
+.employee-directory-row .employee-col,
+.employee-archived-row .employee-col,
+.employee-archived-main {
+  min-width: 0;
+}
+
+.employee-directory-row .employee-col {
+  align-self: center;
+}
+
+.employee-directory-row .employee-col--checkbox,
+.employee-directory-row .employee-col--avatar,
+.employee-directory-row .employee-col--contract,
+.employee-directory-row .employee-col--date-from,
+.employee-directory-row .employee-col--date-to,
+.employee-directory-row .employee-col--expiry,
+.employee-directory-row .employee-col--pay,
+.employee-directory-row .employee-col--state,
+.employee-directory-row .employee-col--actions {
+  display: flex;
+  align-items: center;
+}
+
+.employee-directory-row .employee-col--name,
+.employee-archived-main {
+  justify-content: center;
+}
+
+.employee-directory-row,
+.employee-archived-row {
+  overflow: visible;
 }
 
 .employee-archived-main {
   min-width: 0;
+}
+
+.employee-archived-row {
+  grid-template-columns: 36px 52px minmax(220px, 1fr) minmax(240px, 320px);
+  column-gap: 10px;
+}
+
+.employee-directory-head .employee-col--checkbox,
+.employee-directory-row .employee-col--checkbox,
+.employee-directory-head .employee-col--avatar,
+.employee-directory-row .employee-col--avatar,
+.employee-directory-head .employee-col--state,
+.employee-directory-head .employee-col--actions,
+.employee-directory-row .employee-col--contract,
+.employee-directory-row .employee-col--date-from,
+.employee-directory-row .employee-col--date-to,
+.employee-directory-row .employee-col--expiry,
+.employee-directory-row .employee-col--pay,
+.employee-directory-row .employee-col--state,
+.employee-directory-row .employee-col--actions {
+  width: auto !important;
+}
+
+.employee-directory-row .employee-col--actions {
+  justify-content: flex-end;
 }
 
 .employee-archived-actions {
@@ -2141,50 +2399,13 @@ textarea {
     grid-template-columns: 1fr;
   }
 
+  .employee-directory-head,
   .employee-directory-row {
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
-
-  .employee-col--name {
-    flex-basis: calc(100% - 84px);
-    min-width: 220px;
-  }
-
-  .employee-col--contract,
-  .employee-col--date-from,
-  .employee-col--date-to,
-  .employee-col--expiry,
-  .employee-col--pay,
-  .employee-col--checks,
-  .employee-col--state {
-    width: auto;
-    flex: 1 1 140px;
-  }
-
-  .employee-col--checks {
-    flex-basis: 220px;
-  }
-
-  .employee-col--actions {
-    width: 100%;
-    margin-left: 0;
-    justify-content: flex-start !important;
-    flex: 1 1 100%;
-  }
-
-  .employee-directory-head {
-    display: none !important;
+    min-width: 0;
   }
 
   .employee-archived-row {
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
-
-  .employee-archived-actions {
-    width: 100%;
-    justify-content: flex-start;
+    min-width: 0;
   }
 
   .pdf-import-toolbar-group {
@@ -2719,9 +2940,24 @@ textarea {
     border-collapse: collapse !important;
   }
 
+  .attendance-print-page {
+    page-break-after: always !important;
+    break-after: page !important;
+    break-inside: avoid !important;
+  }
+
+  .attendance-print-page:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
+  }
+
+  .attendance-print-area {
+    display: block !important;
+  }
+
   .print-area th,
   .print-area td {
-    padding: 4px !important;
+    padding: 3px 2px !important;
   }
 
   .print-area thead {

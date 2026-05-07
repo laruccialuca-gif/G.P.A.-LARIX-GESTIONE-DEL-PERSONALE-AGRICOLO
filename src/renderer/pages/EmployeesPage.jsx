@@ -77,6 +77,7 @@ function SortHeader({ label, field, sortField, sortDirection, onToggle, width, f
       style={{
         ...(flex ? { flex } : {}),
         ...(width ? { width, flexShrink: 0 } : {}),
+        width: width || '100%',
         display: 'inline-flex',
         alignItems: 'center',
         gap: 6,
@@ -218,14 +219,14 @@ function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected,
     <div
       className="employee-directory-row"
       style={{
-        display: 'flex', alignItems: 'center', gap: 12,
+        display: 'grid', alignItems: 'center', gap: 10,
         padding: '10px 16px', borderBottom: '1px solid #f3f4f6',
-        cursor: 'pointer', background: selectedBg, minWidth: 1150,
+        cursor: 'pointer', background: selectedBg,
       }}
       onMouseEnter={e => { e.currentTarget.style.background = selectionEnabled && selected ? 'rgba(15,118,110,0.13)' : '#f9fafb'; }}
       onMouseLeave={e => { e.currentTarget.style.background = selectedBg; }}
     >
-      <div className="employee-col employee-col--checkbox" style={{ width: 26, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
+      <div className="employee-col employee-col--checkbox" style={{ width: 28, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
         <input
           type="checkbox"
           checked={!!selected}
@@ -241,53 +242,55 @@ function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected,
 
       <div
         className="avatar employee-col employee-col--avatar"
-        style={{ width: 34, height: 34, fontSize: 13, flexShrink: 0 }}
+        style={{ width: 40, height: 32, fontSize: 12, flexShrink: 0 }}
         onClick={() => onClick(employee)}
       >
         {(employee.first_name?.[0] || '') + (employee.last_name?.[0] || '')}
       </div>
 
-      <div className="employee-col employee-col--name" style={{ flex: 1, minWidth: 0 }} onClick={() => onClick(employee)}>
+      <div className="employee-col employee-col--name employee-name-block" style={{ flex: 1, minWidth: 0 }} onClick={() => onClick(employee)}>
         <div
           className="employee-primary-text"
           title={getEmployeeDisplayName(employee)}
-          style={{ fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+          style={{ fontWeight: 700, fontSize: 14 }}
         >
           {getEmployeeDisplayName(employee)}
         </div>
         <div className="employee-secondary-text" style={{ fontSize: 12, color: '#667085', display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span title={employee.role || 'Nessuna mansione'}>{employee.role || 'Nessuna mansione'}</span>
+          <span className="employee-secondary-text__role" title={employee.role || 'Nessuna mansione'}>{employee.role || 'Nessuna mansione'}</span>
           {employee.has_both_employers ? (
-            <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#dbeafe', color: '#1d4ed8' }}>
+            <span className="employee-inline-badge employee-inline-badge--employer" style={{ fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#dbeafe', color: '#1d4ed8' }}>
               Assunto da entrambi i datori
             </span>
           ) : null}
           {employerCodes.map((code) => (
-            <span key={code} style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999, background: '#eef5f4', color: '#314762' }}>
+            <span key={code} className="employee-inline-badge employee-inline-badge--code" style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999, background: '#eef5f4', color: '#314762' }}>
               {code}
             </span>
           ))}
+          <MiniCheckBadge label="Visita" required={!!employee.medical_visit_required} done={!!employee.medical_visit_done} />
+          <MiniCheckBadge label="Form." required={!!employee.art37_required} done={!!employee.art37_done} />
         </div>
       </div>
 
-      <div className="employee-col employee-col--contract" style={{ fontSize: 12, color: '#374151', width: 130, flexShrink: 0 }} onClick={() => onClick(employee)} title={getContractLabel(employee.contract_type)}>
+      <div className="employee-col employee-col--contract" style={{ fontSize: 12, color: '#374151', width: 132, flexShrink: 0 }} onClick={() => onClick(employee)} title={getContractLabel(employee.contract_type)}>
         {getContractLabel(employee.contract_type)}
       </div>
 
-      <div className="employee-col employee-col--date-from" style={{ fontSize: 12, color: '#374151', width: 90, flexShrink: 0 }} onClick={() => onClick(employee)} title={formatDate(employee.hire_date_from)}>
+      <div className="employee-col employee-col--date-from" style={{ fontSize: 12, color: '#374151', width: 96, flexShrink: 0 }} onClick={() => onClick(employee)} title={formatDate(employee.hire_date_from)}>
         {formatDate(employee.hire_date_from)}
       </div>
 
-      <div className="employee-col employee-col--date-to" style={{ fontSize: 12, color: '#374151', width: 90, flexShrink: 0 }} onClick={() => onClick(employee)} title={employee.hire_date_to ? formatDate(employee.hire_date_to) : 'attivo'}>
+      <div className="employee-col employee-col--date-to" style={{ fontSize: 12, color: '#374151', width: 96, flexShrink: 0 }} onClick={() => onClick(employee)} title={employee.hire_date_to ? formatDate(employee.hire_date_to) : 'attivo'}>
         {employee.hire_date_to ? formatDate(employee.hire_date_to) : 'attivo'}
       </div>
 
-      <div className="employee-col employee-col--expiry" style={{ width: 160, flexShrink: 0 }} onClick={() => onClick(employee)} title={expiryInfo.label}>
+      <div className="employee-col employee-col--expiry" style={{ width: 132, flexShrink: 0 }} onClick={() => onClick(employee)} title={expiryInfo.label}>
         <span
           style={{
             display: 'inline-flex',
             alignItems: 'center',
-            padding: '4px 10px',
+            padding: '4px 8px',
             borderRadius: 999,
             fontSize: 11,
             fontWeight: 700,
@@ -306,17 +309,16 @@ function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected,
           : '—'}
       </div>
 
-      <div className="employee-col employee-col--checks" style={{ display: 'flex', gap: 5, flexShrink: 0, width: 150 }} onClick={() => onClick(employee)}>
-        <MiniCheckBadge label="Visita" required={!!employee.medical_visit_required} done={!!employee.medical_visit_done} />
-        <MiniCheckBadge label="Form." required={!!employee.art37_required} done={!!employee.art37_done} />
-      </div>
-
-      <div className="employee-col employee-col--state" style={{ width: 162, flexShrink: 0, display: 'flex', justifyContent: 'flex-end' }}>
+      <div className="employee-col employee-col--state" style={{ width: 76, flexShrink: 0, display: 'flex', justifyContent: 'flex-start' }}>
         {employee.status !== 'attivo' ? (
-          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#fef3c7', color: '#92400e', whiteSpace: 'nowrap' }}>
+          <span className="employee-state-badge" style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#fef3c7', color: '#92400e', whiteSpace: 'nowrap' }}>
             Inattivo
           </span>
-        ) : null}
+        ) : (
+          <span className="employee-state-badge" style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: '#dcfce7', color: '#166534', whiteSpace: 'nowrap' }}>
+            Attivo
+          </span>
+        )}
       </div>
 
       <div className="employee-col employee-col--actions" style={{ width: 92, flexShrink: 0, display: 'flex', justifyContent: 'flex-end' }}>
@@ -328,8 +330,8 @@ function EmployeeRow({ employee, onClick, onArchive, selected, onToggleSelected,
           style={{
             width: '100%',
             flexShrink: 0,
-            padding: '3px 10px',
-            fontSize: 11,
+            padding: '3px 8px',
+            fontSize: 10,
             fontWeight: 700,
             borderRadius: 8,
             border: '1px solid rgba(239,68,68,0.25)',
@@ -434,11 +436,11 @@ function TeamRow({ team, onClick, onArchive }) {
 function ArchivedEmployeeRow({ employee, onRestore, onDelete, selected, onToggleSelected, selectionEnabled, actionsDisabled }) {
   return (
     <div className="employee-archived-row" style={{
-      display: 'flex', alignItems: 'center', gap: 12,
+      display: 'grid', alignItems: 'center', gap: 10,
       padding: '10px 16px', borderBottom: '1px solid #f3f4f6',
       background: selectionEnabled && selected ? 'rgba(15,118,110,0.07)' : '#fff',
     }}>
-      <div className="employee-col employee-col--checkbox" style={{ width: 26, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
+      <div className="employee-col employee-col--checkbox" style={{ width: 32, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
         <input
           type="checkbox"
           checked={!!selected}
@@ -447,10 +449,10 @@ function ArchivedEmployeeRow({ employee, onRestore, onDelete, selected, onToggle
           style={{ width: 16, height: 16 }}
         />
       </div>
-      <div className="avatar employee-col employee-col--avatar" style={{ width: 34, height: 34, fontSize: 13, flexShrink: 0, opacity: 0.45 }}>
+      <div className="avatar employee-col employee-col--avatar" style={{ width: 44, height: 34, fontSize: 13, flexShrink: 0, opacity: 0.45 }}>
         {(employee.first_name?.[0] || '') + (employee.last_name?.[0] || '')}
       </div>
-      <div className="employee-archived-main" style={{ flex: 1, minWidth: 0 }}>
+      <div className="employee-archived-main employee-name-block" style={{ flex: 1, minWidth: 0 }}>
         <div
           className="employee-primary-text"
           title={`${employee.first_name} ${employee.last_name}`.trim()}
@@ -462,7 +464,7 @@ function ArchivedEmployeeRow({ employee, onRestore, onDelete, selected, onToggle
           {employee.role || 'Nessuna mansione'} · archiviato il {formatDate(employee.deleted_at)}
         </div>
       </div>
-      <div className="employee-archived-actions" style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+      <div className="employee-archived-actions" style={{ display: 'flex', gap: 8, flexShrink: 0, width: '100%', justifyContent: 'flex-end' }}>
         <button
           className="button-secondary"
           style={{ padding: '4px 12px', fontSize: 12 }}
@@ -1291,16 +1293,15 @@ export default function EmployeesPage() {
               </div>
             </div>
 
-            <div style={{ overflowX: 'auto', width: '100%' }}>
+            <div style={{ width: '100%' }}>
             {/* Intestazione colonne */}
             <div className="employee-directory-head" style={{
-              display: 'flex', gap: 12, padding: '8px 16px',
+              display: 'grid', gap: 10, padding: '8px 16px',
               background: '#f9fafb', borderBottom: '1px solid #e5e7eb',
               fontSize: 11, fontWeight: 700, color: '#9ca3af',
               textTransform: 'uppercase', letterSpacing: '0.05em',
-              minWidth: 1150,
             }}>
-              <div className="employee-col employee-col--checkbox" style={{ width: 26, display: 'flex', justifyContent: 'center' }}>
+              <div className="employee-col employee-col--checkbox" style={{ width: 28, display: 'flex', justifyContent: 'center' }}>
                 <SelectAllCheckbox
                   checked={allVisibleSelected}
                   indeterminate={visibleSelectedCount > 0 && !allVisibleSelected}
@@ -1315,20 +1316,19 @@ export default function EmployeesPage() {
                   title="Seleziona tutti i dipendenti visibili"
                 />
               </div>
-              <div className="employee-col employee-col--avatar" style={{ width: 34, flexShrink: 0 }} />
+              <div className="employee-col employee-col--avatar" style={{ width: 40, flexShrink: 0 }} />
               <SortHeader label="Nome" field="name" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} flex={1} extraStyle={{ minWidth: 0 }} />
-              <SortHeader label="Tipo assunzione" field="contract_type" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={130} extraStyle={{ minWidth: 0 }} />
-              <SortHeader label="Data assunzione" field="hire_date_from" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={90} extraStyle={{ minWidth: 0 }} />
-              <SortHeader label="Data chiusura" field="hire_date_to" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={90} extraStyle={{ minWidth: 0 }} />
-              <SortHeader label="Scadenza" field="expiry" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={160} extraStyle={{ minWidth: 0 }} />
-              <SortHeader label="Retribuzione" field="daily_pay" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} width={110} extraStyle={{ minWidth: 0 }} />
-              <div className="employee-col employee-col--checks" style={{ width: 150 }}>Compliance</div>
-              <div className="employee-col employee-col--state" style={{ width: 162, flexShrink: 0 }}>Stato</div>
-              <div className="employee-col employee-col--actions" style={{ width: 92, flexShrink: 0, textAlign: 'right' }}>Azioni</div>
+              <SortHeader label="Assunzione" field="contract_type" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} extraStyle={{ minWidth: 0, width: '100%' }} />
+              <SortHeader label="Inizio" field="hire_date_from" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} extraStyle={{ minWidth: 0, width: '100%' }} />
+              <SortHeader label="Fine" field="hire_date_to" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} extraStyle={{ minWidth: 0, width: '100%' }} />
+              <SortHeader label="Scadenza" field="expiry" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} extraStyle={{ minWidth: 0, width: '100%' }} />
+              <SortHeader label="Paga" field="daily_pay" sortField={sortField} sortDirection={sortDirection} onToggle={handleToggleSort} extraStyle={{ minWidth: 0, width: '100%' }} />
+              <div className="employee-col employee-col--state" style={{ width: '100%' }}>Stato</div>
+              <div className="employee-col employee-col--actions" style={{ width: '100%', textAlign: 'right' }}>Azioni</div>
             </div>
 
             {renderedEmployees.length === 0 ? (
-              <div className="empty-state" style={{ padding: '24px 16px', minWidth: 1150 }}>
+              <div className="empty-state" style={{ padding: '24px 16px' }}>
                 Nessun dipendente. Clicca "+ Nuovo Dipendente" per aggiungerne uno.
               </div>
             ) : (
@@ -1517,7 +1517,7 @@ export default function EmployeesPage() {
                   fontSize: 11, fontWeight: 700, color: '#9ca3af',
                   textTransform: 'uppercase', letterSpacing: '0.05em',
                 }}>
-                  <div style={{ width: 26, display: 'flex', justifyContent: 'center' }}>
+                  <div style={{ width: 36, display: 'flex', justifyContent: 'center' }}>
                     <SelectAllCheckbox
                       checked={allArchivedVisibleSelected}
                       indeterminate={archivedVisibleSelectedCount > 0 && !allArchivedVisibleSelected}
@@ -1532,7 +1532,7 @@ export default function EmployeesPage() {
                       title="Seleziona tutti i dipendenti archiviati visibili"
                     />
                   </div>
-                  <div style={{ width: 34, flexShrink: 0 }} />
+                  <div style={{ width: 44, flexShrink: 0 }} />
                   <div style={{ flex: 1 }}>Dipendente</div>
                   <div style={{ width: 220, flexShrink: 0, textAlign: 'right' }}>Azioni</div>
                 </div>
