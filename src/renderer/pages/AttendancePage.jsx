@@ -119,48 +119,6 @@ function getDayLabel(date) {
   return date.toLocaleDateString('it-IT', { weekday: 'short' });
 }
 
-function getAttendanceCellText(att, hoursFormat = 'decimal', markers = DEFAULT_DAY_MARKERS) {
-  if (!att) return '';
-  const markerSymbol = getMarkerMeta(att.marker_code, markers)?.symbol || att.marker_code || '';
-
-  if (att.status && att.status !== 'presente' && att.status !== 'assente') {
-    const special = [...MAIN_DAY_TYPES, ...LEGACY_DAY_TYPES].find((item) => item.value === att.status);
-    const marker = markerSymbol ? ` ${markerSymbol}` : '';
-    return `${special?.code || att.status}${marker}`;
-  }
-
-  if (att.entry_code) {
-    return att.entry_code;
-  }
-
-  const hoursText =
-    att.hours_worked !== undefined && att.hours_worked !== null && att.hours_worked !== ''
-      ? att.entry_code
-        ? String(att.entry_code)
-        : formatHoursValue(att.hours_worked, hoursFormat)
-      : '';
-  const overtimeHours = Number(att.overtime_hours || 0);
-  const overtimeText = overtimeHours > 0 ? `STR ${formatHoursValue(overtimeHours, hoursFormat)}` : '';
-
-  if (hoursText && overtimeText && markerSymbol) {
-    return `${hoursText} + ${overtimeText} ${markerSymbol}`;
-  }
-
-  if (hoursText && overtimeText) {
-    return `${hoursText} + ${overtimeText}`;
-  }
-
-  if (hoursText && markerSymbol) {
-    return `${hoursText} ${markerSymbol}`;
-  }
-
-  if (overtimeText && markerSymbol) {
-    return `${overtimeText} ${markerSymbol}`;
-  }
-
-  return hoursText || overtimeText || markerSymbol || '';
-}
-
 function getAttendancePrintMainValue(att, hoursFormat = 'decimal') {
   if (!att) return '';
 
@@ -389,10 +347,6 @@ function getHoursMinutesInputValue(att) {
   return splitHoursToParts(att.hours_worked);
 }
 
-function getOvertimeInputValue(att) {
-  return splitHoursToParts(att?.overtime_hours);
-}
-
 function getAttendanceSettings(settings) {
   return {
     inputMode: settings?.general?.attendance_entry_mode === 'hours_only' ? 'hours_only' : 'hours_and_symbol',
@@ -499,61 +453,8 @@ function parseMainInputValue(rawValue, attendanceSettings) {
   return { kind: 'invalid' };
 }
 
-function parseHoursMinutesValue(hoursRaw, minutesRaw, attendanceSettings) {
-  const hoursValue = String(hoursRaw || '').trim().toUpperCase();
-  const minutesValue = String(minutesRaw || '').trim();
-
-  if (!hoursValue && !minutesValue) {
-    return { kind: 'empty' };
-  }
-
-  const mainType = MAIN_DAY_TYPES.find((item) => item.code === hoursValue);
-  if (mainType) {
-    return { kind: 'type', status: mainType.value };
-  }
-
-  if (
-    attendanceSettings?.inputMode === 'hours_and_symbol' &&
-    hoursValue === attendanceSettings.quickSymbol
-  ) {
-    return {
-      kind: 'symbol',
-      symbol: attendanceSettings.quickSymbol,
-      hours: attendanceSettings.baseHours,
-    };
-  }
-
-  const normalizedHours = hoursValue === '' ? 0 : Number(hoursValue);
-  const normalizedMinutes = minutesValue === '' ? 0 : Number(minutesValue);
-
-  if (
-    !Number.isInteger(normalizedHours) ||
-    normalizedHours < 0 ||
-    !Number.isInteger(normalizedMinutes) ||
-    normalizedMinutes < 0 ||
-    normalizedMinutes > 59
-  ) {
-    return { kind: 'invalid' };
-  }
-
-  const totalHours = normalizedHours + normalizedMinutes / 60;
-  if (totalHours <= 0) {
-    return { kind: 'empty' };
-  }
-
-  return { kind: 'hours', hours: totalHours };
-}
-
 function parseOvertimeInputValue(rawValue, attendanceSettings) {
   const parsed = parseMainInputValue(rawValue, attendanceSettings);
-  if (parsed.kind === 'type') {
-    return { kind: 'invalid' };
-  }
-  return parsed;
-}
-
-function parseOvertimeHoursMinutesValue(hoursRaw, minutesRaw, attendanceSettings) {
-  const parsed = parseHoursMinutesValue(hoursRaw, minutesRaw, attendanceSettings);
   if (parsed.kind === 'type') {
     return { kind: 'invalid' };
   }
@@ -614,6 +515,9 @@ export default function AttendancePage() {
   const [showPrintPreview, setShowPrintPreview] = useState(false);
   const printAreaRef = useRef(null);
   const tableShellRef = useRef(null);
+  const horizontalScrollbarRef = useRef(null);
+  const horizontalScrollbarContentRef = useRef(null);
+  const horizontalScrollSyncRef = useRef(false);
 
   const daysInMonth = useMemo(() => getMonthDays(currentMonth), [currentMonth]);
   const dayInfoMap = useMemo(
@@ -814,6 +718,74 @@ export default function AttendancePage() {
       setBulkTargetDate(normalizedTargetDate);
     }
   }, [bulkTargetDate, currentMonth, daysInMonth]);
+
+  useEffect(() => {
+    const tableShell = tableShellRef.current;
+    const horizontalScrollbar = horizontalScrollbarRef.current;
+    const horizontalScrollbarContent = horizontalScrollbarContentRef.current;
+
+    if (!tableShell || !horizontalScrollbar || !horizontalScrollbarContent) {
+      return undefined;
+    }
+
+    const syncSizes = () => {
+      const needsHorizontalScroll = tableShell.scrollWidth > tableShell.clientWidth + 1;
+      horizontalScrollbarContent.style.width = `${tableShell.scrollWidth}px`;
+      horizontalScrollbar.style.display = needsHorizontalScroll ? 'block' : 'none';
+
+      if (Math.abs(horizontalScrollbar.scrollLeft - tableShell.scrollLeft) > 1) {
+        horizontalScrollbar.scrollLeft = tableShell.scrollLeft;
+      }
+    };
+
+    const handleTableShellScroll = () => {
+      if (horizontalScrollSyncRef.current) {
+        return;
+      }
+
+      horizontalScrollSyncRef.current = true;
+      horizontalScrollbar.scrollLeft = tableShell.scrollLeft;
+      horizontalScrollSyncRef.current = false;
+    };
+
+    const handleHorizontalScrollbarScroll = () => {
+      if (horizontalScrollSyncRef.current) {
+        return;
+      }
+
+      horizontalScrollSyncRef.current = true;
+      tableShell.scrollLeft = horizontalScrollbar.scrollLeft;
+      horizontalScrollSyncRef.current = false;
+    };
+
+    syncSizes();
+
+    tableShell.addEventListener('scroll', handleTableShellScroll, { passive: true });
+    horizontalScrollbar.addEventListener('scroll', handleHorizontalScrollbarScroll, { passive: true });
+
+    const resizeObserver =
+      typeof ResizeObserver === 'function'
+        ? new ResizeObserver(() => {
+            syncSizes();
+          })
+        : null;
+
+    resizeObserver?.observe(tableShell);
+
+    const tableElement = tableShell.querySelector('table');
+    if (tableElement) {
+      resizeObserver?.observe(tableElement);
+    }
+
+    window.addEventListener('resize', syncSizes);
+
+    return () => {
+      tableShell.removeEventListener('scroll', handleTableShellScroll);
+      horizontalScrollbar.removeEventListener('scroll', handleHorizontalScrollbarScroll);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', syncSizes);
+    };
+  }, [currentMonthKey, displayRows, loading]);
 
   const attendanceMap = useMemo(() => {
     const map = {};
@@ -1410,54 +1382,6 @@ export default function AttendancePage() {
     updateLiveHoursPreview(getMainInputValue(att));
   }
 
-  function handleHoursMinutesValueChange(employeeId, date, field, value) {
-    const existing = getAtt(employeeId, date);
-    const currentParts = getHoursMinutesInputValue(existing);
-    const nextHours = field === 'hours' ? value : currentParts.hours;
-    const nextMinutes = field === 'minutes' ? value : currentParts.minutes;
-    const parsed = parseHoursMinutesValue(nextHours, nextMinutes, attendanceSettings);
-
-    if (parsed.kind === 'invalid') {
-      return;
-    }
-
-    const nextEntry =
-      parsed.kind === 'type'
-        ? {
-            employee_id: employeeId,
-            date,
-            status: parsed.status,
-            marker_code: existing?.marker_code || null,
-            entry_code: null,
-            hours_worked: 0,
-            overtime_hours: 0,
-            notes: existing?.notes || null,
-          }
-        : parsed.kind === 'symbol'
-        ? {
-            employee_id: employeeId,
-            date,
-            status: 'presente',
-            marker_code: existing?.marker_code || null,
-            entry_code: parsed.symbol,
-            hours_worked: parsed.hours,
-            overtime_hours: existing?.overtime_hours || 0,
-            notes: existing?.notes || null,
-          }
-        : {
-            employee_id: employeeId,
-            date,
-            status: parsed.kind === 'empty' ? 'presente' : 'presente',
-            marker_code: existing?.marker_code || null,
-            entry_code: null,
-            hours_worked: parsed.kind === 'empty' ? '' : parsed.hours,
-            overtime_hours: existing?.overtime_hours || 0,
-            notes: existing?.notes || null,
-          };
-
-    queuePendingEntry(employeeId, date, nextEntry);
-  }
-
   function handleOvertimeValueChange(employeeId, date, value) {
     setInputDraft(employeeId, date, 'overtime', value);
     const parsed = parseOvertimeInputValue(value, attendanceSettings);
@@ -1497,33 +1421,6 @@ export default function AttendancePage() {
 
     const normalizedValue = att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : '';
     setInputDraft(employeeId, date, 'overtime', normalizedValue);
-  }
-
-  function handleOvertimeHoursMinutesChange(employeeId, date, field, value) {
-    const existing = getAtt(employeeId, date);
-    const currentParts = getOvertimeInputValue(existing);
-    const nextHours = field === 'hours' ? value : currentParts.hours;
-    const nextMinutes = field === 'minutes' ? value : currentParts.minutes;
-    const parsed = parseOvertimeHoursMinutesValue(nextHours, nextMinutes, attendanceSettings);
-
-    if (parsed.kind === 'invalid') {
-      return;
-    }
-
-    const mergedExisting = getAtt(employeeId, date);
-    queuePendingEntry(employeeId, date, {
-        employee_id: employeeId,
-        date,
-        status: mergedExisting?.status || 'presente',
-        marker_code: mergedExisting?.marker_code || null,
-        entry_code: mergedExisting?.entry_code || null,
-        hours_worked: mergedExisting?.hours_worked ?? '',
-        overtime_hours:
-          parsed.kind === 'empty'
-            ? 0
-            : parsed.hours,
-        notes: mergedExisting?.notes || null,
-    });
   }
 
   function handleMarkerChange(employeeId, date, markerCode) {
@@ -2127,8 +2024,19 @@ export default function AttendancePage() {
       {loading ? (
         <div>Caricamento...</div>
       ) : (
-        <div className="attendance-table-shell" ref={tableShellRef}>
-          <table className="attendance-table">
+        <div className="attendance-table-region">
+          <div
+            className="attendance-horizontal-scrollbar"
+            ref={horizontalScrollbarRef}
+            aria-label="Scorrimento orizzontale giorni del foglio presenze"
+          >
+            <div
+              className="attendance-horizontal-scrollbar-content"
+              ref={horizontalScrollbarContentRef}
+            />
+          </div>
+          <div className="attendance-table-shell" ref={tableShellRef}>
+            <table className="attendance-table">
             <thead>
               <tr style={{ background: '#f9fafb' }}>
                 <th style={thStyleLeft}>
@@ -2165,8 +2073,8 @@ export default function AttendancePage() {
                     </span>
                   </th>
                 ))}
-                <th style={thStyleCenter}>Ore tot.</th>
-                <th style={thStyleCenter}>Riepilogo</th>
+                <th style={thStyleRightHours}>Ore tot.</th>
+                <th style={thStyleRightSummary}>Riepilogo</th>
               </tr>
             </thead>
             <tbody>
@@ -2310,8 +2218,8 @@ export default function AttendancePage() {
                       );
                     })}
 
-                    <td style={tdStyleCenter}>{formatHoursValue(totals.totalHours, attendanceSettings.hoursFormat)}</td>
-                    <td style={tdStyleCenter}>{formatWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)}</td>
+                    <td style={tdStyleRightHours}>{formatHoursValue(totals.totalHours, attendanceSettings.hoursFormat)}</td>
+                    <td style={tdStyleRightSummary}>{formatWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)}</td>
                   </tr>
                 );
               })}
@@ -2321,6 +2229,7 @@ export default function AttendancePage() {
           {!displayRows.length ? (
             <div className="empty-state">Nessun dipendente disponibile per la selezione corrente.</div>
           ) : null}
+          </div>
         </div>
       )}
 
@@ -2589,31 +2498,29 @@ function getCalendarCellStyle(dayInfo) {
   };
 }
 
-function getPdfDayCellStyle(dayInfo) {
-  if (!dayInfo?.isSpecialDay) {
-    return '';
-  }
-
-  const background = dayInfo.isHoliday ? '#fee2e2' : '#fff5f5';
-  return `background:${background};color:#991b1b;`;
-}
-
 const thStyleLeft = {
   padding: 10,
   borderBottom: '1px solid #e5e7eb',
   textAlign: 'left',
   position: 'sticky',
   left: 0,
+  top: 0,
   background: '#f9fafb',
-  zIndex: 1,
+  zIndex: 6,
   minWidth: 180,
 };
 
 const thStyleCenter = {
-  padding: 10,
+  padding: '5px 3px',
   borderBottom: '1px solid #e5e7eb',
   textAlign: 'center',
-  minWidth: 74,
+  minWidth: 42,
+  fontSize: 11,
+  lineHeight: 1.2,
+  position: 'sticky',
+  top: 0,
+  background: '#f9fafb',
+  zIndex: 4,
 };
 
 const tdStyleLeft = {
@@ -2627,10 +2534,61 @@ const tdStyleLeft = {
 };
 
 const tdStyleCenter = {
-  padding: 8,
+  padding: '4px 2px',
   borderBottom: '1px solid #f1f5f9',
   textAlign: 'center',
   verticalAlign: 'top',
+};
+
+const ATTENDANCE_TOTALS_HOURS_WIDTH = 68;
+const ATTENDANCE_TOTALS_SUMMARY_WIDTH = 96;
+
+const thStyleRightHours = {
+  ...thStyleCenter,
+  position: 'sticky',
+  top: 0,
+  right: ATTENDANCE_TOTALS_SUMMARY_WIDTH,
+  background: '#f9fafb',
+  zIndex: 5,
+  width: ATTENDANCE_TOTALS_HOURS_WIDTH,
+  minWidth: ATTENDANCE_TOTALS_HOURS_WIDTH,
+  borderLeft: '1px solid #e5e7eb',
+  boxShadow: 'inset 1px 0 0 rgba(15, 23, 42, 0.06)',
+};
+
+const thStyleRightSummary = {
+  ...thStyleCenter,
+  position: 'sticky',
+  top: 0,
+  right: 0,
+  background: '#f9fafb',
+  zIndex: 5,
+  width: ATTENDANCE_TOTALS_SUMMARY_WIDTH,
+  minWidth: ATTENDANCE_TOTALS_SUMMARY_WIDTH,
+};
+
+const tdStyleRightHours = {
+  ...tdStyleCenter,
+  position: 'sticky',
+  right: ATTENDANCE_TOTALS_SUMMARY_WIDTH,
+  background: '#fff',
+  zIndex: 2,
+  width: ATTENDANCE_TOTALS_HOURS_WIDTH,
+  minWidth: ATTENDANCE_TOTALS_HOURS_WIDTH,
+  borderLeft: '1px solid #e5e7eb',
+  boxShadow: 'inset 1px 0 0 rgba(15, 23, 42, 0.04)',
+  fontWeight: 700,
+};
+
+const tdStyleRightSummary = {
+  ...tdStyleCenter,
+  position: 'sticky',
+  right: 0,
+  background: '#fff',
+  zIndex: 2,
+  width: ATTENDANCE_TOTALS_SUMMARY_WIDTH,
+  minWidth: ATTENDANCE_TOTALS_SUMMARY_WIDTH,
+  fontWeight: 700,
 };
 
 const todayHeaderStyle = {
