@@ -227,14 +227,25 @@ const router = createHashRouter([
   },
 ]);
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <RendererErrorBoundary>
-      <AuthProvider>
-        <YearProvider>
-          <RouterProvider router={router} />
-        </YearProvider>
-      </AuthProvider>
-    </RendererErrorBoundary>
-  </React.StrictMode>
-);
+console.log('[renderer] main.jsx loaded');
+console.log('[renderer] root element', document.getElementById('root'));
+
+try {
+  const root = document.getElementById('root');
+  console.log('[renderer] before createRoot');
+  ReactDOM.createRoot(root).render(
+    <React.StrictMode>
+      <RendererErrorBoundary>
+        <AuthProvider>
+          <YearProvider>
+            <RouterProvider router={router} />
+          </YearProvider>
+        </AuthProvider>
+      </RendererErrorBoundary>
+    </React.StrictMode>
+  );
+  console.log('[renderer] after render');
+} catch (error) {
+  console.error('[renderer] React mount failed', error);
+  document.body.innerHTML = `<pre style="color:red;font-size:18px;padding:24px;">React mount failed: ${String(error?.stack || error)}</pre>`;
+}

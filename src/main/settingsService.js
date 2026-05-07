@@ -139,6 +139,9 @@ function defaultSettings() {
         show_compensation: true,
       },
     },
+    report: {
+      print_layout_version: 'v1',
+    },
     security: {
       current_role: 'standard',
       admin_pin: '1234',
@@ -342,6 +345,13 @@ function normalizeSettings(input = {}) {
         ...defaultSettings().general.print_options,
         ...(merged.general?.print_options || {}),
       },
+    },
+    report: {
+      print_layout_version: (() => {
+        const allowed = new Set(['v1']);
+        const candidate = String(merged.report?.print_layout_version || 'v1').trim();
+        return allowed.has(candidate) ? candidate : 'v1';
+      })(),
     },
     security: {
       current_role: merged.security?.current_role === 'standard' ? 'standard' : 'admin',

@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import {
+  REPORT_LAYOUT_VERSIONS,
+  DEFAULT_REPORT_LAYOUT_VERSION,
+  getReportLayoutVersion,
+} from '../config/reportLayouts';
+import ReportLayoutPreview from '../components/ReportLayoutPreview';
 
 function slugifyMarkerValue(value) {
   return String(value || '')
@@ -166,6 +172,139 @@ function SettingsBox({ title, subtitle, children }) {
   );
 }
 
+class PreviewErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    // eslint-disable-next-line no-console
+    console.error('[ReportLayoutPreview] errore di rendering:', error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 12, color: '#b91c1c', background: '#fef2f2', borderRadius: 8 }}>
+          Anteprima non disponibile: {String(this.state.error?.message || this.state.error)}
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function ReportPdfSection({ settings, isAdmin, updateSection }) {
+  const currentVersionId = settings.report?.print_layout_version || DEFAULT_REPORT_LAYOUT_VERSION;
+  const resolvedVersion = getReportLayoutVersion(currentVersionId);
+
+  // eslint-disable-next-line no-console
+  console.log('[Settings/Report-PDF] render', {
+    currentVersionId,
+    resolvedVersion,
+    REPORT_LAYOUT_VERSIONS,
+    settingsReport: settings.report,
+  });
+
+  return (
+    <section className="settings-grid" data-testid="settings-report-pdf-section">
+      <SettingsBox
+        title="Report / PDF"
+        subtitle="Controlla quali voci devono comparire nelle stampe e nei PDF."
+      >
+        <div className="settings-switch-list">
+          <label className="communication-checkbox">
+            <input
+              type="checkbox"
+              checked={!!settings.general.print_options.show_transport}
+              disabled={!isAdmin}
+              onChange={(e) => updateSection('general', { print_options: { ...settings.general.print_options, show_transport: e.target.checked } })}
+            />
+            Trasporto nelle stampe
+          </label>
+          <label className="communication-checkbox">
+            <input
+              type="checkbox"
+              checked={!!settings.general.print_options.show_advances}
+              disabled={!isAdmin}
+              onChange={(e) => updateSection('general', { print_options: { ...settings.general.print_options, show_advances: e.target.checked } })}
+            />
+            Acconti nelle stampe
+          </label>
+          <label className="communication-checkbox">
+            <input
+              type="checkbox"
+              checked={!!settings.general.print_options.show_compensation}
+              disabled={!isAdmin}
+              onChange={(e) => updateSection('general', { print_options: { ...settings.general.print_options, show_compensation: e.target.checked } })}
+            />
+            Compensi nelle stampe
+          </label>
+        </div>
+      </SettingsBox>
+
+      <SettingsBox
+        title="Versione stampa report"
+        subtitle="Stessa versione applicata ad anteprima, Genera PDF e Stampa. Per aggiungere altre versioni modificare il registro centralizzato src/renderer/config/reportLayouts.js."
+      >
+        <div
+          data-testid="report-layout-version-block"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 14,
+            border: '2px solid #166534',
+            borderRadius: 10,
+            padding: 14,
+            background: '#f0fdf4',
+          }}
+        >
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 460 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#166534', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Versione stampa report
+            </span>
+            <select
+              data-testid="report-layout-version-select"
+              value={currentVersionId}
+              disabled={!isAdmin}
+              onChange={(e) => updateSection('report', { print_layout_version: e.target.value })}
+              style={{ padding: '8px 10px', fontSize: 14, borderRadius: 6, border: '1px solid #166534' }}
+            >
+              {REPORT_LAYOUT_VERSIONS.map((version) => (
+                <option key={version.id} value={version.id} disabled={!version.available}>
+                  {version.label}{!version.available ? ' (in arrivo)' : ''}
+                </option>
+              ))}
+            </select>
+            <span style={{ fontSize: 12, color: '#374151' }}>
+              Versione attiva: <strong>{resolvedVersion.label}</strong>. Salvata in <code>settings.report.print_layout_version</code>, persistente fra i riavvii.
+            </span>
+          </label>
+
+          <div
+            data-testid="report-layout-preview-box"
+            style={{
+              border: '1px dashed #166534',
+              borderRadius: 8,
+              padding: 12,
+              background: '#ffffff',
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 700, color: '#166534', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>
+              Anteprima layout
+            </div>
+            <PreviewErrorBoundary>
+              <ReportLayoutPreview versionId={resolvedVersion.id} />
+            </PreviewErrorBoundary>
+          </div>
+        </div>
+      </SettingsBox>
+    </section>
+  );
+}
+
 function MacroAreaCard({ title, subtitle, onClick }) {
   return (
     <button
@@ -251,6 +390,9 @@ function emptySettings() {
         show_advances: true,
         show_compensation: true,
       },
+    },
+    report: {
+      print_layout_version: 'v1',
     },
     security: {
       current_role: 'standard',
@@ -386,6 +528,13 @@ function normalizeSettingsPayload(input = {}) {
       language: input.ocr?.language === 'eng' ? 'eng' : 'ita',
       engine: Number(input.ocr?.engine) === 1 ? 1 : 2,
       confirm_privacy_before_online: input.ocr?.confirm_privacy_before_online !== false,
+    },
+    report: {
+      ...defaults.report,
+      ...(input.report || {}),
+      print_layout_version: String(
+        input.report?.print_layout_version || defaults.report.print_layout_version
+      ),
     },
   };
 }
@@ -577,7 +726,7 @@ export default function SettingsPage() {
     {
       key: 'report',
       title: 'Report / PDF',
-      subtitle: 'Contenuti da mostrare nelle stampe e nei PDF del gestionale.',
+      subtitle: 'Versione stampa report, contenuti da mostrare e anteprima del layout.',
     },
     {
       key: 'ocr',
@@ -784,6 +933,7 @@ export default function SettingsPage() {
           ...settings.general,
           attendance_hours_format: 'decimal',
         },
+        report: settings.report,
         backup: settings.backup,
         cloud: settings.cloud,
         ocr: settings.ocr,
@@ -1467,42 +1617,11 @@ export default function SettingsPage() {
       ) : null}
 
       {selectedMacroArea === 'report' ? (
-        <section className="settings-grid">
-          <SettingsBox
-          title="Report / PDF"
-          subtitle="Controlla quali voci devono comparire nelle stampe e nei PDF."
-        >
-          <div className="settings-switch-list">
-            <label className="communication-checkbox">
-              <input
-                type="checkbox"
-                checked={!!settings.general.print_options.show_transport}
-                disabled={!isAdmin}
-                onChange={(e) => updateSection('general', { print_options: { ...settings.general.print_options, show_transport: e.target.checked } })}
-              />
-              Trasporto nelle stampe
-            </label>
-            <label className="communication-checkbox">
-              <input
-                type="checkbox"
-                checked={!!settings.general.print_options.show_advances}
-                disabled={!isAdmin}
-                onChange={(e) => updateSection('general', { print_options: { ...settings.general.print_options, show_advances: e.target.checked } })}
-              />
-              Acconti nelle stampe
-            </label>
-            <label className="communication-checkbox">
-              <input
-                type="checkbox"
-                checked={!!settings.general.print_options.show_compensation}
-                disabled={!isAdmin}
-                onChange={(e) => updateSection('general', { print_options: { ...settings.general.print_options, show_compensation: e.target.checked } })}
-              />
-              Compensi nelle stampe
-            </label>
-          </div>
-        </SettingsBox>
-        </section>
+        <ReportPdfSection
+          settings={settings}
+          isAdmin={isAdmin}
+          updateSection={updateSection}
+        />
       ) : null}
 
       {selectedMacroArea === 'ocr' ? (
