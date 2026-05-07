@@ -35,6 +35,12 @@ const DEFAULT_DAY_MARKERS = [
   },
 ];
 
+const ATTENDANCE_LAYOUT_STORAGE_KEY = 'attendance_layout_mode_v1';
+
+function normalizeAttendanceLayoutMode(value) {
+  return value === 'compact' ? 'compact' : 'standard';
+}
+
 function getConfiguredDayMarkers(settings) {
   const configured = settings?.general?.attendance_markers;
   if (!Array.isArray(configured) || !configured.length) {
@@ -461,6 +467,88 @@ function parseOvertimeInputValue(rawValue, attendanceSettings) {
   return parsed;
 }
 
+function formatCompactWorkedSummary(totalHours, standardHours, hoursFormat = 'decimal') {
+  const full = formatWorkedSummary(totalHours, standardHours, hoursFormat);
+  return full
+    .replace(/\s*gg/g, 'g')
+    .replace(/\s*h/g, 'h')
+    .replace(/\s*\+\s*/g, '+')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getAttendancePrintRowWeight(row) {
+  let weight = 1;
+  if (row?.employee?.role) weight += 0.22;
+  if (row?.teamMember?.manage_by_days) weight += 0.18;
+  return weight;
+}
+
+function rebalanceAttendancePrintPages(pages, firstCapacity, otherCapacity) {
+  if (pages.length < 2) {
+    return pages;
+  }
+
+  const next = pages.map((page) => ({ ...page, rows: [...page.rows] }));
+
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const page = next[index];
+    const previous = next[index - 1];
+    const minimumWeight = index === 0 ? firstCapacity * 0.4 : otherCapacity * 0.4;
+    const previousCapacity = index - 1 === 0 ? firstCapacity : otherCapacity;
+
+    while (
+      page.weight < minimumWeight &&
+      previous.rows.length > 1
+    ) {
+      const candidate = previous.rows[previous.rows.length - 1];
+      const candidateWeight = getAttendancePrintRowWeight(candidate);
+      if (previous.weight - candidateWeight < previousCapacity * 0.58) {
+        break;
+      }
+
+      previous.rows.pop();
+      previous.weight -= candidateWeight;
+      page.rows.unshift(candidate);
+      page.weight += candidateWeight;
+    }
+  }
+
+  return next;
+}
+
+function paginateAttendancePrintRows(rows) {
+  const firstPageCapacity = 12.4;
+  const otherPageCapacity = 14.2;
+  const pages = [];
+
+  let currentRows = [];
+  let currentWeight = 0;
+  let currentCapacity = firstPageCapacity;
+
+  rows.forEach((row) => {
+    const rowWeight = getAttendancePrintRowWeight(row);
+    const wouldOverflow = currentRows.length > 0 && currentWeight + rowWeight > currentCapacity;
+
+    if (wouldOverflow) {
+      pages.push({ rows: currentRows, weight: currentWeight });
+      currentRows = [];
+      currentWeight = 0;
+      currentCapacity = otherPageCapacity;
+    }
+
+    currentRows.push(row);
+    currentWeight += rowWeight;
+  });
+
+  if (currentRows.length) {
+    pages.push({ rows: currentRows, weight: currentWeight });
+  }
+
+  const normalized = pages.length ? pages : [{ rows: [], weight: 0 }];
+  return rebalanceAttendancePrintPages(normalized, firstPageCapacity, otherPageCapacity);
+}
+
 function isEffectivelyEmptyAttendanceEntry(item) {
   const normalized = normalizeAttendanceEntry(item || {});
   return (
@@ -491,6 +579,12 @@ function areAttendanceEntriesEquivalent(a, b) {
 export default function AttendancePage() {
   const { selectedYear, setSelectedYear } = useYearContext();
   const [currentMonth, setCurrentMonth] = useState(() => new Date(selectedYear, new Date().getMonth(), 1));
+  const [layoutMode, setLayoutMode] = useState(() => {
+    if (typeof window === 'undefined') {
+      return 'standard';
+    }
+    return normalizeAttendanceLayoutMode(window.localStorage.getItem(ATTENDANCE_LAYOUT_STORAGE_KEY));
+  });
   const [employees, setEmployees] = useState([]);
   const [teams, setTeams] = useState([]);
   const [attendance, setAttendance] = useState([]);
@@ -512,7 +606,9 @@ export default function AttendancePage() {
   const [showHoursLegend, setShowHoursLegend] = useState(false);
   const [liveHoursPreview, setLiveHoursPreview] = useState('');
   const [openMarkerMenuKey, setOpenMarkerMenuKey] = useState(null);
+  const [compactOvertimeEditorKey, setCompactOvertimeEditorKey] = useState(null);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
+  const [printSelectionMode, setPrintSelectionMode] = useState('all');
   const printAreaRef = useRef(null);
   const tableShellRef = useRef(null);
   const horizontalScrollbarRef = useRef(null);
@@ -611,7 +707,18 @@ export default function AttendancePage() {
 
   useEffect(() => {
     setOpenMarkerMenuKey(null);
-  }, [selectedEntity, currentMonthKey]);
+  }, [selectedEntity, currentMonthKey, layoutMode]);
+
+  useEffect(() => {
+    setCompactOvertimeEditorKey(null);
+  }, [selectedEntity, currentMonthKey, layoutMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    window.localStorage.setItem(ATTENDANCE_LAYOUT_STORAGE_KEY, layoutMode);
+  }, [layoutMode]);
 
   const isWriteBlocked = Boolean(licenseStatus?.is_write_blocked);
 
@@ -785,7 +892,7 @@ export default function AttendancePage() {
       resizeObserver?.disconnect();
       window.removeEventListener('resize', syncSizes);
     };
-  }, [currentMonthKey, displayRows, loading]);
+  }, [currentMonthKey, displayRows, loading, layoutMode]);
 
   const attendanceMap = useMemo(() => {
     const map = {};
@@ -1610,20 +1717,46 @@ export default function AttendancePage() {
     [displayRows, quickEntryDate, pendingChanges, attendance]
   );
 
-  async function ensurePrintPreviewVisible() {
+  function getAttendancePrintRows(mode = 'all') {
+    if (mode === 'selected' && selectedEmployeeIds.length > 0) {
+      const selectedSet = new Set(selectedEmployeeIds.map((id) => Number(id)));
+      return displayRows.filter(({ employee }) => selectedSet.has(Number(employee.id)));
+    }
+    return displayRows;
+  }
+
+  function getAttendancePrintModeLabel(mode = 'all') {
+    return mode === 'selected' && selectedEmployeeIds.length > 0 ? 'Selezionati' : 'Tutti';
+  }
+
+  function buildAttendancePdfFileName(mode = 'all') {
+    const monthLabel = fileMonthLabel(currentMonth);
+    const monthKey = sanitizeFileName(monthLabel);
+    const scopeLabel =
+      selectedMeta.type === 'team' && selectedTeam
+        ? selectedTeam.name
+        : selectedMeta.type === 'employee' && displayRows[0]?.employee
+        ? `${displayRows[0].employee.first_name} ${displayRows[0].employee.last_name}`
+        : 'mensili';
+    const selectionSuffix = mode === 'selected' && selectedEmployeeIds.length > 0 ? 'selezionati' : 'tutti';
+    return sanitizeFileName(`Presenze - ${scopeLabel} - ${monthKey} - ${selectionSuffix}.pdf`);
+  }
+
+  async function ensurePrintPreviewVisible(mode = 'all') {
     await flushPendingChanges();
+    setPrintSelectionMode(mode === 'selected' && selectedEmployeeIds.length > 0 ? 'selected' : 'all');
     setShowPrintPreview(true);
   }
 
-  async function handlePreviewPdf() {
-    await ensurePrintPreviewVisible();
+  async function handlePreviewPdf(mode = 'all') {
+    await ensurePrintPreviewVisible(mode);
     setTimeout(() => {
       printAreaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 80);
   }
 
-  async function handlePrint() {
-    await ensurePrintPreviewVisible();
+  async function handlePrint(mode = 'all') {
+    await ensurePrintPreviewVisible(mode);
 
     const printArea = printAreaRef.current;
     if (!printArea) {
@@ -1632,12 +1765,7 @@ export default function AttendancePage() {
     }
 
     try {
-      const monthLabel = fileMonthLabel(currentMonth);
-      const monthKey = sanitizeFileName(monthLabel);
-      const fileName =
-        selectedMeta.type === 'team' && selectedTeam
-          ? sanitizeFileName(`Presenze - ${selectedTeam.name} - ${monthKey}.pdf`)
-          : 'Presenze-mensili.pdf';
+      const fileName = buildAttendancePdfFileName(mode);
 
       const result = await window.api.reports.printHtml({
         html: printArea.outerHTML,
@@ -1654,7 +1782,7 @@ export default function AttendancePage() {
     }
   }
 
-  async function handleSavePdf() {
+  async function handleSavePdf(mode = 'all') {
     const printArea = printAreaRef.current;
     if (!printArea) {
       alert('Anteprima PDF non disponibile');
@@ -1662,14 +1790,8 @@ export default function AttendancePage() {
     }
 
     try {
-      await ensurePrintPreviewVisible();
-
-      const monthLabel = fileMonthLabel(currentMonth);
-      const monthKey = sanitizeFileName(monthLabel);
-      const fileName =
-        selectedMeta.type === 'team' && selectedTeam
-          ? sanitizeFileName(`Presenze - ${selectedTeam.name} - ${monthKey}.pdf`)
-          : 'Presenze-mensili.pdf';
+      await ensurePrintPreviewVisible(mode);
+      const fileName = buildAttendancePdfFileName(mode);
 
       await window.api.reports.savePdf({
         fileName,
@@ -1695,7 +1817,19 @@ export default function AttendancePage() {
 
   const hasPendingChanges = Object.keys(pendingChanges).length > 0;
   const allVisibleSelected = visibleEmployeeIds.length > 0 && visibleEmployeeIds.every((employeeId) => selectedEmployeeIds.includes(employeeId));
+  const selectedPrintRows = getAttendancePrintRows('selected');
+  const activePrintRows = getAttendancePrintRows(printSelectionMode);
+  const hasSelectedPrintRows = selectedPrintRows.length > 0;
   const todayKey = formatLocalDate(new Date());
+  const isCompactLayout = layoutMode === 'compact';
+  const thStyleLeftCurrent = isCompactLayout ? thStyleLeftCompact : thStyleLeft;
+  const thStyleCenterCurrent = isCompactLayout ? thStyleCenterCompact : thStyleCenter;
+  const tdStyleLeftCurrent = isCompactLayout ? tdStyleLeftCompact : tdStyleLeft;
+  const tdStyleCenterCurrent = isCompactLayout ? tdStyleCenterCompact : tdStyleCenter;
+  const thStyleRightHoursCurrent = isCompactLayout ? thStyleRightHoursCompact : thStyleRightHours;
+  const thStyleRightSummaryCurrent = isCompactLayout ? thStyleRightSummaryCompact : thStyleRightSummary;
+  const tdStyleRightHoursCurrent = isCompactLayout ? tdStyleRightHoursCompact : tdStyleRightHours;
+  const tdStyleRightSummaryCurrent = isCompactLayout ? tdStyleRightSummaryCompact : tdStyleRightSummary;
   const isBulkApplyDisabled =
     !String(bulkHoursValue || '').trim() &&
     !String(bulkMarkerValue || '').trim() &&
@@ -1750,9 +1884,22 @@ export default function AttendancePage() {
             >
               Inserimento rapido giornaliero
             </button>
-            <button className="button-secondary" onClick={handlePreviewPdf}>Anteprima PDF</button>
-            <button className="button" onClick={handleSavePdf}>Genera PDF</button>
-            <button className="button-secondary" onClick={handlePrint}>Stampa</button>
+            <button className="button-secondary" onClick={() => handlePreviewPdf('all')}>Anteprima PDF</button>
+            <button className="button" onClick={() => handleSavePdf('all')}>Genera PDF</button>
+            <button className="button-secondary" onClick={() => handlePrint('all')}>Stampa</button>
+            {hasSelectedPrintRows ? (
+              <>
+                <button className="button-secondary" onClick={() => handlePreviewPdf('selected')}>
+                  Anteprima selezionati ({selectedPrintRows.length})
+                </button>
+                <button className="button" onClick={() => handleSavePdf('selected')}>
+                  Genera PDF selezionati ({selectedPrintRows.length})
+                </button>
+                <button className="button-secondary" onClick={() => handlePrint('selected')}>
+                  Stampa selezionati
+                </button>
+              </>
+            ) : null}
           </div>
         </section>
 
@@ -1963,7 +2110,18 @@ export default function AttendancePage() {
                 </span>
               ) : null}
             </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <label className="attendance-layout-mode">
+                <span className="attendance-layout-mode__label">Layout</span>
+                <select
+                  value={layoutMode}
+                  onChange={(event) => setLayoutMode(normalizeAttendanceLayoutMode(event.target.value))}
+                  className="attendance-layout-mode__select"
+                >
+                  <option value="standard">Standard</option>
+                  <option value="compact">Compatta</option>
+                </select>
+              </label>
               <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.1)', color: '#1d4ed8' }}>
                 {selectedEmployeeIds.length} selezionati
               </span>
@@ -2024,7 +2182,7 @@ export default function AttendancePage() {
       {loading ? (
         <div>Caricamento...</div>
       ) : (
-        <div className="attendance-table-region">
+        <div className={`attendance-table-region ${isCompactLayout ? 'attendance-table-region--compact' : ''}`}>
           <div
             className="attendance-horizontal-scrollbar"
             ref={horizontalScrollbarRef}
@@ -2036,10 +2194,10 @@ export default function AttendancePage() {
             />
           </div>
           <div className="attendance-table-shell" ref={tableShellRef}>
-            <table className="attendance-table">
+            <table className={`attendance-table ${isCompactLayout ? 'attendance-table--compact' : ''}`}>
             <thead>
               <tr style={{ background: '#f9fafb' }}>
-                <th style={thStyleLeft}>
+                <th style={thStyleLeftCurrent}>
                   <div className="attendance-left-head">
                     <input
                       type="checkbox"
@@ -2054,7 +2212,7 @@ export default function AttendancePage() {
                   <th
                     key={formatDate(day)}
                     style={{
-                      ...thStyleCenter,
+                      ...thStyleCenterCurrent,
                       ...getCalendarHeaderStyle(dayInfoMap[formatDate(day)]),
                       ...(formatDate(day) === todayKey ? todayHeaderStyle : {}),
                     }}
@@ -2064,7 +2222,7 @@ export default function AttendancePage() {
                     <br />
                     <span
                       style={{
-                        fontSize: 10,
+                        fontSize: isCompactLayout ? 9 : 10,
                         color: dayInfoMap[formatDate(day)]?.isSpecialDay ? '#991b1b' : '#6b7280',
                         fontWeight: dayInfoMap[formatDate(day)]?.isSpecialDay ? 800 : 500,
                       }}
@@ -2073,8 +2231,8 @@ export default function AttendancePage() {
                     </span>
                   </th>
                 ))}
-                <th style={thStyleRightHours}>Ore tot.</th>
-                <th style={thStyleRightSummary}>Riepilogo</th>
+                <th style={thStyleRightHoursCurrent}>{isCompactLayout ? 'Tot.' : 'Ore tot.'}</th>
+                <th style={thStyleRightSummaryCurrent}>{isCompactLayout ? 'Riep.' : 'Riepilogo'}</th>
               </tr>
             </thead>
             <tbody>
@@ -2084,7 +2242,7 @@ export default function AttendancePage() {
 
                 return (
                   <tr key={employee.id}>
-                    <td style={tdStyleLeft}>
+                    <td style={tdStyleLeftCurrent}>
                       <div className="attendance-left-cell">
                         <input
                           type="checkbox"
@@ -2094,7 +2252,7 @@ export default function AttendancePage() {
                         />
                         <div>
                           <div className="attendance-employee-name">{employee.first_name} {employee.last_name}</div>
-                          <div style={{ fontSize: 10, color: '#6b7280' }}>
+                          <div style={{ fontSize: isCompactLayout ? 9 : 10, color: '#6b7280' }}>
                             {employee.role || ''}
                             {teamMember?.manage_by_days ? ' · gestione a giornate' : ''}
                           </div>
@@ -2110,8 +2268,10 @@ export default function AttendancePage() {
                       const markerMeta = getMarkerMeta(att?.marker_code, availableMarkers);
                       const dayInfo = dayInfoMap[dateStr];
                       const markerMenuKey = `${employee.id}_${dateStr}`;
+                      const overtimeEditorKey = `${employee.id}_${dateStr}_overtime`;
                       const isMainType = MAIN_DAY_TYPES.some((item) => item.value === att?.status);
                       const isEditingMarker = openMarkerMenuKey === markerMenuKey || !markerMeta;
+                      const isEditingCompactOvertime = compactOvertimeEditorKey === overtimeEditorKey;
                       const mainInputValue = getDisplayedInputValue(employee.id, dateStr, 'main', getMainInputValue(att));
                       const overtimeInputValue = getDisplayedInputValue(
                         employee.id,
@@ -2126,16 +2286,16 @@ export default function AttendancePage() {
                         <td
                           key={dateStr}
                           style={{
-                            ...tdStyleCenter,
+                            ...tdStyleCenterCurrent,
                             ...getCalendarCellStyle(dayInfo),
                             ...(dateStr === todayKey ? todayCellStyle : {}),
                           }}
                           title={dayInfo?.holidayLabel || undefined}
                         >
-                          <div className="attendance-cell-stack">
-                            <>
+                          <div className={`attendance-cell-stack ${isCompactLayout ? 'attendance-cell-stack--compact' : ''}`}>
+                            <div className={`attendance-day-cell ${isCompactLayout ? 'attendance-day-cell--compact' : ''}`}>
                               <input
-                                className={`attendance-hours-input ${mainInputTone ? `attendance-hours-input--${mainInputTone}` : ''}`}
+                                className={`attendance-hours-input ${isCompactLayout ? 'attendance-hours-input--compact' : ''} ${mainInputTone ? `attendance-hours-input--${mainInputTone}` : ''}`}
                                 type="text"
                                 inputMode="decimal"
                                 value={mainInputValue}
@@ -2152,74 +2312,165 @@ export default function AttendancePage() {
                                 disabled={isWriteBlocked}
                                 title={isSpecial ? specialOpt?.text : 'Inserisci ore decimali oppure F / P / M'}
                               />
-                              <input
-                                className={`attendance-hours-input attendance-hours-input--overtime ${overtimeHasValue ? 'attendance-hours-input--overtime-filled' : ''}`}
-                                type="text"
-                                inputMode="decimal"
-                                value={overtimeInputValue}
-                                onChange={(event) => handleOvertimeValueChange(employee.id, dateStr, event.target.value)}
-                                onBlur={() => handleOvertimeValueBlur(employee.id, dateStr)}
-                                onFocus={(event) => handleGridInputFocus(dateStr, event)}
-                                onClick={selectAllInputText}
-                                onKeyDown={handleGridKeyDown}
-                                data-attendance-focus="true"
-                                placeholder="str"
-                                disabled={isWriteBlocked || isSpecial}
-                                title="Straordinario decimale separato dalle ore normali"
-                              />
-                            </>
 
-                            {isMainType ? (
-                              <span className="attendance-marker-placeholder" />
-                            ) : markerMeta && !isEditingMarker ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  handleAttendanceCellFocus(dateStr);
-                                  setOpenMarkerMenuKey(markerMenuKey);
-                                }}
-                                title={`Marcatore ${markerMeta.text}. Clicca per modificare.`}
-                                className="attendance-marker-button"
-                                style={{ background: markerMeta.background, color: markerMeta.color }}
-                                disabled={isWriteBlocked}
-                              >
-                                <MarkerVisual marker={markerMeta} size={16} />
-                              </button>
-                            ) : (
-                              <select
-                                className="attendance-marker-select"
-                                value={att?.marker_code || ''}
-                                onChange={(event) => {
-                                  const nextValue = event.target.value || null;
-                                  handleMarkerChange(employee.id, dateStr, nextValue);
-                                  setOpenMarkerMenuKey(nextValue ? null : markerMenuKey);
-                                }}
-                                onFocus={() => handleAttendanceCellFocus(dateStr)}
-                                onKeyDown={handleGridKeyDown}
-                                data-attendance-focus="true"
-                                onBlur={() => {
-                                  if (att?.marker_code) {
-                                    setOpenMarkerMenuKey(null);
-                                  }
-                                }}
-                                title="Seleziona un marcatore grafico"
-                                disabled={isWriteBlocked}
-                              >
-                                <option value="">+</option>
-                                {activeMarkers.map((item) => (
-                                  <option key={item.value} value={item.value}>
-                                    {item.image ? item.text : item.symbol}
-                                  </option>
-                                ))}
-                              </select>
-                            )}
+                              {isCompactLayout ? (
+                                <>
+                                  {!isMainType ? (
+                                    markerMeta && !isEditingMarker ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleAttendanceCellFocus(dateStr);
+                                          setOpenMarkerMenuKey(markerMenuKey);
+                                        }}
+                                        title={`Marcatore ${markerMeta.text}. Clicca per modificare.`}
+                                        className="attendance-compact-marker-badge"
+                                        style={{ background: markerMeta.background, color: markerMeta.color }}
+                                        disabled={isWriteBlocked}
+                                      >
+                                        <MarkerVisual marker={markerMeta} size={11} />
+                                      </button>
+                                    ) : (
+                                      <select
+                                        className="attendance-compact-marker-select"
+                                        value={att?.marker_code || ''}
+                                        onChange={(event) => {
+                                          const nextValue = event.target.value || null;
+                                          handleMarkerChange(employee.id, dateStr, nextValue);
+                                          setOpenMarkerMenuKey(nextValue ? null : markerMenuKey);
+                                        }}
+                                        onFocus={() => handleAttendanceCellFocus(dateStr)}
+                                        onBlur={() => {
+                                          if (att?.marker_code) {
+                                            setOpenMarkerMenuKey(null);
+                                          }
+                                        }}
+                                        title="Seleziona un marcatore grafico"
+                                        disabled={isWriteBlocked}
+                                      >
+                                        <option value="">+</option>
+                                        {activeMarkers.map((item) => (
+                                          <option key={item.value} value={item.value}>
+                                            {item.image ? item.text : item.symbol}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    )
+                                  ) : null}
+
+                                  {!isSpecial ? (
+                                    isEditingCompactOvertime ? (
+                                      <input
+                                        className={`attendance-compact-overtime-input ${overtimeHasValue ? 'attendance-hours-input--overtime-filled' : ''}`}
+                                        type="text"
+                                        inputMode="decimal"
+                                        value={overtimeInputValue}
+                                        onChange={(event) => handleOvertimeValueChange(employee.id, dateStr, event.target.value)}
+                                        onBlur={() => {
+                                          handleOvertimeValueBlur(employee.id, dateStr);
+                                          setCompactOvertimeEditorKey(null);
+                                        }}
+                                        onFocus={(event) => handleGridInputFocus(dateStr, event)}
+                                        onClick={selectAllInputText}
+                                        onKeyDown={handleGridKeyDown}
+                                        data-attendance-focus="true"
+                                        placeholder="str"
+                                        autoFocus
+                                        disabled={isWriteBlocked}
+                                        title="Straordinario decimale separato dalle ore normali"
+                                      />
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className={`attendance-compact-overtime-badge ${overtimeHasValue ? 'attendance-compact-overtime-badge--filled' : ''}`}
+                                        onClick={() => {
+                                          handleAttendanceCellFocus(dateStr);
+                                          setCompactOvertimeEditorKey(overtimeEditorKey);
+                                        }}
+                                        disabled={isWriteBlocked}
+                                        title={overtimeHasValue ? `Straordinario ${overtimeInputValue} h. Clicca per modificare.` : 'Aggiungi straordinario'}
+                                      >
+                                        {overtimeHasValue ? `+${overtimeInputValue}` : '+STR'}
+                                      </button>
+                                    )
+                                  ) : null}
+                                </>
+                              ) : (
+                                <>
+                                  <input
+                                    className={`attendance-hours-input attendance-hours-input--overtime ${overtimeHasValue ? 'attendance-hours-input--overtime-filled' : ''}`}
+                                    type="text"
+                                    inputMode="decimal"
+                                    value={overtimeInputValue}
+                                    onChange={(event) => handleOvertimeValueChange(employee.id, dateStr, event.target.value)}
+                                    onBlur={() => handleOvertimeValueBlur(employee.id, dateStr)}
+                                    onFocus={(event) => handleGridInputFocus(dateStr, event)}
+                                    onClick={selectAllInputText}
+                                    onKeyDown={handleGridKeyDown}
+                                    data-attendance-focus="true"
+                                    placeholder="str"
+                                    disabled={isWriteBlocked || isSpecial}
+                                    title="Straordinario decimale separato dalle ore normali"
+                                  />
+
+                                  {isMainType ? (
+                                    <span className="attendance-marker-placeholder" />
+                                  ) : markerMeta && !isEditingMarker ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        handleAttendanceCellFocus(dateStr);
+                                        setOpenMarkerMenuKey(markerMenuKey);
+                                      }}
+                                      title={`Marcatore ${markerMeta.text}. Clicca per modificare.`}
+                                      className="attendance-marker-button"
+                                      style={{ background: markerMeta.background, color: markerMeta.color }}
+                                      disabled={isWriteBlocked}
+                                    >
+                                      <MarkerVisual marker={markerMeta} size={16} />
+                                    </button>
+                                  ) : (
+                                    <select
+                                      className="attendance-marker-select"
+                                      value={att?.marker_code || ''}
+                                      onChange={(event) => {
+                                        const nextValue = event.target.value || null;
+                                        handleMarkerChange(employee.id, dateStr, nextValue);
+                                        setOpenMarkerMenuKey(nextValue ? null : markerMenuKey);
+                                      }}
+                                      onFocus={() => handleAttendanceCellFocus(dateStr)}
+                                      onKeyDown={handleGridKeyDown}
+                                      data-attendance-focus="true"
+                                      onBlur={() => {
+                                        if (att?.marker_code) {
+                                          setOpenMarkerMenuKey(null);
+                                        }
+                                      }}
+                                      title="Seleziona un marcatore grafico"
+                                      disabled={isWriteBlocked}
+                                    >
+                                      <option value="">+</option>
+                                      {activeMarkers.map((item) => (
+                                        <option key={item.value} value={item.value}>
+                                          {item.image ? item.text : item.symbol}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  )}
+                                </>
+                              )}
+                            </div>
                           </div>
                         </td>
                       );
                     })}
 
-                    <td style={tdStyleRightHours}>{formatHoursValue(totals.totalHours, attendanceSettings.hoursFormat)}</td>
-                    <td style={tdStyleRightSummary}>{formatWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)}</td>
+                    <td style={tdStyleRightHoursCurrent}>{formatHoursValue(totals.totalHours, attendanceSettings.hoursFormat)}</td>
+                    <td style={tdStyleRightSummaryCurrent}>
+                      {isCompactLayout
+                        ? formatCompactWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)
+                        : formatWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)}
+                    </td>
                   </tr>
                 );
               })}
@@ -2283,7 +2534,7 @@ export default function AttendancePage() {
           </button>
         </div>
 
-        <AttendancePrintArea
+        <AttendancePrintAreaPaginated
           ref={printAreaRef}
           currentMonth={currentMonth}
           baseHours={attendanceSettings.baseHours}
@@ -2291,7 +2542,8 @@ export default function AttendancePage() {
           markers={availableMarkers}
           selectedMeta={selectedMeta}
           selectedTeam={selectedTeam}
-          displayRows={displayRows}
+          displayRows={activePrintRows}
+          modeLabel={getAttendancePrintModeLabel(printSelectionMode)}
           daysInMonth={daysInMonth}
           dayInfoMap={dayInfoMap}
           getAtt={getAtt}
@@ -2407,6 +2659,142 @@ const AttendancePrintArea = React.forwardRef(function AttendancePrintArea(
           </tbody>
         </table>
       </div>
+    </div>
+  );
+});
+
+const AttendancePrintAreaPaginated = React.forwardRef(function AttendancePrintAreaPaginated(
+  { currentMonth, baseHours, hoursFormat, markers, selectedMeta, selectedTeam, displayRows, modeLabel, daysInMonth, dayInfoMap, getAtt },
+  ref
+) {
+  const monthLabel = fileMonthLabel(currentMonth);
+  const title =
+    selectedMeta.type === 'team' && selectedTeam
+      ? `Presenze squadra - ${selectedTeam.name}`
+      : selectedMeta.type === 'employee'
+      ? 'Presenze dipendente'
+      : 'Presenze mensili';
+
+  const subtitle =
+    selectedMeta.type === 'team' && selectedTeam
+      ? `${monthLabel} · ${displayRows.length} componenti`
+      : `${monthLabel} · ${modeLabel}`;
+  const quickSymbolLabel = `X = ${formatHoursValue(baseHours, hoursFormat)}`;
+  const printPages = useMemo(() => paginateAttendancePrintRows(displayRows), [displayRows]);
+
+  return (
+    <div ref={ref} className="print-area attendance-print-area">
+      <style>{`
+        @page {
+          size: A4 landscape;
+          margin: 8mm;
+        }
+      `}</style>
+      {printPages.map((page, pageIndex) => (
+        <section
+          key={`attendance-print-page-${pageIndex}`}
+          className="attendance-print-page"
+          style={attendancePrintPageStyle}
+        >
+          <div style={attendancePrintCardStyle}>
+            <div style={attendancePrintHeaderStyle}>
+              <div>
+                <h2 style={attendancePrintTitleStyle}>{title}</h2>
+                <div style={attendancePrintSubtitleStyle}>
+                  {subtitle} · Pagina {pageIndex + 1} / {printPages.length}
+                </div>
+              </div>
+              <div style={attendancePrintHeaderMetaStyle}>
+                <div style={attendancePrintQuickSymbolBadgeStyle}>{quickSymbolLabel}</div>
+                <div style={attendancePrintModeBadgeStyle}>{modeLabel}</div>
+              </div>
+            </div>
+
+            <table style={attendancePrintTableStyle}>
+              <colgroup>
+                <col style={attendancePrintNameColumnStyle} />
+                {daysInMonth.map((day) => (
+                  <col key={`print-col-${pageIndex}-${formatDate(day)}`} style={attendancePrintDayColumnStyle} />
+                ))}
+                <col style={attendancePrintHoursColumnStyle} />
+                <col style={attendancePrintSummaryColumnStyle} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th style={{ ...attendancePrintHeadCellStyle, ...attendancePrintNameHeadCellStyle }}>Dipendente</th>
+                  {daysInMonth.map((day) => {
+                    const dateStr = formatDate(day);
+                    const dayInfo = dayInfoMap[dateStr];
+                    return (
+                      <th
+                        key={`print-head-${pageIndex}-${dateStr}`}
+                        style={{
+                          ...attendancePrintHeadCellStyle,
+                          ...getPrintDayCellInlineStyle(dayInfo),
+                        }}
+                      >
+                        {day.getDate()}
+                        <br />
+                        <span style={attendancePrintDayLabelStyle}>{getDayLabel(day)}</span>
+                      </th>
+                    );
+                  })}
+                  <th style={attendancePrintHeadCellStyle}>Ore</th>
+                  <th style={attendancePrintHeadCellStyle}>Riep.</th>
+                </tr>
+              </thead>
+              <tbody>
+                {page.rows.map(({ employee, teamMember }) => {
+                  let totalHours = 0;
+
+                  return (
+                    <tr key={`print-row-${pageIndex}-${employee.id}`}>
+                      <td style={{ ...attendancePrintBodyCellStyle, ...attendancePrintNameCellStyle, textAlign: 'left' }}>
+                        <strong>{employee.last_name} {employee.first_name}</strong>
+                        {employee.role ? <div style={attendancePrintEmployeeMetaStyle}>{employee.role}</div> : null}
+                        {teamMember?.manage_by_days ? (
+                          <div style={attendancePrintEmployeeMetaStyle}>Gestione a giornate</div>
+                        ) : null}
+                      </td>
+                      {daysInMonth.map((day) => {
+                        const dateStr = formatDate(day);
+                        const att = getAtt(employee.id, dateStr);
+                        const dayInfo = dayInfoMap[dateStr];
+                        const hours = Number(att?.hours_worked || 0) + Number(att?.overtime_hours || 0);
+                        if (hours > 0) {
+                          totalHours += hours;
+                        }
+
+                        return (
+                          <td
+                            key={`print-cell-${pageIndex}-${employee.id}-${dateStr}`}
+                            style={{
+                              ...attendancePrintBodyCellStyle,
+                              ...getPrintDayCellInlineStyle(dayInfo),
+                            }}
+                          >
+                            <AttendancePrintCell
+                              mainValue={getAttendancePrintMainValue(att, hoursFormat)}
+                              overtimeValue={getAttendancePrintOvertimeValue(att, hoursFormat)}
+                              markerValue={getAttendancePrintMarkerValue(att, markers)}
+                            />
+                          </td>
+                        );
+                      })}
+                      <td style={attendancePrintBodyCellStyle}>
+                        <strong>{formatHoursValue(totalHours, hoursFormat)}</strong>
+                      </td>
+                      <td style={attendancePrintBodyCellStyle}>
+                        <strong>{formatCompactWorkedSummary(totalHours, baseHours, hoursFormat)}</strong>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ))}
     </div>
   );
 });
@@ -2540,8 +2928,35 @@ const tdStyleCenter = {
   verticalAlign: 'top',
 };
 
+const thStyleLeftCompact = {
+  ...thStyleLeft,
+  padding: 8,
+  minWidth: 160,
+};
+
+const thStyleCenterCompact = {
+  ...thStyleCenter,
+  padding: '4px 2px',
+  minWidth: 36,
+  fontSize: 10,
+  lineHeight: 1.1,
+};
+
+const tdStyleLeftCompact = {
+  ...tdStyleLeft,
+  padding: 8,
+  minWidth: 160,
+};
+
+const tdStyleCenterCompact = {
+  ...tdStyleCenter,
+  padding: '3px 1px',
+};
+
 const ATTENDANCE_TOTALS_HOURS_WIDTH = 68;
 const ATTENDANCE_TOTALS_SUMMARY_WIDTH = 96;
+const ATTENDANCE_TOTALS_HOURS_WIDTH_COMPACT = 56;
+const ATTENDANCE_TOTALS_SUMMARY_WIDTH_COMPACT = 78;
 
 const thStyleRightHours = {
   ...thStyleCenter,
@@ -2591,6 +3006,56 @@ const tdStyleRightSummary = {
   fontWeight: 700,
 };
 
+const thStyleRightHoursCompact = {
+  ...thStyleCenterCompact,
+  position: 'sticky',
+  top: 0,
+  right: ATTENDANCE_TOTALS_SUMMARY_WIDTH_COMPACT,
+  background: '#f9fafb',
+  zIndex: 5,
+  width: ATTENDANCE_TOTALS_HOURS_WIDTH_COMPACT,
+  minWidth: ATTENDANCE_TOTALS_HOURS_WIDTH_COMPACT,
+  borderLeft: '1px solid #e5e7eb',
+  boxShadow: 'inset 1px 0 0 rgba(15, 23, 42, 0.06)',
+};
+
+const thStyleRightSummaryCompact = {
+  ...thStyleCenterCompact,
+  position: 'sticky',
+  top: 0,
+  right: 0,
+  background: '#f9fafb',
+  zIndex: 5,
+  width: ATTENDANCE_TOTALS_SUMMARY_WIDTH_COMPACT,
+  minWidth: ATTENDANCE_TOTALS_SUMMARY_WIDTH_COMPACT,
+};
+
+const tdStyleRightHoursCompact = {
+  ...tdStyleCenterCompact,
+  position: 'sticky',
+  right: ATTENDANCE_TOTALS_SUMMARY_WIDTH_COMPACT,
+  background: '#fff',
+  zIndex: 2,
+  width: ATTENDANCE_TOTALS_HOURS_WIDTH_COMPACT,
+  minWidth: ATTENDANCE_TOTALS_HOURS_WIDTH_COMPACT,
+  borderLeft: '1px solid #e5e7eb',
+  boxShadow: 'inset 1px 0 0 rgba(15, 23, 42, 0.04)',
+  fontWeight: 700,
+  fontSize: 10,
+};
+
+const tdStyleRightSummaryCompact = {
+  ...tdStyleCenterCompact,
+  position: 'sticky',
+  right: 0,
+  background: '#fff',
+  zIndex: 2,
+  width: ATTENDANCE_TOTALS_SUMMARY_WIDTH_COMPACT,
+  minWidth: ATTENDANCE_TOTALS_SUMMARY_WIDTH_COMPACT,
+  fontWeight: 700,
+  fontSize: 10,
+};
+
 const todayHeaderStyle = {
   background: 'linear-gradient(180deg, rgba(219, 234, 254, 0.9), rgba(239, 246, 255, 0.95))',
   boxShadow: 'inset 0 -2px 0 rgba(37, 99, 235, 0.25)',
@@ -2604,62 +3069,136 @@ const todayCellStyle = {
 const attendancePrintCardStyle = {
   background: '#fff',
   border: '1px solid #dbe4f0',
-  borderRadius: 18,
-  padding: 18,
-  boxShadow: '0 20px 50px rgba(15, 23, 42, 0.08)',
+  borderRadius: 12,
+  padding: 8,
+  boxShadow: '0 10px 24px rgba(15, 23, 42, 0.05)',
+};
+
+const attendancePrintPageStyle = {
+  width: '100%',
+  display: 'grid',
+  gap: 0,
 };
 
 const attendancePrintHeaderStyle = {
-  marginBottom: 10,
+  marginBottom: 6,
   display: 'flex',
   justifyContent: 'space-between',
-  alignItems: 'flex-start',
-  gap: 12,
-  flexWrap: 'wrap',
+  alignItems: 'center',
+  gap: 8,
+  flexWrap: 'nowrap',
+};
+
+const attendancePrintTitleStyle = {
+  margin: 0,
+  fontSize: 16,
+  lineHeight: 1.05,
+  color: '#14213d',
+  fontWeight: 800,
+};
+
+const attendancePrintSubtitleStyle = {
+  marginTop: 2,
+  color: '#667085',
+  fontSize: 9,
+  lineHeight: 1.2,
+};
+
+const attendancePrintHeaderMetaStyle = {
+  display: 'grid',
+  justifyItems: 'end',
+  gap: 4,
 };
 
 const attendancePrintQuickSymbolBadgeStyle = {
-  padding: '6px 10px',
+  padding: '4px 8px',
   borderRadius: 999,
   border: '1px solid rgba(20, 33, 61, 0.12)',
   background: 'rgba(20, 33, 61, 0.05)',
   color: '#27445f',
-  fontSize: 11,
+  fontSize: 9,
   fontWeight: 800,
   whiteSpace: 'nowrap',
+};
+
+const attendancePrintModeBadgeStyle = {
+  padding: '3px 7px',
+  borderRadius: 999,
+  border: '1px solid rgba(20, 33, 61, 0.1)',
+  background: 'rgba(22, 163, 74, 0.08)',
+  color: '#166534',
+  fontSize: 8,
+  fontWeight: 800,
+  whiteSpace: 'nowrap',
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
 };
 
 const attendancePrintTableStyle = {
   width: '100%',
   borderCollapse: 'collapse',
-  fontSize: 10,
+  fontSize: 8.6,
 };
 
 const attendancePrintHeadCellStyle = {
   border: '1px solid #9ca3af',
-  padding: 5,
+  padding: '3px 2px',
   textAlign: 'center',
   fontWeight: 800,
   background: '#f8fafc',
-  minWidth: 34,
+  minWidth: 0,
+  lineHeight: 1.05,
 };
 
 const attendancePrintBodyCellStyle = {
   border: '1px solid #9ca3af',
-  padding: 5,
+  padding: '3px 2px',
   textAlign: 'center',
   verticalAlign: 'middle',
   overflow: 'hidden',
-  minWidth: 34,
+  minWidth: 0,
 };
 
 const attendancePrintNameCellStyle = {
-  minWidth: 180,
-  whiteSpace: 'nowrap',
+  minWidth: 124,
+  maxWidth: 124,
+};
+
+const attendancePrintNameHeadCellStyle = {
+  minWidth: 124,
+};
+
+const attendancePrintNameColumnStyle = {
+  width: '124px',
+};
+
+const attendancePrintDayColumnStyle = {
+  width: '21px',
+};
+
+const attendancePrintHoursColumnStyle = {
+  width: '48px',
+};
+
+const attendancePrintSummaryColumnStyle = {
+  width: '66px',
+};
+
+const attendancePrintDayLabelStyle = {
+  fontSize: 7.2,
+  fontWeight: 700,
+  lineHeight: 1,
+};
+
+const attendancePrintEmployeeMetaStyle = {
+  fontSize: 7.4,
+  color: '#6b7280',
+  marginTop: 1,
+  lineHeight: 1.1,
 };
 
 const attendancePrintCellStackStyle = {
-  minHeight: 28,
+  minHeight: 18,
   display: 'grid',
   width: '100%',
   overflow: 'hidden',
@@ -2668,12 +3207,12 @@ const attendancePrintCellStackStyle = {
 };
 
 const attendancePrintCellSingleStyle = {
-  minHeight: 28,
+  minHeight: 18,
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   width: '100%',
-  fontSize: 8,
+  fontSize: 7.1,
   fontWeight: 800,
   lineHeight: 1.05,
   whiteSpace: 'nowrap',
@@ -2687,7 +3226,7 @@ const attendancePrintCellSingleUpperStyle = {
   justifyContent: 'center',
   width: '100%',
   minHeight: 0,
-  fontSize: 8,
+  fontSize: 7.1,
   fontWeight: 800,
   lineHeight: 1.05,
   whiteSpace: 'nowrap',
@@ -2712,7 +3251,7 @@ const attendancePrintCellRowStyle = {
   justifyContent: 'center',
   width: '100%',
   minHeight: 0,
-  fontSize: 7.5,
+  fontSize: 6.8,
   fontWeight: 800,
   lineHeight: 1.05,
   whiteSpace: 'nowrap',
