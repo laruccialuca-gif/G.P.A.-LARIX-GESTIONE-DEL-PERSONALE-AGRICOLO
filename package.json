@@ -1,6 +1,6 @@
 {
   "name": "gestionale-presenze-offline",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "appVariant": "standard",
   "private": true,
   "main": "src/main/main.js",
@@ -26,6 +26,8 @@
     "start": "node tools/run-electron-clean-env.cjs .",
     "start:demo": "node tools/run-electron-clean-env.cjs --variant demo .",
     "start:license-admin": "node tools/run-electron-clean-env.cjs src/license-admin/main/main.js",
+    "diagnose:attendance:freeze": "node tools/attendance-freeze-diagnostic.mjs --target=dev",
+    "diagnose:attendance:freeze:unpacked": "node tools/attendance-freeze-diagnostic.mjs --target=unpacked",
     "test:license:scenarios": "node tools/license-scenarios.cjs",
     "dist:win:dir": "npm run guard:win-host && npm run rebuild:native:electron && npm run build && electron-builder --config electron-builder.json --win dir && npm run verify:win:native:standard",
     "dist:win:nsis": "npm run guard:win-host && npm run rebuild:native:electron && npm run build && electron-builder --config electron-builder.json --win nsis && npm run verify:win:native:standard",
@@ -127,6 +129,7 @@
     "cross-env": "^10.1.0",
     "electron": "^35.1.4",
     "electron-builder": "^24.13.3",
+    "playwright": "^1.59.1",
     "vite": "^6.3.5",
     "wait-on": "^8.0.3"
   }

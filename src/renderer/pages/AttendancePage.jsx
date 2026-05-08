@@ -30,14 +30,65 @@ import {
   selectAllInputText,
   getMainInputValue,
 } from '../utils/attendanceTableUtils';
+import {
+  countAttendanceDiag,
+  recordAttendanceTiming,
+  setAttendanceDiagValue,
+} from '../utils/attendanceDiagnostics';
+
+function useStableCallback(fn) {
+  const ref = useRef(fn);
+  ref.current = fn;
+  return useCallback((...args) => ref.current(...args), []);
+}
 
 const ATTENDANCE_LAYOUT_STORAGE_KEY = 'attendance_layout_mode_v1';
 const EMPTY_ROW_ATTENDANCE = Object.freeze({});
+const ATTENDANCE_DIAG_MODE = 'off'; // 'off' | 'a' | 'b' | 'c'
+const ATTENDANCE_DIAG = {
+  disableAutosaveWrite: ATTENDANCE_DIAG_MODE === 'a',
+  disableTableRender: ATTENDANCE_DIAG_MODE === 'b',
+  logCounters: ATTENDANCE_DIAG_MODE === 'c',
+};
+let attendanceDiagSeq = 0;
 
 function getPerfNow() {
   return typeof performance !== 'undefined' && typeof performance.now === 'function'
     ? performance.now()
     : Date.now();
+}
+
+function diagStart(label) {
+  countAttendanceDiag(label);
+  const token = {
+    label,
+    startedAt: getPerfNow(),
+    timeLabel: `[attendance-diag] ${label}#${++attendanceDiagSeq}`,
+    logCounters: ATTENDANCE_DIAG.logCounters,
+  };
+  if (token.logCounters) {
+    console.count(`[attendance-diag] ${label}`);
+    console.time(token.timeLabel);
+  }
+  return token;
+}
+
+function diagEnd(token, details = undefined) {
+  if (!token) {
+    return;
+  }
+
+  const durationMs = getPerfNow() - token.startedAt;
+  if (token.logCounters) {
+    console.timeEnd(token.timeLabel);
+  }
+  recordAttendanceTiming(token.label, durationMs, details);
+  if (durationMs > 100) {
+    console.warn(`[attendance-diag] slow ${token.label}`, {
+      ms: Math.round(durationMs * 100) / 100,
+      ...(details || {}),
+    });
+  }
 }
 
 function logAttendancePerf(event, details = {}) {
@@ -562,7 +613,7 @@ export default function AttendancePage() {
     });
     try {
       const employeesStartedAt = getPerfNow();
-      const employeeData = await window.api.employees.list();
+      const employeeData = await window.api.employees.listBasicForAttendance();
       logAttendancePerf('page:load-employees:end', {
         count: Array.isArray(employeeData) ? employeeData.length : 0,
         duration_ms: Math.round(getPerfNow() - employeesStartedAt),
@@ -615,6 +666,7 @@ export default function AttendancePage() {
   }
 
   async function loadAttendanceMonthData() {
+    const diagToken = diagStart('loadAttendanceMonthData');
     const startedAt = getPerfNow();
     const daysCount = dayKeys.length;
     if (mountedRef.current) {
@@ -662,6 +714,7 @@ export default function AttendancePage() {
         alert('Errore caricamento presenze');
       }
     } finally {
+      diagEnd(diagToken, { month: currentMonthKey, daysCount });
       const durationMs = Math.round(getPerfNow() - startedAt);
       logAttendancePerf('page:month-load:end', {
         month: currentMonthKey,
@@ -680,10 +733,12 @@ export default function AttendancePage() {
   }
 
   useEffect(() => {
+    countAttendanceDiag('effect:loadDirectoryData');
     loadDirectoryData();
   }, []);
 
   useEffect(() => {
+    countAttendanceDiag('effect:loadAttendanceMonthData');
     loadAttendanceMonthData();
   }, [currentMonthKey]);
 
@@ -707,13 +762,21 @@ export default function AttendancePage() {
   }, [pendingChanges, saveState]);
 
   useEffect(() => {
-    // Debounce unico per il buffer locale: finche l'utente digita, aggiorniamo lo stato
-    // ma salviamo sul backend solo dopo una breve pausa.
-    if (!Object.keys(pendingChanges).length) {
+    countAttendanceDiag('effect:pendingChangesAutosave');
+    if (ATTENDANCE_DIAG.disableAutosaveWrite) {
+      console.info('[attendance-perf] autosave-effect:skip', { reason: 'diag-disable' });
       return undefined;
     }
 
+    const pendingCount = Object.keys(pendingChanges).length;
+    if (!pendingCount) {
+      console.info('[attendance-perf] autosave-effect:skip', { reason: 'no-pending' });
+      return undefined;
+    }
+
+    console.info('[attendance-perf] autosave-effect:scheduled', { pendingCount });
     const timer = setTimeout(() => {
+      console.info('[attendance-perf] autosave-effect:firing', { pendingCount: Object.keys(pendingChangesRef.current).length });
       flushPendingChanges();
     }, 500);
 
@@ -829,6 +892,7 @@ export default function AttendancePage() {
   );
 
   const displayRows = useMemo(() => {
+    const diagToken = diagStart('displayRows useMemo');
     const startedAt = getPerfNow();
     let rows;
 
@@ -856,6 +920,11 @@ export default function AttendancePage() {
       active_employees_count: activeEmployees.length,
       duration_ms: Math.round(getPerfNow() - startedAt),
     });
+    setAttendanceDiagValue('displayRows.count', rows.length);
+    diagEnd(diagToken, {
+      rowsCount: rows.length,
+      selectedType: selectedMeta.type,
+    });
 
     return rows;
   }, [activeEmployees, employeesWithoutTeam, selectedEntity, selectedMeta, selectedTeam, selectedYear]);
@@ -882,6 +951,7 @@ export default function AttendancePage() {
   }, [selectedMeta.type, selectedMeta.id, activeEmployees, employeesWithoutTeam.length, visibleTeams]);
 
   useEffect(() => {
+    countAttendanceDiag('effect:selectedEmployeeIdsSync');
     setSelectedEmployeeIds((current) => {
       const next = current.filter((employeeId) => visibleEmployeeIds.includes(Number(employeeId)));
       return sameNumberArray(current, next) ? current : next;
@@ -897,6 +967,7 @@ export default function AttendancePage() {
   }, [bulkTargetDate, currentMonth, daysInMonth]);
 
   useEffect(() => {
+    countAttendanceDiag('effect:scrollbarSync');
     const tableShell = tableShellRef.current;
     const horizontalScrollbar = horizontalScrollbarRef.current;
     const horizontalScrollbarContent = horizontalScrollbarContentRef.current;
@@ -1020,6 +1091,7 @@ export default function AttendancePage() {
 
   const attendanceRowsData = useMemo(
     () => {
+      const diagToken = diagStart('attendanceRowsData useMemo');
       const startedAt = getPerfNow();
       const previousCache = attendanceRowsCacheRef.current;
       const nextCache = new Map();
@@ -1065,6 +1137,12 @@ export default function AttendancePage() {
         days_count: dayKeys.length,
         duration_ms: Math.round(getPerfNow() - startedAt),
       });
+      setAttendanceDiagValue('attendanceRowsData.rows', rows.length);
+      setAttendanceDiagValue('attendanceRowsData.cells', rows.length * dayKeys.length);
+      diagEnd(diagToken, {
+        rowsCount: rows.length,
+        cellsCount: rows.length * dayKeys.length,
+      });
 
       return rows;
     },
@@ -1091,9 +1169,14 @@ export default function AttendancePage() {
     });
   }
 
-  function updateLiveHoursPreview(value) {
+  const updateLiveHoursPreview = useStableCallback((value) => {
+    const diagToken = diagStart('updateLiveHoursPreview');
+    const __t0 = getPerfNow();
     setLiveHoursPreview(formatDecimalPreview(value));
-  }
+    const __dt = getPerfNow() - __t0;
+    if (__dt > 1) console.info('[attendance-perf] updateLiveHoursPreview', { ms: Math.round(__dt * 100) / 100 });
+    diagEnd(diagToken, { valueLength: String(value || '').length });
+  });
 
   function markDirtyState() {
     if (!isSavingRef.current) {
@@ -1111,6 +1194,7 @@ export default function AttendancePage() {
   }
 
   function queuePendingEntry(employeeId, date, nextEntry) {
+    const __qt0 = getPerfNow();
     if (isWriteBlockedRef.current) {
       showLicenseBlockedToast();
       return;
@@ -1155,6 +1239,8 @@ export default function AttendancePage() {
     });
 
     markDirtyState();
+    const __qdt = getPerfNow() - __qt0;
+    if (__qdt > 1) console.info('[attendance-perf] queuePendingEntry', { ms: Math.round(__qdt * 100) / 100 });
   }
 
   function clearPendingChange(employeeId, date) {
@@ -1203,27 +1289,27 @@ export default function AttendancePage() {
     }
   }
 
-  function handleGridKeyDown(event) {
+  const handleGridKeyDown = useStableCallback((event) => {
     if (event.key !== 'Enter' && event.key !== 'Tab') {
       return;
     }
 
     event.preventDefault();
     moveAttendanceFocus(event.currentTarget, event.shiftKey ? -1 : 1);
-  }
+  });
 
-  function toggleEmployeeSelection(employeeId, checked) {
+  const toggleEmployeeSelection = useStableCallback((employeeId, checked) => {
     setSelectedEmployeeIds((current) => {
       if (checked) {
         return current.includes(employeeId) ? current : [...current, employeeId];
       }
       return current.filter((id) => id !== employeeId);
     });
-  }
+  });
 
-  function toggleSelectAllVisible(checked) {
+  const toggleSelectAllVisible = useStableCallback((checked) => {
     setSelectedEmployeeIds(checked ? visibleEmployeeIds : []);
-  }
+  });
 
   function getAttendanceForSnapshot(snapshot, employeeId, date) {
     const key = `${employeeId}_${date}`;
@@ -1498,14 +1584,26 @@ export default function AttendancePage() {
   }
 
   async function flushPendingChanges() {
+    const diagToken = diagStart('flushPendingChanges');
+    const __flushT0 = getPerfNow();
+    let __buildPayloadMs = 0;
+    let __ipcCallMs = 0;
+    let __postSaveSetStateMs = 0;
     const snapshot = pendingChangesRef.current;
     const entries = Object.entries(snapshot);
 
     if (!entries.length || isSavingRef.current) {
+      diagEnd(diagToken, { skipped: true, reason: 'empty-or-saving' });
       return;
     }
 
     if (isWriteBlockedRef.current) {
+      diagEnd(diagToken, { skipped: true, reason: 'write-blocked' });
+      return;
+    }
+
+    if (ATTENDANCE_DIAG.disableAutosaveWrite) {
+      diagEnd(diagToken, { skipped: true, reason: 'diag-disable-autosave' });
       return;
     }
 
@@ -1514,6 +1612,7 @@ export default function AttendancePage() {
       setSaveState('saving');
     }
 
+    const __payloadT0 = getPerfNow();
     const payload = entries.map(([, item]) => {
       const normalized = normalizeAttendanceEntry(item);
       return {
@@ -1533,8 +1632,20 @@ export default function AttendancePage() {
       };
     });
 
+    __buildPayloadMs = getPerfNow() - __payloadT0;
+    console.info('[attendance-perf] flushPendingChanges:payload-built', { entries: entries.length, ms: Math.round(__buildPayloadMs * 100) / 100 });
+
     try {
-      await window.api.attendance.bulkUpsert(payload);
+      const ipcDiagToken = diagStart('save attendance IPC');
+      const __ipcT0 = getPerfNow();
+      const __ipcResult = await window.api.attendance.bulkUpsert(payload);
+      __ipcCallMs = getPerfNow() - __ipcT0;
+      console.info('[attendance-perf] flushPendingChanges:ipc-bulkUpsert', {
+        entries: payload.length,
+        ms: Math.round(__ipcCallMs),
+        mainPerf: __ipcResult?.__perf || null,
+      });
+      diagEnd(ipcDiagToken, { entries: payload.length });
 
       if (!mountedRef.current) {
         console.info('[route-lifecycle] async cancelled', {
@@ -1545,6 +1656,7 @@ export default function AttendancePage() {
         return;
       }
 
+      const __setStateT0 = getPerfNow();
       setAttendance((current) => {
         const nextMap = {};
         for (const item of current) {
@@ -1581,6 +1693,17 @@ export default function AttendancePage() {
       });
 
       setSaveState('saved');
+      __postSaveSetStateMs = getPerfNow() - __setStateT0;
+      console.info('[attendance-perf] flushPendingChanges:setState-scheduled', {
+        ms: Math.round(__postSaveSetStateMs * 100) / 100,
+      });
+      const __rafT0 = __setStateT0;
+      requestAnimationFrame(() => {
+        const __commitMs = getPerfNow() - __rafT0;
+        console.info('[attendance-perf] flushPendingChanges:setState-committed', {
+          ms: Math.round(__commitMs),
+        });
+      });
       scheduleSavedBadge();
     } catch (err) {
       const isLicenseBlock =
@@ -1603,9 +1726,22 @@ export default function AttendancePage() {
         }
       }
     } finally {
+      diagEnd(diagToken, { entries: entries.length });
+      const __totalFlushMs = getPerfNow() - __flushT0;
+      console.info('[attendance-perf] flushPendingChanges:total', { entries: entries.length, ms: Math.round(__totalFlushMs) });
+      console.info('[attendance-perf] flushPendingChanges:summary', {
+        entries: entries.length,
+        buildPayloadMs: Math.round(__buildPayloadMs * 100) / 100,
+        ipcCallMs: Math.round(__ipcCallMs),
+        postSaveSetStateMs: Math.round(__postSaveSetStateMs * 100) / 100,
+        totalFlushMs: Math.round(__totalFlushMs),
+        unaccountedMs: Math.round(
+          (__totalFlushMs - __buildPayloadMs - __ipcCallMs - __postSaveSetStateMs) * 100
+        ) / 100,
+      });
       isSavingRef.current = false;
 
-      if (!isWriteBlockedRef.current && Object.keys(pendingChangesRef.current).length > 0) {
+      if (!ATTENDANCE_DIAG.disableAutosaveWrite && !isWriteBlockedRef.current && Object.keys(pendingChangesRef.current).length > 0) {
         flushRetryTimeoutRef.current = setTimeout(() => {
           flushPendingChanges();
         }, 100);
@@ -1613,7 +1749,9 @@ export default function AttendancePage() {
     }
   }
 
-  function handleMainValueChange(employeeId, date, value) {
+  const handleMainValueChange = useStableCallback((employeeId, date, value) => {
+    const diagToken = diagStart('handleMainValueChange');
+    const __t0 = getPerfNow();
     const existing = getAtt(employeeId, date);
     setInputDraft(employeeId, date, 'main', value);
     updateLiveHoursPreview(value);
@@ -1666,26 +1804,33 @@ export default function AttendancePage() {
           };
 
     queuePendingEntry(employeeId, date, nextEntry);
-  }
+    const __dt = getPerfNow() - __t0;
+    if (__dt > 1) console.info('[attendance-perf] handleMainValueChange', { ms: Math.round(__dt * 100) / 100 });
+    diagEnd(diagToken, { employeeId, date, value });
+  });
 
-  function handleMainValueBlur(employeeId, date) {
+  const handleMainValueBlur = useStableCallback((employeeId, date) => {
+    const diagToken = diagStart('handleMainValueBlur');
     const att = getAtt(employeeId, date);
     const draftValue = inputDrafts[getInputDraftKey(employeeId, date, 'main')];
     if (draftValue === undefined) {
+      diagEnd(diagToken, { employeeId, date, skipped: true, reason: 'no-draft' });
       return;
     }
 
     const parsed = parseMainInputValue(draftValue, attendanceSettings);
     if (parsed.kind === 'invalid') {
       setInputDraft(employeeId, date, 'main', '');
+      diagEnd(diagToken, { employeeId, date, invalid: true });
       return;
     }
 
     setInputDraft(employeeId, date, 'main', getMainInputValue(att));
     updateLiveHoursPreview(getMainInputValue(att));
-  }
+    diagEnd(diagToken, { employeeId, date });
+  });
 
-  function handleOvertimeValueChange(employeeId, date, value) {
+  const handleOvertimeValueChange = useStableCallback((employeeId, date, value) => {
     setInputDraft(employeeId, date, 'overtime', value);
     const parsed = parseOvertimeInputValue(value, attendanceSettings);
 
@@ -1707,9 +1852,9 @@ export default function AttendancePage() {
             : parsed.hours,
         notes: existing?.notes || null,
     });
-  }
+  });
 
-  function handleOvertimeValueBlur(employeeId, date) {
+  const handleOvertimeValueBlur = useStableCallback((employeeId, date) => {
     const att = getAtt(employeeId, date);
     const draftValue = inputDrafts[getInputDraftKey(employeeId, date, 'overtime')];
     if (draftValue === undefined) {
@@ -1724,9 +1869,9 @@ export default function AttendancePage() {
 
     const normalizedValue = att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : '';
     setInputDraft(employeeId, date, 'overtime', normalizedValue);
-  }
+  });
 
-  function handleMarkerChange(employeeId, date, markerCode) {
+  const handleMarkerChange = useStableCallback((employeeId, date, markerCode) => {
     const existing = getAtt(employeeId, date);
     const isMainType = MAIN_DAY_TYPES.some((item) => item.value === existing?.status);
 
@@ -1744,7 +1889,7 @@ export default function AttendancePage() {
         overtime_hours: existing?.overtime_hours || 0,
         notes: existing?.notes || null,
     });
-  }
+  });
 
   function applyQuickHours(employeeIds, date, value, minutesValue = '') {
     if (!Array.isArray(employeeIds) || !employeeIds.length) {
@@ -2387,51 +2532,55 @@ export default function AttendancePage() {
           </div>
         </div>
       ) : (
-        <AttendanceTable
-          isCompactLayout={isCompactLayout}
-          allVisibleSelected={allVisibleSelected}
-          selectedMeta={selectedMeta}
-          daysInMonth={daysInMonth}
-          dayInfoMap={dayInfoMap}
-          todayKey={todayKey}
-          attendanceRowsData={attendanceRowsData}
-          selectedEmployeeIds={selectedEmployeeIds}
-          dayKeys={dayKeys}
-          availableMarkers={availableMarkers}
-          activeMarkers={activeMarkers}
-          openMarkerMenuKey={openMarkerMenuKey}
-          compactOvertimeEditorKey={compactOvertimeEditorKey}
-          attendanceSettings={attendanceSettings}
-          displayRows={displayRows}
-          isWriteBlocked={isWriteBlocked}
-          horizontalScrollbarRef={horizontalScrollbarRef}
-          horizontalScrollbarContentRef={horizontalScrollbarContentRef}
-          tableShellRef={tableShellRef}
-          thStyleLeftCurrent={thStyleLeftCurrent}
-          thStyleCenterCurrent={thStyleCenterCurrent}
-          thStyleRightHoursCurrent={thStyleRightHoursCurrent}
-          thStyleRightSummaryCurrent={thStyleRightSummaryCurrent}
-          tdStyleLeftCurrent={tdStyleLeftCurrent}
-          tdStyleCenterCurrent={tdStyleCenterCurrent}
-          tdStyleRightHoursCurrent={tdStyleRightHoursCurrent}
-          tdStyleRightSummaryCurrent={tdStyleRightSummaryCurrent}
-          todayHeaderStyle={todayHeaderStyle}
-          todayCellStyle={todayCellStyle}
-          toggleSelectAllVisible={toggleSelectAllVisible}
-          toggleEmployeeSelection={toggleEmployeeSelection}
-          setOpenMarkerMenuKey={setOpenMarkerMenuKey}
-          setCompactOvertimeEditorKey={setCompactOvertimeEditorKey}
-          handleMainValueChange={handleMainValueChange}
-          handleMainValueBlur={handleMainValueBlur}
-          handleGridInputFocus={handleGridInputFocus}
-          handleGridKeyDown={handleGridKeyDown}
-          updateLiveHoursPreview={updateLiveHoursPreview}
-          handleAttendanceCellFocus={handleAttendanceCellFocus}
-          handleMarkerChange={handleMarkerChange}
-          handleOvertimeValueChange={handleOvertimeValueChange}
-          handleOvertimeValueBlur={handleOvertimeValueBlur}
-          inputDrafts={inputDrafts}
-        />
+        ATTENDANCE_DIAG.disableTableRender ? (
+          <div>Presenze caricate: {displayRows.length}</div>
+        ) : (
+          <AttendanceTable
+            isCompactLayout={isCompactLayout}
+            allVisibleSelected={allVisibleSelected}
+            selectedMeta={selectedMeta}
+            daysInMonth={daysInMonth}
+            dayInfoMap={dayInfoMap}
+            todayKey={todayKey}
+            attendanceRowsData={attendanceRowsData}
+            selectedEmployeeIds={selectedEmployeeIds}
+            dayKeys={dayKeys}
+            availableMarkers={availableMarkers}
+            activeMarkers={activeMarkers}
+            openMarkerMenuKey={openMarkerMenuKey}
+            compactOvertimeEditorKey={compactOvertimeEditorKey}
+            attendanceSettings={attendanceSettings}
+            displayRows={displayRows}
+            isWriteBlocked={isWriteBlocked}
+            horizontalScrollbarRef={horizontalScrollbarRef}
+            horizontalScrollbarContentRef={horizontalScrollbarContentRef}
+            tableShellRef={tableShellRef}
+            thStyleLeftCurrent={thStyleLeftCurrent}
+            thStyleCenterCurrent={thStyleCenterCurrent}
+            thStyleRightHoursCurrent={thStyleRightHoursCurrent}
+            thStyleRightSummaryCurrent={thStyleRightSummaryCurrent}
+            tdStyleLeftCurrent={tdStyleLeftCurrent}
+            tdStyleCenterCurrent={tdStyleCenterCurrent}
+            tdStyleRightHoursCurrent={tdStyleRightHoursCurrent}
+            tdStyleRightSummaryCurrent={tdStyleRightSummaryCurrent}
+            todayHeaderStyle={todayHeaderStyle}
+            todayCellStyle={todayCellStyle}
+            toggleSelectAllVisible={toggleSelectAllVisible}
+            toggleEmployeeSelection={toggleEmployeeSelection}
+            setOpenMarkerMenuKey={setOpenMarkerMenuKey}
+            setCompactOvertimeEditorKey={setCompactOvertimeEditorKey}
+            handleMainValueChange={handleMainValueChange}
+            handleMainValueBlur={handleMainValueBlur}
+            handleGridInputFocus={handleGridInputFocus}
+            handleGridKeyDown={handleGridKeyDown}
+            updateLiveHoursPreview={updateLiveHoursPreview}
+            handleAttendanceCellFocus={handleAttendanceCellFocus}
+            handleMarkerChange={handleMarkerChange}
+            handleOvertimeValueChange={handleOvertimeValueChange}
+            handleOvertimeValueBlur={handleOvertimeValueBlur}
+            inputDrafts={inputDrafts}
+          />
+        )
       )}
 
       <QuickAttendanceModal

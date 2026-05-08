@@ -1633,6 +1633,17 @@ app.whenReady().then(async () => {
     });
     return result;
   });
+  ipcMain.handle('employees:listBasicForAttendance', async (_, options) => {
+    const startedAt = Date.now();
+    logMainProcessEvent('employees:listBasicForAttendance:start', { includeDeleted: !!options?.includeDeleted });
+    const result = employeeRepo.listBasicEmployeesForAttendance(options);
+    logMainProcessEvent('employees:listBasicForAttendance:end', {
+      includeDeleted: !!options?.includeDeleted,
+      count: Array.isArray(result) ? result.length : 0,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  });
   ipcMain.handle('employees:getById', async (_, id, options) => {
     const startedAt = Date.now();
     logMainProcessEvent('employees:getById:start', { id: Number(id), includeDeleted: !!options?.includeDeleted });
@@ -2378,11 +2389,24 @@ app.whenReady().then(async () => {
     return attendanceRepo.saveAttendance(payload);
   });
   ipcMain.handle('attendance:bulkUpsert', async (_, payload) => {
+    const __t0 = Date.now();
     requireWritableLicense("L'inserimento di nuove presenze");
-    backupService.createOperationSafetyBackup('bulk_attendance');
+    const __tLicense = Date.now();
     const result = attendanceRepo.bulkUpsertAttendance(payload);
+    const __tTx = Date.now();
     try { authService.audit('attendance:bulkUpsert', 'attendance', null, { count: payload?.length }); } catch {}
-    return result;
+    const __tAudit = Date.now();
+    const __perf = {
+      entries: Array.isArray(payload) ? payload.length : 0,
+      backupRan: false,
+      licenseMs: __tLicense - __t0,
+      backupMs: 0,
+      sqliteTxMs: __tTx - __tLicense,
+      auditMs: __tAudit - __tTx,
+      totalMs: __tAudit - __t0,
+    };
+    console.info('[attendance-perf][main] attendance:bulkUpsert', __perf);
+    return { ...(result || {}), __perf };
   });
   ipcMain.handle('attendance:listByMonth', async (_, year, month) => {
     const startedAt = Date.now();

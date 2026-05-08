@@ -1,11 +1,50 @@
 import React from 'react';
 import { formatDate, getDayLabel, getMarkerMeta, formatCompactWorkedSummary, MAIN_DAY_TYPES } from '../../utils/attendancePrintUtils';
 import { formatHoursValue, formatWorkedSummary } from '../../utils/attendanceSummary';
-import { MarkerVisual } from './AttendancePrintAreaPaginated';
-import { getMainTypeMeta, selectAllInputText, getAttendanceHoursTone, getMainInputValue, getCalendarHeaderStyle, getCalendarCellStyle, getDisplayedInputValue } from '../../utils/attendanceTableUtils';
+import { getMainTypeMeta, getAttendanceHoursTone, getMainInputValue, getCalendarHeaderStyle, getDisplayedInputValue } from '../../utils/attendanceTableUtils';
+import { countAttendanceDiag, recordAttendanceTiming, setAttendanceDiagValue } from '../../utils/attendanceDiagnostics';
+import AttendanceRow, { readEqStats, resetEqStats } from './AttendanceRow';
 
-function AttendanceTable({
-  isCompactLayout,
+function __nowMs() {
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+
+function AttendanceTable(props) {
+  const __propsRef = React.useRef(null);
+  const __renderCountRef = React.useRef(0);
+  __renderCountRef.current += 1;
+  const __previousProps = __propsRef.current;
+  if (__previousProps) {
+    const changed = [];
+    const prevKeys = Object.keys(__previousProps);
+    const curKeys = Object.keys(props);
+    const allKeys = new Set([...prevKeys, ...curKeys]);
+    for (const key of allKeys) {
+      if (__previousProps[key] !== props[key]) {
+        changed.push(key);
+      }
+    }
+    if (changed.length === 0) {
+      console.warn('[attendance-perf] AttendanceTable re-render with NO prop changes (parent forced render)', {
+        renderCount: __renderCountRef.current,
+      });
+    } else {
+      console.info('[attendance-perf] AttendanceTable props changed', {
+        renderCount: __renderCountRef.current,
+        changedProps: changed,
+        changedCount: changed.length,
+      });
+    }
+  } else {
+    console.info('[attendance-perf] AttendanceTable initial render', {
+      renderCount: __renderCountRef.current,
+      propsKeys: Object.keys(props).length,
+    });
+  }
+  __propsRef.current = props;
+
+  const {
+    isCompactLayout,
   allVisibleSelected,
   selectedMeta,
   daysInMonth,
@@ -48,7 +87,42 @@ function AttendanceTable({
   handleMarkerChange,
   handleOvertimeValueChange,
   handleOvertimeValueBlur,
-}) {
+  } = props;
+  countAttendanceDiag('AttendanceTable render');
+  console.count('[attendance-diag] AttendanceTable render');
+  resetEqStats();
+  const __attRenderStart = __nowMs();
+  let __cellsTotalMs = 0;
+  let __cellsRowsCount = 0;
+  React.useEffect(() => {
+    const elapsed = __nowMs() - __attRenderStart;
+    const eq = readEqStats();
+    console.info('[attendance-perf] AttendanceTable render', {
+      ms: Math.round(elapsed),
+      rows: __cellsRowsCount,
+      cellsPrecomputeMs: Math.round(__cellsTotalMs),
+      eqCalls: eq.count,
+      eqSkipped: eq.skipped,
+      eqRerendered: eq.count - eq.skipped,
+      eqTotalMs: Math.round(eq.totalMs * 100) / 100,
+    });
+    recordAttendanceTiming('AttendanceTable render', elapsed, {
+      rows: __cellsRowsCount,
+      cellsPrecomputeMs: __cellsTotalMs,
+      eqCalls: eq.count,
+      eqSkipped: eq.skipped,
+    });
+    setAttendanceDiagValue('AttendanceTable.eqCalls', eq.count);
+    setAttendanceDiagValue('AttendanceTable.eqSkipped', eq.skipped);
+    if (elapsed > 100) {
+      console.warn('[attendance-diag] slow AttendanceTable render', {
+        ms: Math.round(elapsed * 100) / 100,
+        rows: __cellsRowsCount,
+        eqCalls: eq.count,
+        eqSkipped: eq.skipped,
+      });
+    }
+  });
   return (
     <div className={`attendance-table-region ${isCompactLayout ? 'attendance-table-region--compact' : ''}`}>
       <div
@@ -104,239 +178,76 @@ function AttendanceTable({
           </tr>
         </thead>
         <tbody>
-          {attendanceRowsData.map(({ employee, teamMember, effectiveAttendance, totals }) => {
+          {attendanceRowsData.map((rowData) => {
+            const { employee, teamMember, effectiveAttendance, totals } = rowData;
+            const employeeId = employee.id;
+
+            // Per-cell precompute (timed for profiling)
+            const __cellsT0 = __nowMs();
+            const cells = daysInMonth.map((day, idx) => {
+              const dateStr = dayKeys[idx];
+              const att = effectiveAttendance[dateStr];
+              const isSpecial = !!(att?.status && att.status !== 'presente' && att.status !== 'assente');
+              const specialOpt = getMainTypeMeta(att?.status);
+              const markerMeta = getMarkerMeta(att?.marker_code, availableMarkers);
+              const dayInfo = dayInfoMap[dateStr];
+              const markerMenuKey = `${employeeId}_${dateStr}`;
+              const overtimeEditorKey = `${employeeId}_${dateStr}_overtime`;
+              const isMainType = MAIN_DAY_TYPES.some((item) => item.value === att?.status);
+              const isEditingMarker = openMarkerMenuKey === markerMenuKey || !markerMeta;
+              const isEditingCompactOvertime = compactOvertimeEditorKey === overtimeEditorKey;
+              const mainInputValue = getDisplayedInputValue(inputDrafts, employeeId, dateStr, 'main', getMainInputValue(att));
+              const overtimeInputValue = getDisplayedInputValue(inputDrafts, employeeId, dateStr, 'overtime', att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : '');
+              const mainInputTone = getAttendanceHoursTone(mainInputValue, attendanceSettings);
+              const overtimeHasValue = String(overtimeInputValue || '').trim() !== '';
+              return {
+                dateStr, att, dayInfo,
+                isSpecial, specialOpt, markerMeta, isMainType,
+                markerMenuKey, overtimeEditorKey,
+                isEditingMarker, isEditingCompactOvertime,
+                mainInputValue, overtimeInputValue, mainInputTone, overtimeHasValue,
+              };
+            });
+            __cellsTotalMs += __nowMs() - __cellsT0;
+            __cellsRowsCount += 1;
+
+            const totalHoursLabel = formatHoursValue(totals.totalHours, attendanceSettings.hoursFormat);
+            const summaryLabel = isCompactLayout
+              ? formatCompactWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)
+              : formatWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat);
+            const isSelected = selectedEmployeeIds.includes(employeeId);
+
             return (
-              <tr key={employee.id}>
-                <td style={tdStyleLeftCurrent}>
-                  <div className="attendance-left-cell">
-                    <input
-                      type="checkbox"
-                      checked={selectedEmployeeIds.includes(employee.id)}
-                      onChange={(event) => toggleEmployeeSelection(employee.id, event.target.checked)}
-                      aria-label={`Seleziona ${employee.first_name} ${employee.last_name}`}
-                    />
-                    <div>
-                      <div className="attendance-employee-name">{employee.first_name} {employee.last_name}</div>
-                      <div style={{ fontSize: isCompactLayout ? 9 : 10, color: '#6b7280' }}>
-                        {employee.role || ''}
-                        {teamMember?.manage_by_days ? ' · gestione a giornate' : ''}
-                      </div>
-                    </div>
-                  </div>
-                </td>
-
-                {daysInMonth.map((day, index) => {
-                  const dateStr = dayKeys[index];
-                  const att = effectiveAttendance[dateStr];
-                  const isSpecial = att?.status && att.status !== 'presente' && att.status !== 'assente';
-                  const specialOpt = getMainTypeMeta(att?.status);
-                  const markerMeta = getMarkerMeta(att?.marker_code, availableMarkers);
-                  const dayInfo = dayInfoMap[dateStr];
-                  const markerMenuKey = `${employee.id}_${dateStr}`;
-                  const overtimeEditorKey = `${employee.id}_${dateStr}_overtime`;
-                  const isMainType = MAIN_DAY_TYPES.some((item) => item.value === att?.status);
-                  const isEditingMarker = openMarkerMenuKey === markerMenuKey || !markerMeta;
-                  const isEditingCompactOvertime = compactOvertimeEditorKey === overtimeEditorKey;
-                  const mainInputValue = getDisplayedInputValue(inputDrafts, employee.id, dateStr, 'main', getMainInputValue(att));
-                  const overtimeInputValue = getDisplayedInputValue(
-                    employee.id,
-                    dateStr,
-                    'overtime',
-                    att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : ''
-                  );
-                  const mainInputTone = getAttendanceHoursTone(mainInputValue, attendanceSettings);
-                  const overtimeHasValue = String(overtimeInputValue || '').trim() !== '';
-
-                  return (
-                    <td
-                      key={dateStr}
-                      style={{
-                        ...tdStyleCenterCurrent,
-                        ...getCalendarCellStyle(dayInfo),
-                        ...(dateStr === todayKey ? todayCellStyle : {}),
-                      }}
-                      title={dayInfo?.holidayLabel || undefined}
-                    >
-                      <div className={`attendance-cell-stack ${isCompactLayout ? 'attendance-cell-stack--compact' : ''}`}>
-                        <div className={`attendance-day-cell ${isCompactLayout ? 'attendance-day-cell--compact' : ''}`}>
-                          <input
-                            className={`attendance-hours-input ${isCompactLayout ? 'attendance-hours-input--compact' : ''} ${mainInputTone ? `attendance-hours-input--${mainInputTone}` : ''}`}
-                            type="text"
-                            inputMode="decimal"
-                            value={mainInputValue}
-                            onChange={(event) => handleMainValueChange(employee.id, dateStr, event.target.value)}
-                            onBlur={() => handleMainValueBlur(employee.id, dateStr)}
-                            onFocus={(event) => {
-                              handleGridInputFocus(dateStr, event);
-                              updateLiveHoursPreview(event.currentTarget.value);
-                            }}
-                            onClick={selectAllInputText}
-                            onKeyDown={handleGridKeyDown}
-                            data-attendance-focus="true"
-                            placeholder=""
-                            disabled={isWriteBlocked}
-                            title={isSpecial ? specialOpt?.text : 'Inserisci ore decimali oppure F / P / M'}
-                          />
-
-                          {isCompactLayout ? (
-                            <>
-                              {!isMainType ? (
-                                markerMeta && !isEditingMarker ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      handleAttendanceCellFocus(dateStr);
-                                      setOpenMarkerMenuKey(markerMenuKey);
-                                    }}
-                                    title={`Marcatore ${markerMeta.text}. Clicca per modificare.`}
-                                    className="attendance-compact-marker-badge"
-                                    style={{ background: markerMeta.background, color: markerMeta.color }}
-                                    disabled={isWriteBlocked}
-                                  >
-                                    <MarkerVisual marker={markerMeta} size={11} />
-                                  </button>
-                                ) : (
-                                  <select
-                                    className="attendance-compact-marker-select"
-                                    value={att?.marker_code || ''}
-                                    onChange={(event) => {
-                                      const nextValue = event.target.value || null;
-                                      handleMarkerChange(employee.id, dateStr, nextValue);
-                                      setOpenMarkerMenuKey(nextValue ? null : markerMenuKey);
-                                    }}
-                                    onFocus={() => handleAttendanceCellFocus(dateStr)}
-                                    onBlur={() => {
-                                      if (att?.marker_code) {
-                                        setOpenMarkerMenuKey(null);
-                                      }
-                                    }}
-                                    title="Seleziona un marcatore grafico"
-                                    disabled={isWriteBlocked}
-                                  >
-                                    <option value="">+</option>
-                                    {activeMarkers.map((item) => (
-                                      <option key={item.value} value={item.value}>
-                                        {item.image ? item.text : item.symbol}
-                                      </option>
-                                    ))}
-                                  </select>
-                                )
-                              ) : null}
-
-                              {!isSpecial ? (
-                                isEditingCompactOvertime ? (
-                                  <input
-                                    className={`attendance-compact-overtime-input ${overtimeHasValue ? 'attendance-hours-input--overtime-filled' : ''}`}
-                                    type="text"
-                                    inputMode="decimal"
-                                    value={overtimeInputValue}
-                                    onChange={(event) => handleOvertimeValueChange(employee.id, dateStr, event.target.value)}
-                                    onBlur={() => {
-                                      handleOvertimeValueBlur(employee.id, dateStr);
-                                      setCompactOvertimeEditorKey(null);
-                                    }}
-                                    onFocus={(event) => handleGridInputFocus(dateStr, event)}
-                                    onClick={selectAllInputText}
-                                    onKeyDown={handleGridKeyDown}
-                                    data-attendance-focus="true"
-                                    placeholder="str"
-                                    autoFocus
-                                    disabled={isWriteBlocked}
-                                    title="Straordinario decimale separato dalle ore normali"
-                                  />
-                                ) : (
-                                  <button
-                                    type="button"
-                                    className={`attendance-compact-overtime-badge ${overtimeHasValue ? 'attendance-compact-overtime-badge--filled' : ''}`}
-                                    onClick={() => {
-                                      handleAttendanceCellFocus(dateStr);
-                                      setCompactOvertimeEditorKey(overtimeEditorKey);
-                                    }}
-                                    disabled={isWriteBlocked}
-                                    title={overtimeHasValue ? `Straordinario ${overtimeInputValue} h. Clicca per modificare.` : 'Aggiungi straordinario'}
-                                  >
-                                    {overtimeHasValue ? `+${overtimeInputValue}` : '+STR'}
-                                  </button>
-                                )
-                              ) : null}
-                            </>
-                          ) : (
-                            <>
-                              <input
-                                className={`attendance-hours-input attendance-hours-input--overtime ${overtimeHasValue ? 'attendance-hours-input--overtime-filled' : ''}`}
-                                type="text"
-                                inputMode="decimal"
-                                value={overtimeInputValue}
-                                onChange={(event) => handleOvertimeValueChange(employee.id, dateStr, event.target.value)}
-                                onBlur={() => handleOvertimeValueBlur(employee.id, dateStr)}
-                                onFocus={(event) => handleGridInputFocus(dateStr, event)}
-                                onClick={selectAllInputText}
-                                onKeyDown={handleGridKeyDown}
-                                data-attendance-focus="true"
-                                placeholder="str"
-                                disabled={isWriteBlocked || isSpecial}
-                                title="Straordinario decimale separato dalle ore normali"
-                              />
-
-                              {isMainType ? (
-                                <span className="attendance-marker-placeholder" />
-                              ) : markerMeta && !isEditingMarker ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    handleAttendanceCellFocus(dateStr);
-                                    setOpenMarkerMenuKey(markerMenuKey);
-                                  }}
-                                  title={`Marcatore ${markerMeta.text}. Clicca per modificare.`}
-                                  className="attendance-marker-button"
-                                  style={{ background: markerMeta.background, color: markerMeta.color }}
-                                  disabled={isWriteBlocked}
-                                >
-                                  <MarkerVisual marker={markerMeta} size={16} />
-                                </button>
-                              ) : (
-                                <select
-                                  className="attendance-marker-select"
-                                  value={att?.marker_code || ''}
-                                  onChange={(event) => {
-                                    const nextValue = event.target.value || null;
-                                    handleMarkerChange(employee.id, dateStr, nextValue);
-                                    setOpenMarkerMenuKey(nextValue ? null : markerMenuKey);
-                                  }}
-                                  onFocus={() => handleAttendanceCellFocus(dateStr)}
-                                  onKeyDown={handleGridKeyDown}
-                                  data-attendance-focus="true"
-                                  onBlur={() => {
-                                    if (att?.marker_code) {
-                                      setOpenMarkerMenuKey(null);
-                                    }
-                                  }}
-                                  title="Seleziona un marcatore grafico"
-                                  disabled={isWriteBlocked}
-                                >
-                                  <option value="">+</option>
-                                  {activeMarkers.map((item) => (
-                                    <option key={item.value} value={item.value}>
-                                      {item.image ? item.text : item.symbol}
-                                    </option>
-                                  ))}
-                                </select>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                  );
-                })}
-
-                <td style={tdStyleRightHoursCurrent}>{formatHoursValue(totals.totalHours, attendanceSettings.hoursFormat)}</td>
-                <td style={tdStyleRightSummaryCurrent}>
-                  {isCompactLayout
-                    ? formatCompactWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)
-                    : formatWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)}
-                </td>
-              </tr>
+              <AttendanceRow
+                key={employeeId}
+                employee={employee}
+                teamMember={teamMember}
+                isSelected={isSelected}
+                cells={cells}
+                totalHoursLabel={totalHoursLabel}
+                summaryLabel={summaryLabel}
+                isCompactLayout={isCompactLayout}
+                isWriteBlocked={isWriteBlocked}
+                activeMarkers={activeMarkers}
+                todayKey={todayKey}
+                todayCellStyle={todayCellStyle}
+                tdStyleLeftCurrent={tdStyleLeftCurrent}
+                tdStyleCenterCurrent={tdStyleCenterCurrent}
+                tdStyleRightHoursCurrent={tdStyleRightHoursCurrent}
+                tdStyleRightSummaryCurrent={tdStyleRightSummaryCurrent}
+                setOpenMarkerMenuKey={setOpenMarkerMenuKey}
+                setCompactOvertimeEditorKey={setCompactOvertimeEditorKey}
+                toggleEmployeeSelection={toggleEmployeeSelection}
+                handleMainValueChange={handleMainValueChange}
+                handleMainValueBlur={handleMainValueBlur}
+                handleGridInputFocus={handleGridInputFocus}
+                handleGridKeyDown={handleGridKeyDown}
+                updateLiveHoursPreview={updateLiveHoursPreview}
+                handleAttendanceCellFocus={handleAttendanceCellFocus}
+                handleMarkerChange={handleMarkerChange}
+                handleOvertimeValueChange={handleOvertimeValueChange}
+                handleOvertimeValueBlur={handleOvertimeValueBlur}
+              />
             );
           })}
         </tbody>
@@ -350,4 +261,4 @@ function AttendanceTable({
   );
 }
 
-export default AttendanceTable;
+export default React.memo(AttendanceTable);

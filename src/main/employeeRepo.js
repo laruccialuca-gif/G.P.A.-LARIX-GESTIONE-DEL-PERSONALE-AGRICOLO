@@ -88,6 +88,19 @@ function normalizeDateValue(value) {
   return raw;
 }
 
+function nowMs() {
+  return (typeof performance !== 'undefined' && typeof performance.now === 'function')
+    ? performance.now()
+    : Date.now();
+}
+
+function logEmployeeRepoPerf(event, details = {}) {
+  console.info('[employee-repo-perf]', {
+    event,
+    ...details,
+  });
+}
+
 function isValidFiscalCode(value) {
   return /^[A-Z0-9]{16}$/.test(normalizeFiscalCode(value) || '');
 }
@@ -184,6 +197,7 @@ function mapEmployeeInput(employee) {
 }
 
 function loadEmploymentPeriods(employeeIds) {
+  const startedAt = nowMs();
   const db = getDb();
   if (!employeeIds.length) return new Map();
 
@@ -212,6 +226,44 @@ function loadEmploymentPeriods(employeeIds) {
     map.set(row.employee_id, list);
   }
 
+  logEmployeeRepoPerf('loadEmploymentPeriods', {
+    employee_count: employeeIds.length,
+    row_count: rows.length,
+    duration_ms: Math.round(nowMs() - startedAt),
+  });
+
+  return map;
+}
+
+function loadEmploymentPeriodsBasic(employeeIds) {
+  const startedAt = nowMs();
+  const db = getDb();
+  if (!employeeIds.length) return new Map();
+
+  const placeholders = employeeIds.map(() => '?').join(', ');
+  const rows = db.prepare(`
+    SELECT employee_id, hire_date_from, hire_date_to
+    FROM employee_employment_periods
+    WHERE employee_id IN (${placeholders})
+    ORDER BY employee_id ASC, COALESCE(hire_date_from, created_at) DESC, id DESC
+  `).all(...employeeIds);
+
+  const map = new Map();
+  for (const row of rows) {
+    const list = map.get(row.employee_id) || [];
+    list.push({
+      hire_date_from: row.hire_date_from || null,
+      hire_date_to: row.hire_date_to || null,
+    });
+    map.set(row.employee_id, list);
+  }
+
+  logEmployeeRepoPerf('loadEmploymentPeriodsBasic', {
+    employee_count: employeeIds.length,
+    row_count: rows.length,
+    duration_ms: Math.round(nowMs() - startedAt),
+  });
+
   return map;
 }
 
@@ -229,6 +281,7 @@ function parseEmploymentPeriodIdFromCategory(category) {
 }
 
 function loadEmploymentPeriodDocuments(employeeIds) {
+  const startedAt = nowMs();
   const db = getDb();
   if (!employeeIds.length) return new Map();
 
@@ -248,10 +301,17 @@ function loadEmploymentPeriodDocuments(employeeIds) {
     map.set(periodId, describeStoredFile(row));
   }
 
+  logEmployeeRepoPerf('loadEmploymentPeriodDocuments', {
+    employee_count: employeeIds.length,
+    row_count: rows.length,
+    duration_ms: Math.round(nowMs() - startedAt),
+  });
+
   return map;
 }
 
 function loadTeamHistory(employeeIds) {
+  const startedAt = nowMs();
   const db = getDb();
   if (!employeeIds.length) return new Map();
 
@@ -275,15 +335,21 @@ function loadTeamHistory(employeeIds) {
     map.set(row.employee_id, list);
   }
 
+  logEmployeeRepoPerf('loadTeamHistory', {
+    employee_count: employeeIds.length,
+    row_count: rows.length,
+    duration_ms: Math.round(nowMs() - startedAt),
+  });
+
   return map;
 }
 
 function attachEmployeeRelations(rows) {
+  const startedAt = nowMs();
   const periodsMap = loadEmploymentPeriods(rows.map((row) => row.id));
   const periodDocsMap = loadEmploymentPeriodDocuments(rows.map((row) => row.id));
   const teamsMap = loadTeamHistory(rows.map((row) => row.id));
-
-  return rows.map((row) => {
+  const result = rows.map((row) => {
     const employmentPeriods = (periodsMap.get(row.id) || []).map((period) => ({
       ...period,
       hire_document: periodDocsMap.get(period.id) || null,
@@ -314,6 +380,13 @@ function attachEmployeeRelations(rows) {
       medical_visit_document: buildDocumentFromRow(row, 'medical_visit_document'),
     };
   });
+
+  logEmployeeRepoPerf('attachEmployeeRelations', {
+    employee_count: rows.length,
+    duration_ms: Math.round(nowMs() - startedAt),
+  });
+
+  return result;
 }
 
 function buildDocumentFromRow(row, prefix) {
@@ -382,16 +455,93 @@ function getEmployeeBaseSql(whereClause) {
 }
 
 function listEmployees(options = {}) {
+  const startedAt = nowMs();
   const db = getDb();
   const includeDeleted = !!options.includeDeleted;
   const whereClause = includeDeleted ? '' : 'WHERE e.is_deleted = 0';
 
+  const queryStartedAt = nowMs();
   const rows = db.prepare(`
     ${getEmployeeBaseSql(whereClause)}
     ORDER BY e.is_deleted ASC, e.last_name COLLATE NOCASE, e.first_name COLLATE NOCASE
   `).all();
+  logEmployeeRepoPerf('listEmployees:query', {
+    include_deleted: includeDeleted,
+    row_count: rows.length,
+    duration_ms: Math.round(nowMs() - queryStartedAt),
+  });
 
-  return attachEmployeeRelations(rows);
+  const result = attachEmployeeRelations(rows);
+  logEmployeeRepoPerf('listEmployees:total', {
+    include_deleted: includeDeleted,
+    employee_count: result.length,
+    duration_ms: Math.round(nowMs() - startedAt),
+  });
+  return result;
+}
+
+function listBasicEmployeesForAttendance(options = {}) {
+  const startedAt = nowMs();
+  const db = getDb();
+  const includeDeleted = !!options.includeDeleted;
+  const whereClause = includeDeleted ? '' : 'WHERE e.is_deleted = 0';
+
+  const queryStartedAt = nowMs();
+  const rows = db.prepare(`
+    SELECT
+      e.id,
+      e.first_name,
+      e.last_name,
+      e.role,
+      e.status,
+      e.is_deleted,
+      e.hire_date_from,
+      e.hire_date_to
+    FROM employees e
+    ${whereClause}
+    ORDER BY e.is_deleted ASC, e.last_name COLLATE NOCASE, e.first_name COLLATE NOCASE
+  `).all();
+  logEmployeeRepoPerf('listBasicEmployeesForAttendance:query', {
+    include_deleted: includeDeleted,
+    row_count: rows.length,
+    duration_ms: Math.round(nowMs() - queryStartedAt),
+  });
+
+  const employeeIds = rows.map((row) => row.id);
+  const periodsStartedAt = nowMs();
+  const periodsMap = loadEmploymentPeriodsBasic(employeeIds);
+  logEmployeeRepoPerf('listBasicEmployeesForAttendance:periods', {
+    employee_count: employeeIds.length,
+    duration_ms: Math.round(nowMs() - periodsStartedAt),
+  });
+
+  const mapStartedAt = nowMs();
+  const result = rows.map((row) => ({
+    id: row.id,
+    first_name: row.first_name,
+    last_name: row.last_name,
+    role: row.role,
+    status: row.status,
+    is_deleted: !!row.is_deleted,
+    hire_date_from: row.hire_date_from || null,
+    hire_date_to: row.hire_date_to || null,
+    employment_periods: periodsMap.get(row.id) || [{
+      hire_date_from: row.hire_date_from || null,
+      hire_date_to: row.hire_date_to || null,
+    }],
+  }));
+  logEmployeeRepoPerf('listBasicEmployeesForAttendance:map', {
+    employee_count: result.length,
+    duration_ms: Math.round(nowMs() - mapStartedAt),
+  });
+
+  logEmployeeRepoPerf('listBasicEmployeesForAttendance:total', {
+    include_deleted: includeDeleted,
+    employee_count: result.length,
+    duration_ms: Math.round(nowMs() - startedAt),
+  });
+
+  return result;
 }
 
 function getEmployeeById(id, options = {}) {
@@ -1397,6 +1547,7 @@ module.exports = {
   getEmployeeById,
   getEmploymentPeriodHireDocument,
   getHireDocument,
+  listBasicEmployeesForAttendance,
   listEmploymentYears,
   listEmployees,
   openArt37Document,

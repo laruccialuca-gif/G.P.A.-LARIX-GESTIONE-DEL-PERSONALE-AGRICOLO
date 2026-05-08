@@ -643,6 +643,7 @@ function writeStoredLicenseState(data) {
     updated_at: new Date().toISOString(),
   };
   fs.writeFileSync(filePath, serializeEncryptedState(normalized), 'utf8');
+  invalidateEnforceGuardCache();
   return normalized;
 }
 
@@ -651,6 +652,7 @@ function removeStoredLicense() {
   if (fs.existsSync(filePath)) {
     fs.unlinkSync(filePath);
   }
+  invalidateEnforceGuardCache();
 }
 
 function mapStatusLabel(code) {
@@ -1698,14 +1700,62 @@ function getLicenseStatus() {
   return status;
 }
 
+const ENFORCE_GUARD_CACHE_TTL_MS = 30 * 1000;
+let enforceGuardCache = null;
+
+function invalidateEnforceGuardCache() {
+  enforceGuardCache = null;
+}
+
 function enforceLicenseGuard(actionLabel = 'questa operazione') {
-  const developerMode = getDeveloperModeInfo();
-  if (developerMode.enabled) {
-    return buildDeveloperBypassStatus(developerMode);
+  const __t0 = Date.now();
+  if (enforceGuardCache && enforceGuardCache.expiresAt > __t0) {
+    if (enforceGuardCache.error) {
+      console.info('[license-perf] guard:cache-hit', { branch: 'blocked', ageMs: __t0 - enforceGuardCache.cachedAt });
+      throw enforceGuardCache.error;
+    }
+    console.info('[license-perf] guard:cache-hit', { branch: enforceGuardCache.branch, ageMs: __t0 - enforceGuardCache.cachedAt });
+    return enforceGuardCache.value;
   }
 
+  const __devT0 = Date.now();
+  const developerMode = getDeveloperModeInfo();
+  const __devMs = Date.now() - __devT0;
+  if (developerMode.enabled) {
+    const value = buildDeveloperBypassStatus(developerMode);
+    enforceGuardCache = {
+      value,
+      error: null,
+      branch: 'dev-mode',
+      cachedAt: __t0,
+      expiresAt: __t0 + ENFORCE_GUARD_CACHE_TTL_MS,
+    };
+    console.info('[license-perf] guard:cache-miss', {
+      branch: 'dev-mode',
+      devModeMs: __devMs,
+      statusMs: 0,
+      totalMs: Date.now() - __t0,
+    });
+    return value;
+  }
+
+  const __statusT0 = Date.now();
   const status = getLicenseStatus();
+  const __statusMs = Date.now() - __statusT0;
   if (!status?.is_write_blocked) {
+    enforceGuardCache = {
+      value: status,
+      error: null,
+      branch: 'writable',
+      cachedAt: __t0,
+      expiresAt: __t0 + ENFORCE_GUARD_CACHE_TTL_MS,
+    };
+    console.info('[license-perf] guard:cache-miss', {
+      branch: 'writable',
+      devModeMs: __devMs,
+      statusMs: __statusMs,
+      totalMs: Date.now() - __t0,
+    });
     return status;
   }
 
@@ -1724,6 +1774,19 @@ function enforceLicenseGuard(actionLabel = 'questa operazione') {
   );
   error.code = 'LICENSE_READ_ONLY';
   error.license_status = status;
+  enforceGuardCache = {
+    value: null,
+    error,
+    branch: 'blocked',
+    cachedAt: __t0,
+    expiresAt: __t0 + ENFORCE_GUARD_CACHE_TTL_MS,
+  };
+  console.info('[license-perf] guard:cache-miss', {
+    branch: 'blocked',
+    devModeMs: __devMs,
+    statusMs: __statusMs,
+    totalMs: Date.now() - __t0,
+  });
   throw error;
 }
 

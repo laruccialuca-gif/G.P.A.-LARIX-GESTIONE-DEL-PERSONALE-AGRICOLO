@@ -91,6 +91,7 @@ contextBridge.exposeInMainWorld('api', {
 
   employees: {
     list: (options) => ipcRenderer.invoke('employees:list', options),
+    listBasicForAttendance: (options) => ipcRenderer.invoke('employees:listBasicForAttendance', options),
     getById: (id, options) => ipcRenderer.invoke('employees:getById', id, options),
     findHistoryMatches: (criteria) => ipcRenderer.invoke('employees:findHistoryMatches', criteria),
     create: (payload) => ipcRenderer.invoke('employees:create', payload),
