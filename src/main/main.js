@@ -1649,11 +1649,15 @@ app.whenReady().then(async () => {
     logMainProcessEvent('employees:listBasic:start', {
       includeDeleted: !!options?.includeDeleted,
       includePeriods: options?.includePeriods !== false,
+      includeTeamHistory: !!options?.includeTeamHistory,
+      includeHireDocFlag: !!options?.includeHireDocFlag,
     });
     const result = employeeRepo.listBasicEmployees(options);
     logMainProcessEvent('employees:listBasic:end', {
       includeDeleted: !!options?.includeDeleted,
       includePeriods: options?.includePeriods !== false,
+      includeTeamHistory: !!options?.includeTeamHistory,
+      includeHireDocFlag: !!options?.includeHireDocFlag,
       count: Array.isArray(result) ? result.length : 0,
       duration_ms: Date.now() - startedAt,
     });

@@ -24,6 +24,7 @@ function findFirstPeriodWithDoc(employee) {
 
 function hasAnyHireDocument(employee) {
   if (!employee) return false;
+  if (employee.has_hire_document) return true;
   if (employee.legacy_hire_document) return true;
   if (employee.hire_document) return true;
   return !!findFirstPeriodWithDoc(employee);
@@ -82,10 +83,32 @@ export default function OperaiAssuntiPage() {
   const [busyId, setBusyId] = useState(null);
   const [detailEmployeeId, setDetailEmployeeId] = useState(null);
 
-  const detailEmployee = useMemo(
-    () => (detailEmployeeId == null ? null : employees.find((e) => e.id === detailEmployeeId) || null),
-    [employees, detailEmployeeId],
-  );
+  const [detailEmployee, setDetailEmployee] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  useEffect(() => {
+    if (detailEmployeeId == null) {
+      setDetailEmployee(null);
+      setDetailLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setDetailLoading(true);
+    (async () => {
+      try {
+        const full = await window.api.employees.getById(detailEmployeeId, { includeDeleted: true });
+        if (!cancelled) {
+          setDetailEmployee(full || null);
+        }
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) setDetailEmployee(null);
+      } finally {
+        if (!cancelled) setDetailLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [detailEmployeeId]);
 
   useEffect(() => {
     if (detailEmployeeId == null) return undefined;
@@ -102,12 +125,23 @@ export default function OperaiAssuntiPage() {
 
   async function loadAll() {
     setLoading(true);
+    const __nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const __t0 = __nowMs();
     try {
-      const [data, settingsData, teamsData] = await Promise.all([
-        window.api.employees.list(),
-        window.api.settings.get(),
-        window.api.teams.list({ includeArchived: true }).catch(() => []),
-      ]);
+      const __empT0 = __nowMs();
+      const employeesPromise = window.api.employees.listBasic({
+        includePeriods: true,
+        includeTeamHistory: true,
+        includeHireDocFlag: true,
+      });
+      const settingsPromise = window.api.settings.get();
+      const teamsPromise = window.api.teams.list({ includeArchived: true }).catch(() => []);
+      const data = await employeesPromise;
+      console.info('[page-perf] hired-workers:employees-load:end', {
+        count: Array.isArray(data) ? data.length : 0,
+        duration_ms: Math.round(__nowMs() - __empT0),
+      });
+      const [settingsData, teamsData] = await Promise.all([settingsPromise, teamsPromise]);
       setEmployees(data || []);
       setSettings(settingsData || null);
       setTeams(Array.isArray(teamsData) ? teamsData : []);
@@ -116,6 +150,7 @@ export default function OperaiAssuntiPage() {
       alert('Errore caricamento operai assunti');
     } finally {
       setLoading(false);
+      console.info('[page-perf] hired-workers:loadBaseData:end', { duration_ms: Math.round(__nowMs() - __t0) });
     }
   }
 
@@ -414,15 +449,26 @@ export default function OperaiAssuntiPage() {
 
   async function handleOpen(employee) {
     if (!employee) return;
-    if (employee.legacy_hire_document) {
-      if (await tryOpenLegacy(employee.id)) return;
+    // Lista light: i flag dei singoli documenti non ci sono. Recuperiamo
+    // il dettaglio completo on-demand solo per decidere quale aprire.
+    let resolved = employee;
+    if (!('legacy_hire_document' in employee) && !('hire_document' in employee)) {
+      try {
+        const full = await window.api.employees.getById(employee.id, { includeDeleted: true });
+        if (full) resolved = full;
+      } catch (err) {
+        console.error(err);
+      }
     }
-    const period = findFirstPeriodWithDoc(employee);
+    if (resolved.legacy_hire_document) {
+      if (await tryOpenLegacy(resolved.id)) return;
+    }
+    const period = findFirstPeriodWithDoc(resolved);
     if (period) {
-      if (await tryOpenPeriod(employee.id, period.id)) return;
+      if (await tryOpenPeriod(resolved.id, period.id)) return;
     }
-    if (!employee.legacy_hire_document && !period) {
-      if (await tryOpenLegacy(employee.id)) return;
+    if (!resolved.legacy_hire_document && !period) {
+      if (await tryOpenLegacy(resolved.id)) return;
     }
     alert(NO_DOC_MESSAGE);
   }

@@ -485,6 +485,8 @@ function listBasicEmployees(options = {}) {
   const db = getDb();
   const includeDeleted = !!options.includeDeleted;
   const includePeriods = options.includePeriods !== false;
+  const includeTeamHistory = !!options.includeTeamHistory;
+  const includeHireDocFlag = !!options.includeHireDocFlag;
   const whereClause = includeDeleted ? '' : 'WHERE e.is_deleted = 0';
 
   const queryStartedAt = nowMs();
@@ -496,10 +498,21 @@ function listBasicEmployees(options = {}) {
       e.role,
       e.status,
       e.is_deleted,
+      e.deleted_at,
       e.hire_date_from,
       e.hire_date_to,
       e.fiscal_code,
-      e.hired_by
+      e.phone,
+      e.email,
+      e.notes,
+      e.hired_by,
+      e.contract_type,
+      e.daily_pay,
+      e.standard_hours,
+      e.medical_visit_required,
+      e.medical_visit_done,
+      e.art37_required,
+      e.art37_done
     FROM employees e
     ${whereClause}
     ORDER BY e.is_deleted ASC, e.last_name COLLATE NOCASE, e.first_name COLLATE NOCASE
@@ -507,12 +520,15 @@ function listBasicEmployees(options = {}) {
   logEmployeeRepoPerf('listBasic:query', {
     include_deleted: includeDeleted,
     include_periods: includePeriods,
+    include_team_history: includeTeamHistory,
+    include_hire_doc_flag: includeHireDocFlag,
     row_count: rows.length,
     duration_ms: Math.round(nowMs() - queryStartedAt),
   });
 
+  const employeeIds = rows.map((row) => row.id);
+
   const periodsMap = includePeriods ? (() => {
-    const employeeIds = rows.map((row) => row.id);
     const periodsStartedAt = nowMs();
     const map = loadEmploymentPeriodsBasic(employeeIds);
     logEmployeeRepoPerf('listBasic:periods', {
@@ -520,6 +536,34 @@ function listBasicEmployees(options = {}) {
       duration_ms: Math.round(nowMs() - periodsStartedAt),
     });
     return map;
+  })() : null;
+
+  const teamHistoryMap = includeTeamHistory && employeeIds.length ? (() => {
+    const teamsStartedAt = nowMs();
+    const map = loadTeamHistory(employeeIds);
+    logEmployeeRepoPerf('listBasic:team-history', {
+      employee_count: employeeIds.length,
+      duration_ms: Math.round(nowMs() - teamsStartedAt),
+    });
+    return map;
+  })() : null;
+
+  const hireDocSet = includeHireDocFlag && employeeIds.length ? (() => {
+    const flagStartedAt = nowMs();
+    const placeholders = employeeIds.map(() => '?').join(', ');
+    const docRows = db.prepare(`
+      SELECT DISTINCT employee_id
+      FROM employee_documents
+      WHERE employee_id IN (${placeholders})
+        AND (category = ? OR category LIKE ?)
+    `).all(...employeeIds, DOCUMENT_CATEGORIES.hire, `${HIRE_PERIOD_CATEGORY_PREFIX}%`);
+    const set = new Set(docRows.map((r) => r.employee_id));
+    logEmployeeRepoPerf('listBasic:hire-doc-flag', {
+      employee_count: employeeIds.length,
+      with_doc: set.size,
+      duration_ms: Math.round(nowMs() - flagStartedAt),
+    });
+    return set;
   })() : null;
 
   const mapStartedAt = nowMs();
@@ -531,16 +575,38 @@ function listBasicEmployees(options = {}) {
       role: row.role,
       status: row.status,
       is_deleted: !!row.is_deleted,
+      deleted_at: row.deleted_at || null,
       hire_date_from: row.hire_date_from || null,
       hire_date_to: row.hire_date_to || null,
       fiscal_code: row.fiscal_code || null,
+      phone: row.phone || null,
+      email: row.email || null,
+      notes: row.notes || null,
       hired_by: row.hired_by || null,
+      contract_type: row.contract_type || null,
+      daily_pay: row.daily_pay,
+      standard_hours: row.standard_hours,
+      medical_visit_required: !!row.medical_visit_required,
+      medical_visit_done: !!row.medical_visit_done,
+      art37_required: !!row.art37_required,
+      art37_done: !!row.art37_done,
     };
     if (periodsMap) {
-      base.employment_periods = periodsMap.get(row.id) || [{
+      const periods = periodsMap.get(row.id) || [{
         hire_date_from: row.hire_date_from || null,
         hire_date_to: row.hire_date_to || null,
       }];
+      base.employment_periods = periods;
+      const employerSummary = summarizeEmployerCodes(periods);
+      base.employer_codes = employerSummary.employer_codes;
+      base.has_multiple_employers = employerSummary.has_multiple_employers;
+      base.has_both_employers = employerSummary.has_both_employers;
+    }
+    if (teamHistoryMap) {
+      base.team_history = teamHistoryMap.get(row.id) || [];
+    }
+    if (hireDocSet) {
+      base.has_hire_document = hireDocSet.has(row.id);
     }
     return base;
   });
@@ -552,6 +618,8 @@ function listBasicEmployees(options = {}) {
   logEmployeeRepoPerf('listBasic:total', {
     include_deleted: includeDeleted,
     include_periods: includePeriods,
+    include_team_history: includeTeamHistory,
+    include_hire_doc_flag: includeHireDocFlag,
     employee_count: result.length,
     duration_ms: Math.round(nowMs() - startedAt),
   });
