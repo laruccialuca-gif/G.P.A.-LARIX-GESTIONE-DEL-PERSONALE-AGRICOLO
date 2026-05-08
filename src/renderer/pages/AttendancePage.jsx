@@ -4,36 +4,23 @@ import { getCalendarDayInfo } from '../utils/holidays';
 import QuickAttendanceModal from '../components/QuickAttendanceModal';
 import { useYearContext } from '../context/YearContext';
 import { employeeIsActiveInYear } from '../utils/yearScope';
-
-const MAIN_DAY_TYPES = [
-  { value: 'ferie', code: 'F', text: 'Ferie' },
-  { value: 'permesso', code: 'P', text: 'Permesso' },
-  { value: 'malattia', code: 'M', text: 'Malattia' },
-];
-
-const LEGACY_DAY_TYPES = [
-  { value: 'infortunio', code: 'I', text: 'Infortunio' },
-  { value: 'riposo', code: 'R', text: 'Riposo/Festivo' },
-];
-
-const DEFAULT_DAY_MARKERS = [
-  {
-    value: 'P',
-    text: 'Piselli',
-    symbol: '🌱',
-    image: '',
-    color: '#166534',
-    background: 'rgba(34, 197, 94, 0.16)',
-  },
-  {
-    value: 'C',
-    text: 'Ciliegie',
-    symbol: '🍒',
-    image: '',
-    color: '#b91c1c',
-    background: 'rgba(239, 68, 68, 0.16)',
-  },
-];
+import AttendancePrintAreaPaginated, { MarkerVisual } from '../components/attendance/AttendancePrintAreaPaginated';
+import {
+  fileMonthLabel,
+  formatDate,
+  formatLocalDate,
+  getDayLabel,
+  getMarkerMeta,
+  formatCompactWorkedSummary,
+  getAttendancePrintMainValue,
+  getAttendancePrintOvertimeValue,
+  getAttendancePrintMarkerValue,
+  paginateAttendancePrintRows,
+  resolveMarkerImageSrc,
+  MAIN_DAY_TYPES,
+  LEGACY_DAY_TYPES,
+  DEFAULT_DAY_MARKERS,
+} from '../utils/attendancePrintUtils';
 
 const ATTENDANCE_LAYOUT_STORAGE_KEY = 'attendance_layout_mode_v1';
 const EMPTY_ROW_ATTENDANCE = Object.freeze({});
@@ -76,20 +63,6 @@ function getConfiguredDayMarkers(settings) {
   }));
 }
 
-function resolveMarkerImageSrc(imagePath) {
-  const value = String(imagePath || '').trim();
-  if (!value) return '';
-  if (/^(https?:|data:|file:|blob:)/i.test(value)) return value;
-  if (value.startsWith('/assets/')) return `.${value}`;
-  if (/^[A-Za-z]:\\/.test(value)) {
-    return encodeURI(`file:///${value.replace(/\\/g, '/')}`);
-  }
-  if (value.startsWith('/')) {
-    return encodeURI(`file://${value}`);
-  }
-  return value;
-}
-
 function getMonthDays(currentMonth) {
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth();
@@ -101,17 +74,6 @@ function getMonthDays(currentMonth) {
   }
 
   return days;
-}
-
-function formatLocalDate(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function formatDate(date) {
-  return formatLocalDate(date);
 }
 
 function monthString(date) {
@@ -127,55 +89,8 @@ function isSameMonth(date, monthDate) {
   );
 }
 
-function fileMonthLabel(date) {
-  const raw = date.toLocaleDateString('it-IT', {
-    month: 'long',
-    year: 'numeric',
-  });
-  return raw.charAt(0).toUpperCase() + raw.slice(1);
-}
-
 function sanitizeFileName(value) {
   return value.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim();
-}
-
-function getDayLabel(date) {
-  return date.toLocaleDateString('it-IT', { weekday: 'short' });
-}
-
-function getAttendancePrintMainValue(att, hoursFormat = 'decimal') {
-  if (!att) return '';
-
-  if (att.status && att.status !== 'presente' && att.status !== 'assente') {
-    const special = [...MAIN_DAY_TYPES, ...LEGACY_DAY_TYPES].find((item) => item.value === att.status);
-    return special?.code || att.status;
-  }
-
-  if (att.entry_code) {
-    return String(att.entry_code);
-  }
-
-  const mainHours =
-    att.hours_worked !== undefined && att.hours_worked !== null && att.hours_worked !== ''
-      ? formatHoursValue(att.hours_worked, hoursFormat)
-      : '';
-  return mainHours || '';
-}
-
-function getAttendancePrintOvertimeValue(att, hoursFormat = 'decimal') {
-  if (!att) return '';
-  if (att.status && att.status !== 'presente' && att.status !== 'assente') {
-    return '';
-  }
-
-  const overtimeHours = Number(att.overtime_hours || 0);
-  return overtimeHours > 0 ? formatHoursValue(overtimeHours, hoursFormat) : '';
-}
-
-function getAttendancePrintMarkerValue(att, markers = DEFAULT_DAY_MARKERS) {
-  if (!att?.marker_code) return '';
-  const markerMeta = getMarkerMeta(att.marker_code, markers);
-  return markerMeta || null;
 }
 
 function getSpecialTypeText(status) {
@@ -282,10 +197,6 @@ function formatBulkFieldSummary({ hours, markerLabel, overtime }) {
     parts.push(`${overtime} straordinario`);
   }
   return parts.join(', ');
-}
-
-function getMarkerMeta(markerCode, markers = DEFAULT_DAY_MARKERS) {
-  return (markers || []).find((item) => item.value === markerCode) || null;
 }
 
 function getMainTypeMeta(status) {
@@ -499,88 +410,6 @@ function parseOvertimeInputValue(rawValue, attendanceSettings) {
   return parsed;
 }
 
-function formatCompactWorkedSummary(totalHours, standardHours, hoursFormat = 'decimal') {
-  const full = formatWorkedSummary(totalHours, standardHours, hoursFormat);
-  return full
-    .replace(/\s*gg/g, 'g')
-    .replace(/\s*h/g, 'h')
-    .replace(/\s*\+\s*/g, '+')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function getAttendancePrintRowWeight(row) {
-  let weight = 1;
-  if (row?.employee?.role) weight += 0.22;
-  if (row?.teamMember?.manage_by_days) weight += 0.18;
-  return weight;
-}
-
-function rebalanceAttendancePrintPages(pages, firstCapacity, otherCapacity) {
-  if (pages.length < 2) {
-    return pages;
-  }
-
-  const next = pages.map((page) => ({ ...page, rows: [...page.rows] }));
-
-  for (let index = next.length - 1; index > 0; index -= 1) {
-    const page = next[index];
-    const previous = next[index - 1];
-    const minimumWeight = index === 0 ? firstCapacity * 0.4 : otherCapacity * 0.4;
-    const previousCapacity = index - 1 === 0 ? firstCapacity : otherCapacity;
-
-    while (
-      page.weight < minimumWeight &&
-      previous.rows.length > 1
-    ) {
-      const candidate = previous.rows[previous.rows.length - 1];
-      const candidateWeight = getAttendancePrintRowWeight(candidate);
-      if (previous.weight - candidateWeight < previousCapacity * 0.58) {
-        break;
-      }
-
-      previous.rows.pop();
-      previous.weight -= candidateWeight;
-      page.rows.unshift(candidate);
-      page.weight += candidateWeight;
-    }
-  }
-
-  return next;
-}
-
-function paginateAttendancePrintRows(rows) {
-  const firstPageCapacity = 12.4;
-  const otherPageCapacity = 14.2;
-  const pages = [];
-
-  let currentRows = [];
-  let currentWeight = 0;
-  let currentCapacity = firstPageCapacity;
-
-  rows.forEach((row) => {
-    const rowWeight = getAttendancePrintRowWeight(row);
-    const wouldOverflow = currentRows.length > 0 && currentWeight + rowWeight > currentCapacity;
-
-    if (wouldOverflow) {
-      pages.push({ rows: currentRows, weight: currentWeight });
-      currentRows = [];
-      currentWeight = 0;
-      currentCapacity = otherPageCapacity;
-    }
-
-    currentRows.push(row);
-    currentWeight += rowWeight;
-  });
-
-  if (currentRows.length) {
-    pages.push({ rows: currentRows, weight: currentWeight });
-  }
-
-  const normalized = pages.length ? pages : [{ rows: [], weight: 0 }];
-  return rebalanceAttendancePrintPages(normalized, firstPageCapacity, otherPageCapacity);
-}
-
 function isEffectivelyEmptyAttendanceEntry(item) {
   const normalized = normalizeAttendanceEntry(item || {});
   return (
@@ -606,317 +435,6 @@ function areAttendanceEntriesEquivalent(a, b) {
     Number(left.overtime_hours || 0) === Number(right.overtime_hours || 0) &&
     (left.notes || null) === (right.notes || null)
   );
-}
-
-const AttendancePrintArea = React.forwardRef(function AttendancePrintArea(
-  { currentMonth, baseHours, hoursFormat, markers, selectedMeta, selectedTeam, displayRows, daysInMonth, dayInfoMap, getAtt },
-  ref
-) {
-  const monthLabel = fileMonthLabel(currentMonth);
-  const title =
-    selectedMeta.type === 'team' && selectedTeam
-      ? `Presenze squadra - ${selectedTeam.name}`
-      : selectedMeta.type === 'employee'
-      ? 'Presenze dipendente'
-      : 'Presenze mensili';
-
-  const subtitle =
-    selectedMeta.type === 'team' && selectedTeam
-      ? `${monthLabel} · ${displayRows.length} componenti`
-      : monthLabel;
-  const quickSymbolLabel = `X = ${formatHoursValue(baseHours, hoursFormat)}`;
-
-  return (
-    <div ref={ref} className="print-area">
-      <div style={attendancePrintCardStyle}>
-        <div style={attendancePrintHeaderStyle}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 22, color: '#14213d' }}>{title}</h2>
-            <div style={{ marginTop: 6, color: '#667085' }}>{subtitle}</div>
-          </div>
-          <div style={attendancePrintQuickSymbolBadgeStyle}>{quickSymbolLabel}</div>
-        </div>
-
-        <table style={attendancePrintTableStyle}>
-          <thead>
-            <tr>
-              <th style={{ ...attendancePrintHeadCellStyle, ...attendancePrintNameCellStyle }}>Dipendente</th>
-              {daysInMonth.map((day) => {
-                const dateStr = formatDate(day);
-                const dayInfo = dayInfoMap[dateStr];
-                return (
-                  <th
-                    key={`print-head-${dateStr}`}
-                    style={{
-                      ...attendancePrintHeadCellStyle,
-                      ...getPrintDayCellInlineStyle(dayInfo),
-                    }}
-                  >
-                    {day.getDate()}
-                    <br />
-                    <span style={{ fontSize: 9, fontWeight: 600 }}>{getDayLabel(day)}</span>
-                  </th>
-                );
-              })}
-              <th style={attendancePrintHeadCellStyle}>Ore</th>
-              <th style={attendancePrintHeadCellStyle}>Riepilogo</th>
-            </tr>
-          </thead>
-          <tbody>
-            {displayRows.map(({ employee, teamMember }) => {
-              let totalHours = 0;
-
-              return (
-                <tr key={`print-row-${employee.id}`}>
-                  <td style={{ ...attendancePrintBodyCellStyle, ...attendancePrintNameCellStyle, textAlign: 'left' }}>
-                    <strong>{employee.last_name} {employee.first_name}</strong>
-                    {employee.role ? (
-                      <div style={{ fontSize: 9, color: '#6b7280', marginTop: 2 }}>{employee.role}</div>
-                    ) : null}
-                    {teamMember?.manage_by_days ? (
-                      <div style={{ fontSize: 9, color: '#6b7280', marginTop: 2 }}>Gestione a giornate</div>
-                    ) : null}
-                  </td>
-                  {daysInMonth.map((day) => {
-                    const dateStr = formatDate(day);
-                    const att = getAtt(employee.id, dateStr);
-                    const dayInfo = dayInfoMap[dateStr];
-                    const hours = Number(att?.hours_worked || 0) + Number(att?.overtime_hours || 0);
-                    if (hours > 0) {
-                      totalHours += hours;
-                    }
-
-                    return (
-                      <td
-                        key={`print-cell-${employee.id}-${dateStr}`}
-                        style={{
-                          ...attendancePrintBodyCellStyle,
-                          ...getPrintDayCellInlineStyle(dayInfo),
-                        }}
-                      >
-                        <AttendancePrintCell
-                          mainValue={getAttendancePrintMainValue(att, hoursFormat)}
-                          overtimeValue={getAttendancePrintOvertimeValue(att, hoursFormat)}
-                          markerValue={getAttendancePrintMarkerValue(att, markers)}
-                        />
-                      </td>
-                    );
-                  })}
-                  <td style={attendancePrintBodyCellStyle}>
-                    <strong>{formatHoursValue(totalHours, hoursFormat)}</strong>
-                  </td>
-                  <td style={attendancePrintBodyCellStyle}>
-                    <strong>{formatWorkedSummary(totalHours, baseHours, hoursFormat)}</strong>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-});
-
-const AttendancePrintAreaPaginated = React.forwardRef(function AttendancePrintAreaPaginated(
-  { currentMonth, baseHours, hoursFormat, markers, selectedMeta, selectedTeam, displayRows, modeLabel, daysInMonth, dayInfoMap, getAtt },
-  ref
-) {
-  const monthLabel = fileMonthLabel(currentMonth);
-  const title =
-    selectedMeta.type === 'team' && selectedTeam
-      ? `Presenze squadra - ${selectedTeam.name}`
-      : selectedMeta.type === 'employee'
-      ? 'Presenze dipendente'
-      : 'Presenze mensili';
-
-  const subtitle =
-    selectedMeta.type === 'team' && selectedTeam
-      ? `${monthLabel} · ${displayRows.length} componenti`
-      : `${monthLabel} · ${modeLabel}`;
-  const quickSymbolLabel = `X = ${formatHoursValue(baseHours, hoursFormat)}`;
-  const printPages = useMemo(() => paginateAttendancePrintRows(displayRows), [displayRows]);
-
-  return (
-    <div ref={ref} className="print-area attendance-print-area">
-      <style>{`
-        @page {
-          size: A4 landscape;
-          margin: 8mm;
-        }
-      `}</style>
-      {printPages.map((page, pageIndex) => (
-        <section
-          key={`attendance-print-page-${pageIndex}`}
-          className="attendance-print-page"
-          style={attendancePrintPageStyle}
-        >
-          <div style={attendancePrintCardStyle}>
-            <div style={attendancePrintHeaderStyle}>
-              <div>
-                <h2 style={attendancePrintTitleStyle}>{title}</h2>
-                <div style={attendancePrintSubtitleStyle}>
-                  {subtitle} · Pagina {pageIndex + 1} / {printPages.length}
-                </div>
-              </div>
-              <div style={attendancePrintHeaderMetaStyle}>
-                <div style={attendancePrintQuickSymbolBadgeStyle}>{quickSymbolLabel}</div>
-                <div style={attendancePrintModeBadgeStyle}>{modeLabel}</div>
-              </div>
-            </div>
-
-            <table style={attendancePrintTableStyle}>
-              <colgroup>
-                <col style={attendancePrintNameColumnStyle} />
-                {daysInMonth.map((day) => (
-                  <col key={`print-col-${pageIndex}-${formatDate(day)}`} style={attendancePrintDayColumnStyle} />
-                ))}
-                <col style={attendancePrintHoursColumnStyle} />
-                <col style={attendancePrintSummaryColumnStyle} />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th style={{ ...attendancePrintHeadCellStyle, ...attendancePrintNameHeadCellStyle }}>Dipendente</th>
-                  {daysInMonth.map((day) => {
-                    const dateStr = formatDate(day);
-                    const dayInfo = dayInfoMap[dateStr];
-                    return (
-                      <th
-                        key={`print-head-${pageIndex}-${dateStr}`}
-                        style={{
-                          ...attendancePrintHeadCellStyle,
-                          ...getPrintDayCellInlineStyle(dayInfo),
-                        }}
-                      >
-                        {day.getDate()}
-                        <br />
-                        <span style={attendancePrintDayLabelStyle}>{getDayLabel(day)}</span>
-                      </th>
-                    );
-                  })}
-                  <th style={attendancePrintHeadCellStyle}>Ore</th>
-                  <th style={attendancePrintHeadCellStyle}>Riep.</th>
-                </tr>
-              </thead>
-              <tbody>
-                {page.rows.map(({ employee, teamMember }) => {
-                  let totalHours = 0;
-
-                  return (
-                    <tr key={`print-row-${pageIndex}-${employee.id}`}>
-                      <td style={{ ...attendancePrintBodyCellStyle, ...attendancePrintNameCellStyle, textAlign: 'left' }}>
-                        <strong>{employee.last_name} {employee.first_name}</strong>
-                        {employee.role ? <div style={attendancePrintEmployeeMetaStyle}>{employee.role}</div> : null}
-                        {teamMember?.manage_by_days ? (
-                          <div style={attendancePrintEmployeeMetaStyle}>Gestione a giornate</div>
-                        ) : null}
-                      </td>
-                      {daysInMonth.map((day) => {
-                        const dateStr = formatDate(day);
-                        const att = getAtt(employee.id, dateStr);
-                        const dayInfo = dayInfoMap[dateStr];
-                        const hours = Number(att?.hours_worked || 0) + Number(att?.overtime_hours || 0);
-                        if (hours > 0) {
-                          totalHours += hours;
-                        }
-
-                        return (
-                          <td
-                            key={`print-cell-${pageIndex}-${employee.id}-${dateStr}`}
-                            style={{
-                              ...attendancePrintBodyCellStyle,
-                              ...getPrintDayCellInlineStyle(dayInfo),
-                            }}
-                          >
-                            <AttendancePrintCell
-                              mainValue={getAttendancePrintMainValue(att, hoursFormat)}
-                              overtimeValue={getAttendancePrintOvertimeValue(att, hoursFormat)}
-                              markerValue={getAttendancePrintMarkerValue(att, markers)}
-                            />
-                          </td>
-                        );
-                      })}
-                      <td style={attendancePrintBodyCellStyle}>
-                        <strong>{formatHoursValue(totalHours, hoursFormat)}</strong>
-                      </td>
-                      <td style={attendancePrintBodyCellStyle}>
-                        <strong>{formatCompactWorkedSummary(totalHours, baseHours, hoursFormat)}</strong>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      ))}
-    </div>
-  );
-});
-
-function AttendancePrintCell({ mainValue, overtimeValue, markerValue }) {
-  const hasMain = !!mainValue;
-  const lowerRows = [overtimeValue, markerValue].filter(Boolean);
-
-  if (!hasMain && !lowerRows.length) {
-    return <div style={attendancePrintCellSingleStyle}>—</div>;
-  }
-
-  if (hasMain && !lowerRows.length) {
-    return <div style={attendancePrintCellSingleStyle}>{mainValue}</div>;
-  }
-
-  return (
-    <div style={attendancePrintCellStackStyle}>
-      {hasMain ? (
-        <div style={attendancePrintCellSingleUpperStyle}>{mainValue}</div>
-      ) : null}
-
-      <div
-        style={{
-          ...attendancePrintCellLowerGroupStyle,
-          ...(hasMain ? attendancePrintCellLowerGroupDividerStyle : null),
-          gridTemplateRows: `repeat(${lowerRows.length}, minmax(0, 1fr))`,
-        }}
-      >
-        {lowerRows.map((rowValue, index) => (
-          <div
-            key={`${rowValue}-${index}`}
-            style={attendancePrintCellRowStyle}
-          >
-            {typeof rowValue === 'string' ? rowValue : <MarkerVisual marker={rowValue} size={14} />}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function MarkerVisual({ marker, size = 14 }) {
-  const imageSrc = resolveMarkerImageSrc(marker?.image);
-
-  if (imageSrc) {
-    return (
-      <img
-        src={imageSrc}
-        alt={marker?.text || marker?.value || 'marker'}
-        style={{ width: size, height: size, objectFit: 'contain', display: 'inline-block' }}
-      />
-    );
-  }
-
-  return <>{marker?.symbol || '•'}</>;
-}
-
-function getPrintDayCellInlineStyle(dayInfo) {
-  if (!dayInfo?.isSpecialDay) {
-    return {};
-  }
-
-  return {
-    background: dayInfo.isHoliday ? '#fee2e2' : '#fff5f5',
-    color: '#991b1b',
-  };
 }
 
 function getCalendarHeaderStyle(dayInfo) {
@@ -1119,199 +637,6 @@ const todayHeaderStyle = {
 const todayCellStyle = {
   background: 'rgba(239, 246, 255, 0.86)',
   boxShadow: 'inset 1px 0 0 rgba(37, 99, 235, 0.12), inset -1px 0 0 rgba(37, 99, 235, 0.12)',
-};
-
-const attendancePrintCardStyle = {
-  background: '#fff',
-  border: '1px solid #dbe4f0',
-  borderRadius: 12,
-  padding: 8,
-  boxShadow: '0 10px 24px rgba(15, 23, 42, 0.05)',
-};
-
-const attendancePrintPageStyle = {
-  width: '100%',
-  display: 'grid',
-  gap: 0,
-};
-
-const attendancePrintHeaderStyle = {
-  marginBottom: 6,
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  gap: 8,
-  flexWrap: 'nowrap',
-};
-
-const attendancePrintTitleStyle = {
-  margin: 0,
-  fontSize: 16,
-  lineHeight: 1.05,
-  color: '#14213d',
-  fontWeight: 800,
-};
-
-const attendancePrintSubtitleStyle = {
-  marginTop: 2,
-  color: '#667085',
-  fontSize: 9,
-  lineHeight: 1.2,
-};
-
-const attendancePrintHeaderMetaStyle = {
-  display: 'grid',
-  justifyItems: 'end',
-  gap: 4,
-};
-
-const attendancePrintQuickSymbolBadgeStyle = {
-  padding: '4px 8px',
-  borderRadius: 999,
-  border: '1px solid rgba(20, 33, 61, 0.12)',
-  background: 'rgba(20, 33, 61, 0.05)',
-  color: '#27445f',
-  fontSize: 9,
-  fontWeight: 800,
-  whiteSpace: 'nowrap',
-};
-
-const attendancePrintModeBadgeStyle = {
-  padding: '3px 7px',
-  borderRadius: 999,
-  border: '1px solid rgba(20, 33, 61, 0.1)',
-  background: 'rgba(22, 163, 74, 0.08)',
-  color: '#166534',
-  fontSize: 8,
-  fontWeight: 800,
-  whiteSpace: 'nowrap',
-  textTransform: 'uppercase',
-  letterSpacing: '0.04em',
-};
-
-const attendancePrintTableStyle = {
-  width: '100%',
-  borderCollapse: 'collapse',
-  fontSize: 8.6,
-};
-
-const attendancePrintHeadCellStyle = {
-  border: '1px solid #9ca3af',
-  padding: '3px 2px',
-  textAlign: 'center',
-  fontWeight: 800,
-  background: '#f8fafc',
-  minWidth: 0,
-  lineHeight: 1.05,
-};
-
-const attendancePrintBodyCellStyle = {
-  border: '1px solid #9ca3af',
-  padding: '3px 2px',
-  textAlign: 'center',
-  verticalAlign: 'middle',
-  overflow: 'hidden',
-  minWidth: 0,
-};
-
-const attendancePrintNameCellStyle = {
-  minWidth: 124,
-  maxWidth: 124,
-};
-
-const attendancePrintNameHeadCellStyle = {
-  minWidth: 124,
-};
-
-const attendancePrintNameColumnStyle = {
-  width: '124px',
-};
-
-const attendancePrintDayColumnStyle = {
-  width: '21px',
-};
-
-const attendancePrintHoursColumnStyle = {
-  width: '48px',
-};
-
-const attendancePrintSummaryColumnStyle = {
-  width: '66px',
-};
-
-const attendancePrintDayLabelStyle = {
-  fontSize: 7.2,
-  fontWeight: 700,
-  lineHeight: 1,
-};
-
-const attendancePrintEmployeeMetaStyle = {
-  fontSize: 7.4,
-  color: '#6b7280',
-  marginTop: 1,
-  lineHeight: 1.1,
-};
-
-const attendancePrintCellStackStyle = {
-  minHeight: 18,
-  display: 'grid',
-  width: '100%',
-  overflow: 'hidden',
-  borderRadius: 2,
-  background: '#ffffff',
-};
-
-const attendancePrintCellSingleStyle = {
-  minHeight: 18,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  width: '100%',
-  fontSize: 7.1,
-  fontWeight: 800,
-  lineHeight: 1.05,
-  whiteSpace: 'nowrap',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-};
-
-const attendancePrintCellSingleUpperStyle = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  width: '100%',
-  minHeight: 0,
-  fontSize: 7.1,
-  fontWeight: 800,
-  lineHeight: 1.05,
-  whiteSpace: 'nowrap',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-};
-
-const attendancePrintCellLowerGroupStyle = {
-  display: 'grid',
-  width: 'calc(100% + 10px)',
-  marginLeft: -5,
-  marginRight: -5,
-};
-
-const attendancePrintCellLowerGroupDividerStyle = {
-  borderTop: '1px solid rgba(156, 163, 175, 0.7)',
-};
-
-const attendancePrintCellRowStyle = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  width: '100%',
-  minHeight: 0,
-  fontSize: 6.8,
-  fontWeight: 800,
-  lineHeight: 1.05,
-  whiteSpace: 'nowrap',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
 };
 
 export default function AttendancePage() {
@@ -3671,3 +2996,4 @@ export default function AttendancePage() {
     </div>
   );
 }
+
