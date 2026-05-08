@@ -2,6 +2,7 @@ import React from 'react';
 import { formatDate, getDayLabel, getMarkerMeta, formatCompactWorkedSummary, MAIN_DAY_TYPES } from '../../utils/attendancePrintUtils';
 import { formatHoursValue, formatWorkedSummary } from '../../utils/attendanceSummary';
 import { MarkerVisual } from './AttendancePrintAreaPaginated';
+import { getMainTypeMeta, selectAllInputText, getAttendanceHoursTone, getMainInputValue, getCalendarHeaderStyle, getCalendarCellStyle, getDisplayedInputValue } from '../../utils/attendanceTableUtils';
 
 function AttendanceTable({
   isCompactLayout,
@@ -20,6 +21,7 @@ function AttendanceTable({
   attendanceSettings,
   displayRows,
   isWriteBlocked,
+  inputDrafts,
   horizontalScrollbarRef,
   horizontalScrollbarContentRef,
   tableShellRef,
@@ -46,13 +48,6 @@ function AttendanceTable({
   handleMarkerChange,
   handleOvertimeValueChange,
   handleOvertimeValueBlur,
-  getMainTypeMeta,
-  getDisplayedInputValue,
-  getMainInputValue,
-  getAttendanceHoursTone,
-  selectAllInputText,
-  getCalendarHeaderStyle,
-  getCalendarCellStyle,
 }) {
   return (
     <div className={`attendance-table-region ${isCompactLayout ? 'attendance-table-region--compact' : ''}`}>
@@ -142,7 +137,7 @@ function AttendanceTable({
                   const isMainType = MAIN_DAY_TYPES.some((item) => item.value === att?.status);
                   const isEditingMarker = openMarkerMenuKey === markerMenuKey || !markerMeta;
                   const isEditingCompactOvertime = compactOvertimeEditorKey === overtimeEditorKey;
-                  const mainInputValue = getDisplayedInputValue(employee.id, dateStr, 'main', getMainInputValue(att));
+                  const mainInputValue = getDisplayedInputValue(inputDrafts, employee.id, dateStr, 'main', getMainInputValue(att));
                   const overtimeInputValue = getDisplayedInputValue(
                     employee.id,
                     dateStr,
