@@ -17,15 +17,25 @@ const PAGES = {
     label: 'Acconti e Rate',
     route: '#/acconti-rate',
     heading: 'Acconti e Rate',
-    relevantTags: ['[employee-repo-perf] listBasic:', '[page-perf] financial:', 'employees:listBasic:start', 'employees:listBasic:end'],
+    readySignal: 'financial:loadBaseData:end',
+    relevantTags: ['[employee-repo-perf]', 'listBasic:', '[page-perf] financial:', 'employees:listBasic'],
     reportPrefix: 'financial-load-probe',
   },
   payroll: {
     label: 'Buste paga',
     route: '#/buste-paga',
     heading: 'Buste paga',
+    readySignal: 'payroll:loadBaseData:end',
     relevantTags: ['[employee-repo-perf]', 'listBasic:', '[page-perf] payroll:', 'employees:listBasic'],
     reportPrefix: 'payroll-load-probe',
+  },
+  communication: {
+    label: 'Comunicazione',
+    route: '#/comunicazione',
+    heading: 'Comunicazione',
+    readySignal: 'communication:loadBaseData:end',
+    relevantTags: ['[employee-repo-perf]', 'listBasic:', '[page-perf] communication:', 'employees:listBasic'],
+    reportPrefix: 'communication-load-probe',
   },
 };
 
@@ -116,13 +126,20 @@ async function main() {
   const navStartedAt = Date.now();
   await page.evaluate((route) => { window.location.hash = route; }, PAGE.route);
 
-  // Wait for heading + loading to be over (no "Caricamento..." text in body).
+  // Wait for heading
   await page.waitForFunction((heading) => {
-    const found = [...document.querySelectorAll('h1, h2')].find((node) => node.textContent?.trim() === heading);
-    if (!found) return false;
-    const bodyText = document.body.innerText || '';
-    return !bodyText.includes('Caricamento...');
+    return Boolean([...document.querySelectorAll('h1, h2')].find((node) => node.textContent?.trim() === heading));
   }, PAGE.heading, { timeout: TIMEOUT_MS });
+
+  // Wait for the page-perf readySignal to arrive on the captured stream.
+  const readyDeadline = Date.now() + TIMEOUT_MS;
+  while (Date.now() < readyDeadline) {
+    if (messages.some((line) => line.includes(PAGE.readySignal))) break;
+    await delay(50);
+  }
+  if (!messages.some((line) => line.includes(PAGE.readySignal))) {
+    throw new Error(`Timed out waiting for ready signal "${PAGE.readySignal}"`);
+  }
   const navDoneAt = Date.now();
   const navMs = navDoneAt - navStartedAt;
 

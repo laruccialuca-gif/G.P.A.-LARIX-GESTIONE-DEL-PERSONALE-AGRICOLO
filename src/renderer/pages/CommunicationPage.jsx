@@ -272,17 +272,25 @@ export default function CommunicationPage() {
 
   async function loadData() {
     setLoading(true);
+    const __nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    const __t0 = __nowMs();
     try {
-      const [employeeData, communicationData, settingsData] = await Promise.all([
-        window.api.employees.list(),
-        window.api.communications.list({
-          year: selectedYear,
-          search: deferredHistorySearch,
-          limit: COMMUNICATION_PAGE_SIZE,
-          offset: historyOffset,
-        }),
-        window.api.settings.get(),
-      ]);
+      const __empT0 = __nowMs();
+      const employeesPromise = window.api.employees.listBasic({ includePeriods: true });
+      const communicationsPromise = window.api.communications.list({
+        year: selectedYear,
+        search: deferredHistorySearch,
+        limit: COMMUNICATION_PAGE_SIZE,
+        offset: historyOffset,
+      });
+      const settingsPromise = window.api.settings.get();
+      const employeeData = await employeesPromise;
+      const __empMs = __nowMs() - __empT0;
+      console.info('[page-perf] communication:employees-load:end', {
+        count: Array.isArray(employeeData) ? employeeData.length : 0,
+        duration_ms: Math.round(__empMs),
+      });
+      const [communicationData, settingsData] = await Promise.all([communicationsPromise, settingsPromise]);
       const contacts = await window.api.communications.listContacts();
 
       const employeeList = employeeData || [];
@@ -320,6 +328,8 @@ export default function CommunicationPage() {
       alert('Errore caricamento sezione Comunicazione');
     } finally {
       setLoading(false);
+      const __dt = __nowMs() - __t0;
+      console.info('[page-perf] communication:loadBaseData:end', { duration_ms: Math.round(__dt) });
     }
   }
 
