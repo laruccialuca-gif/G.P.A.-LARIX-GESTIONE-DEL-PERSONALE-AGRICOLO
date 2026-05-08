@@ -1,6 +1,6 @@
 {
   "name": "gestionale-presenze-offline",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "appVariant": "standard",
   "private": true,
   "main": "src/main/main.js",

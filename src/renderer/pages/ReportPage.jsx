@@ -3575,7 +3575,7 @@ function EmployeePrintArea({
         {noteExtra ? <div style={rp2NoteStyle}>{noteExtra}</div> : null}
 
         <div style={rp2FooterStyle}>
-          <span>GPA 1.0.1</span>
+          <span>GPA 1.0.2</span>
         </div>
       </div>
     </div>

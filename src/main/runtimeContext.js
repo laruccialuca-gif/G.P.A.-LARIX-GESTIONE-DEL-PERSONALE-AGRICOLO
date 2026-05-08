@@ -77,8 +77,8 @@ function getVariantConfig() {
       packageName: 'gestionale-dev',
       appDataDirName: 'GestionaleDev',
       legacyAppDataDirName: 'Gestionale Dev',
-      productName: 'GPA 1.0.1 Dev',
-      installerBaseName: 'GPA-Dev-1.0.1',
+      productName: 'GPA 1.0.2 Dev',
+      installerBaseName: 'GPA-Dev-1.0.2',
       legacyPackageUserDataDirName: `${packageJson.name}-dev`,
     };
   }
@@ -89,8 +89,8 @@ function getVariantConfig() {
     packageName: 'gestionale',
     appDataDirName: 'Gestionale',
     legacyAppDataDirName: 'Gestionale Dipendenti Offline',
-    productName: 'GPA 1.0.1',
-    installerBaseName: 'GPA-1.0.1',
+    productName: 'GPA 1.0.2',
+    installerBaseName: 'GPA-1.0.2',
     legacyPackageUserDataDirName: packageJson.name,
   };
 }

@@ -206,7 +206,7 @@ function blankDraft(employees, settings = null) {
   const rows = buildEmployeeRows(employees);
   return {
     id: null,
-    company_name: settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.1',
+    company_name: settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.2',
     title: 'Elenco giornate',
     recipient_email: '',
     show_compensation_in_pdf: true,
@@ -1280,7 +1280,7 @@ export default function CommunicationPage() {
                   <div>
                     <div className="communication-history-title">{communication.title}</div>
                     <div className="communication-history-meta">
-                      {communication.company_name || 'GPA 1.0.1'}
+                      {communication.company_name || 'GPA 1.0.2'}
                       {' · '}
                       {formatPeriodLabel(communication.period_start, communication.period_end)}
                       {' · '}
