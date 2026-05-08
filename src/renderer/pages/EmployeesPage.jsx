@@ -66,6 +66,12 @@ function formatCurrency(value) {
   }).format(Number(value || 0));
 }
 
+function logEmployeesPerf(event, details = {}) {
+  try {
+    console.info(`[employees-perf] ${event}`, details);
+  } catch {}
+}
+
 function SortHeader({ label, field, sortField, sortDirection, onToggle, width, flex, extraStyle }) {
   const isActive = sortField === field;
   const arrow = isActive ? (sortDirection === 'asc' ? '↑' : '↓') : '↕';
@@ -380,7 +386,7 @@ const compactFilterButtonStyle = {
   fontSize: 12,
 };
 
-function TeamRow({ team, onClick, onArchive }) {
+function TeamRow({ team, onClick, onArchive, actionsDisabled }) {
   const memberCount = (team.members || []).length;
   const activeMemberCount = (team.members || []).filter(
     m => !m.employee?.is_deleted && m.employee?.status === 'attivo'
@@ -421,10 +427,12 @@ function TeamRow({ team, onClick, onArchive }) {
         type="button"
         onClick={e => { e.stopPropagation(); onArchive(team.id); }}
         title="Archivia squadra"
+        disabled={!!actionsDisabled}
         style={{
           flexShrink: 0, padding: '3px 10px', fontSize: 11, fontWeight: 700,
           borderRadius: 8, border: '1px solid rgba(239,68,68,0.25)',
-          background: 'rgba(239,68,68,0.07)', color: '#b91c1c', cursor: 'pointer',
+          background: 'rgba(239,68,68,0.07)', color: '#b91c1c', cursor: actionsDisabled ? 'not-allowed' : 'pointer',
+          opacity: actionsDisabled ? 0.55 : 1,
         }}
       >
         Archivia
@@ -432,6 +440,9 @@ function TeamRow({ team, onClick, onArchive }) {
     </div>
   );
 }
+
+const MemoEmployeeRow = React.memo(EmployeeRow);
+const MemoTeamRow = React.memo(TeamRow);
 
 function ArchivedEmployeeRow({ employee, onRestore, onDelete, selected, onToggleSelected, selectionEnabled, actionsDisabled }) {
   return (
@@ -486,7 +497,7 @@ function ArchivedEmployeeRow({ employee, onRestore, onDelete, selected, onToggle
   );
 }
 
-function ArchivedTeamRow({ team, onRestore, onDelete }) {
+function ArchivedTeamRow({ team, onRestore, onDelete, actionsDisabled }) {
   const memberCount = (team.members || []).length;
   return (
     <div style={{
@@ -506,6 +517,7 @@ function ArchivedTeamRow({ team, onRestore, onDelete }) {
         <button
           className="button-secondary"
           style={{ padding: '4px 12px', fontSize: 12 }}
+          disabled={!!actionsDisabled}
           onClick={() => onRestore(team.id)}
         >
           Ripristina
@@ -513,6 +525,7 @@ function ArchivedTeamRow({ team, onRestore, onDelete }) {
         <button
           className="button-danger"
           style={{ padding: '4px 12px', fontSize: 12 }}
+          disabled={!!actionsDisabled}
           onClick={() => onDelete(team.id)}
         >
           Elimina definitivamente
@@ -521,6 +534,9 @@ function ArchivedTeamRow({ team, onRestore, onDelete }) {
     </div>
   );
 }
+
+const MemoArchivedEmployeeRow = React.memo(ArchivedEmployeeRow);
+const MemoArchivedTeamRow = React.memo(ArchivedTeamRow);
 
 function SectionAccordion({ title, subtitle, count, isOpen, onToggle, color, bg, children, action }) {
   return (
@@ -592,22 +608,119 @@ export default function EmployeesPage() {
   const [selectedArchivedEmployeeIds, setSelectedArchivedEmployeeIds] = useState([]);
   const [sortField, setSortField] = useState('name');
   const [sortDirection, setSortDirection] = useState('asc');
+  const [busyEmployeeIds, setBusyEmployeeIds] = useState([]);
+  const [busyTeamIds, setBusyTeamIds] = useState([]);
   const pdfImportOperationRef = useRef({ id: 0, cancelled: false });
   const requestedEmployeeId = searchParams.get('employee');
+
+  function setEmployeeBusy(employeeId, busy) {
+    setBusyEmployeeIds((current) => {
+      const normalizedId = Number(employeeId);
+      if (!Number.isFinite(normalizedId)) return current;
+      if (busy) {
+        return current.includes(normalizedId) ? current : [...current, normalizedId];
+      }
+      return current.filter((id) => id !== normalizedId);
+    });
+  }
+
+  function setTeamBusy(teamId, busy) {
+    setBusyTeamIds((current) => {
+      const normalizedId = Number(teamId);
+      if (!Number.isFinite(normalizedId)) return current;
+      if (busy) {
+        return current.includes(normalizedId) ? current : [...current, normalizedId];
+      }
+      return current.filter((id) => id !== normalizedId);
+    });
+  }
+
+  function upsertEmployeeInState(nextEmployee) {
+    if (!nextEmployee?.id) return;
+    setEmployees((current) => {
+      const nextId = Number(nextEmployee.id);
+      const index = current.findIndex((employee) => Number(employee.id) === nextId);
+      if (index === -1) {
+        return [...current, nextEmployee];
+      }
+      const next = [...current];
+      next[index] = nextEmployee;
+      return next;
+    });
+  }
+
+  function removeEmployeeFromState(employeeId) {
+    const normalizedId = Number(employeeId);
+    setEmployees((current) => current.filter((employee) => Number(employee.id) !== normalizedId));
+  }
+
+  function upsertTeamInState(nextTeam) {
+    if (!nextTeam?.id) return;
+    setTeams((current) => {
+      const nextId = Number(nextTeam.id);
+      const index = current.findIndex((team) => Number(team.id) === nextId);
+      if (index === -1) {
+        return [...current, nextTeam];
+      }
+      const next = [...current];
+      next[index] = nextTeam;
+      return next;
+    });
+  }
+
+  function removeTeamFromState(teamId) {
+    const normalizedId = Number(teamId);
+    setTeams((current) => current.filter((team) => Number(team.id) !== normalizedId));
+  }
+
+  async function loadDirectoryData({ showGlobalLoading = false, reason = 'manual' } = {}) {
+    const startedAt = performance.now();
+    logEmployeesPerf('loadDirectoryData:start', { reason, showGlobalLoading });
+    if (showGlobalLoading) {
+      setLoading(true);
+    }
+    try {
+      const [employeeData, teamData] = await Promise.all([
+        window.api.employees.list({ includeDeleted: true }),
+        window.api.teams.list({ includeArchived: true }),
+      ]);
+      setEmployees(employeeData || []);
+      setTeams(teamData || []);
+      logEmployeesPerf('loadDirectoryData:end', {
+        reason,
+        employees: Array.isArray(employeeData) ? employeeData.length : 0,
+        teams: Array.isArray(teamData) ? teamData.length : 0,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
+    } finally {
+      if (showGlobalLoading) {
+        setLoading(false);
+      }
+    }
+  }
+
+  async function loadAuxiliaryData(reason = 'manual') {
+    const startedAt = performance.now();
+    logEmployeesPerf('loadAuxiliaryData:start', { reason });
+    const [nextLicenseStatus, nextSettings] = await Promise.all([
+      window.api.license.getStatus(),
+      window.api.settings.get(),
+    ]);
+    setLicenseStatus(nextLicenseStatus || null);
+    setSettings(nextSettings || null);
+    logEmployeesPerf('loadAuxiliaryData:end', {
+      reason,
+      duration_ms: Math.round(performance.now() - startedAt),
+    });
+  }
 
   async function loadData() {
     setLoading(true);
     try {
-      const [employeeData, teamData, nextLicenseStatus, nextSettings] = await Promise.all([
-        window.api.employees.list({ includeDeleted: true }),
-        window.api.teams.list({ includeArchived: true }),
-        window.api.license.getStatus(),
-        window.api.settings.get(),
+      await Promise.all([
+        loadDirectoryData({ reason: 'initial-load' }),
+        loadAuxiliaryData('initial-load'),
       ]);
-      setEmployees(employeeData || []);
-      setTeams(teamData || []);
-      setLicenseStatus(nextLicenseStatus || null);
-      setSettings(nextSettings || null);
     } catch (err) {
       console.error(err);
       alert('Errore caricamento archivio');
@@ -633,10 +746,16 @@ export default function EmployeesPage() {
   }, [requestedEmployeeId, employees, setSearchParams]);
 
   async function handleCreate(data) {
+    const startedAt = performance.now();
+    logEmployeesPerf('handleCreate:start');
     try {
-      await window.api.employees.create(data);
+      const created = await window.api.employees.create(data);
+      upsertEmployeeInState(created);
       setShowForm(false);
-      await loadData();
+      logEmployeesPerf('handleCreate:end', {
+        employee_id: created?.id || null,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
     } catch (err) {
       console.error(err);
       if (err?.code === 'EMPLOYEE_ALREADY_ACTIVE') {
@@ -648,26 +767,47 @@ export default function EmployeesPage() {
   }
 
   async function handleUpdate(data) {
+    if (!editing?.id) return;
+    const employeeId = Number(editing.id);
+    const startedAt = performance.now();
+    logEmployeesPerf('handleUpdate:start', { employee_id: employeeId });
+    setEmployeeBusy(employeeId, true);
     try {
-      await window.api.employees.update(editing.id, data);
+      const updated = await window.api.employees.update(employeeId, data);
+      upsertEmployeeInState(updated);
       setEditing(null);
-      await loadData();
+      logEmployeesPerf('handleUpdate:end', {
+        employee_id: employeeId,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
     } catch (err) {
       console.error(err);
       alert('Errore modifica dipendente');
+    } finally {
+      setEmployeeBusy(employeeId, false);
     }
   }
 
   async function handleArchive(id) {
     const ok = window.confirm("Archivia il dipendente? Lo storico resterà disponibile nell'archivio.");
     if (!ok) return;
+    const employeeId = Number(id);
+    const startedAt = performance.now();
+    logEmployeesPerf('handleArchive:start', { employee_id: employeeId });
+    setEmployeeBusy(employeeId, true);
     try {
-      await window.api.employees.archive(id);
+      const archived = await window.api.employees.archive(employeeId);
+      upsertEmployeeInState(archived);
       setEditing(null);
-      await loadData();
+      logEmployeesPerf('handleArchive:end', {
+        employee_id: employeeId,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
     } catch (err) {
       console.error(err);
       alert('Errore archiviazione dipendente');
+    } finally {
+      setEmployeeBusy(employeeId, false);
     }
   }
 
@@ -687,8 +827,18 @@ export default function EmployeesPage() {
 
     try {
       await window.api.employees.bulkArchive(selectedEmployeeIds);
+      setEmployees((current) =>
+        current.map((employee) =>
+          selectedEmployeeIds.includes(employee.id)
+            ? {
+                ...employee,
+                is_deleted: true,
+                deleted_at: employee.deleted_at || new Date().toISOString(),
+              }
+            : employee
+        )
+      );
       exitSelectionMode();
-      await loadData();
     } catch (err) {
       console.error(err);
       alert('Errore archiviazione multipla dipendenti');
@@ -696,12 +846,16 @@ export default function EmployeesPage() {
   }
 
   async function handleRestore(id) {
+    const employeeId = Number(id);
+    setEmployeeBusy(employeeId, true);
     try {
-      await window.api.employees.restore(id);
-      await loadData();
+      const restored = await window.api.employees.restore(employeeId);
+      upsertEmployeeInState(restored);
     } catch (err) {
       console.error(err);
       alert('Errore ripristino dipendente');
+    } finally {
+      setEmployeeBusy(employeeId, false);
     }
   }
 
@@ -710,9 +864,11 @@ export default function EmployeesPage() {
       'Eliminazione definitiva: tutti i dati, le presenze, le buste paga e i file allegati verranno cancellati in modo irreversibile. Continuare?'
     );
     if (!ok) return;
+    const employeeId = Number(id);
+    setEmployeeBusy(employeeId, true);
     try {
-      await window.api.employees.deletePermanently(id);
-      await loadData();
+      await window.api.employees.deletePermanently(employeeId);
+      removeEmployeeFromState(employeeId);
     } catch (err) {
       console.error(err);
       if (err?.code === 'EMPLOYEE_DELETE_REQUIRES_ARCHIVED') {
@@ -730,11 +886,11 @@ export default function EmployeesPage() {
     if (!ok) return;
 
     try {
-      for (const employeeId of selectedArchivedEmployeeIds) {
-        await window.api.employees.restore(employeeId);
-      }
+      const restoredEmployees = await Promise.all(
+        selectedArchivedEmployeeIds.map((employeeId) => window.api.employees.restore(employeeId))
+      );
+      restoredEmployees.forEach(upsertEmployeeInState);
       exitArchiveSelectionMode();
-      await loadData();
     } catch (err) {
       console.error(err);
       alert('Errore ripristino multiplo dipendenti archiviati');
@@ -751,8 +907,10 @@ export default function EmployeesPage() {
 
     try {
       await window.api.employees.bulkDelete(selectedArchivedEmployeeIds);
+      setEmployees((current) =>
+        current.filter((employee) => !selectedArchivedEmployeeIds.includes(employee.id))
+      );
       exitArchiveSelectionMode();
-      await loadData();
     } catch (err) {
       console.error(err);
       if (err?.code === 'EMPLOYEE_DELETE_REQUIRES_ARCHIVED') {
@@ -765,9 +923,9 @@ export default function EmployeesPage() {
 
   async function handleCreateTeam(data) {
     try {
-      await window.api.teams.create(data);
+      const created = await window.api.teams.create(data);
+      upsertTeamInState(created);
       setShowTeamForm(false);
-      await loadData();
     } catch (err) {
       console.error(err);
       alert('Errore creazione squadra');
@@ -775,36 +933,62 @@ export default function EmployeesPage() {
   }
 
   async function handleUpdateTeam(data) {
+    if (!editingTeam?.id) return;
+    const teamId = Number(editingTeam.id);
+    const previousMemberIds = new Set((editingTeam?.members || []).map((member) => Number(member.employee_id)));
+    const nextMemberIds = new Set((data?.members || []).map((member) => Number(member.employee_id)).filter(Number.isFinite));
+    const addedCount = [...nextMemberIds].filter((memberId) => !previousMemberIds.has(memberId)).length;
+    const removedCount = [...previousMemberIds].filter((memberId) => !nextMemberIds.has(memberId)).length;
+    const startedAt = performance.now();
+    logEmployeesPerf('teams:updateMembers:start', { teamId, addedCount, removedCount });
+    setTeamBusy(teamId, true);
     try {
-      await window.api.teams.update(editingTeam.id, data);
+      const updated = await window.api.teams.update(teamId, data);
+      upsertTeamInState(updated);
       setEditingTeam(null);
-      await loadData();
+      logEmployeesPerf('teams:updateMembers:end', {
+        teamId,
+        addedCount,
+        removedCount,
+        duration_ms: Math.round(performance.now() - startedAt),
+        loadData_called: false,
+      });
     } catch (err) {
       console.error(err);
       alert('Errore aggiornamento squadra');
+    } finally {
+      setTeamBusy(teamId, false);
     }
   }
 
   async function handleArchiveTeam(id) {
     const ok = window.confirm("Archivia la squadra? Lo storico resterà disponibile nell'archivio.");
     if (!ok) return;
+    const teamId = Number(id);
+    setTeamBusy(teamId, true);
     try {
-      await window.api.teams.archive(id);
+      const archived = await window.api.teams.archive(teamId);
+      upsertTeamInState(archived);
       setEditingTeam(null);
-      await loadData();
     } catch (err) {
       console.error(err);
       alert('Errore archiviazione squadra');
+    } finally {
+      setTeamBusy(teamId, false);
     }
   }
 
   async function handleRestoreTeam(id) {
+    const teamId = Number(id);
+    setTeamBusy(teamId, true);
     try {
-      await window.api.teams.restore(id);
-      await loadData();
+      const restored = await window.api.teams.restore(teamId);
+      upsertTeamInState(restored);
     } catch (err) {
       console.error(err);
       alert('Errore ripristino squadra');
+    } finally {
+      setTeamBusy(teamId, false);
     }
   }
 
@@ -813,12 +997,16 @@ export default function EmployeesPage() {
       'Eliminazione definitiva: la squadra e tutti i dati collegati verranno cancellati in modo irreversibile. Continuare?'
     );
     if (!ok) return;
+    const teamId = Number(id);
+    setTeamBusy(teamId, true);
     try {
-      await window.api.teams.deletePermanently(id);
-      await loadData();
+      await window.api.teams.deletePermanently(teamId);
+      removeTeamFromState(teamId);
     } catch (err) {
       console.error(err);
       alert('Errore eliminazione definitiva squadra');
+    } finally {
+      setTeamBusy(teamId, false);
     }
   }
 
@@ -921,7 +1109,7 @@ export default function EmployeesPage() {
       filePaths: pdfImportData.filePaths || [],
       rows,
     });
-    await loadData();
+    await loadDirectoryData({ reason: 'pdf-import-confirm' });
     return res;
   }
 
@@ -1334,13 +1522,13 @@ export default function EmployeesPage() {
             ) : (
               <>
                 {renderedEmployees.map(employee => (
-                  <EmployeeRow
+                  <MemoEmployeeRow
                     key={employee.id}
                     employee={employee}
                     onClick={setEditing}
                     onArchive={handleArchive}
                     selectionEnabled={!isWriteBlocked}
-                    actionsDisabled={isWriteBlocked}
+                    actionsDisabled={isWriteBlocked || busyEmployeeIds.includes(employee.id)}
                     selected={selectedEmployeeIds.includes(employee.id)}
                     onToggleSelected={(employeeId, checked) =>
                       setSelectedEmployeeIds((current) =>
@@ -1382,11 +1570,12 @@ export default function EmployeesPage() {
             ) : (
               <>
                 {activeTeams.map(team => (
-                  <TeamRow
+                  <MemoTeamRow
                     key={team.id}
                     team={team}
                     onClick={setEditingTeam}
                     onArchive={handleArchiveTeam}
+                    actionsDisabled={busyTeamIds.includes(team.id)}
                   />
                 ))}
                 {inactiveTeams.length > 0 && (
@@ -1399,11 +1588,12 @@ export default function EmployeesPage() {
                       Inattive
                     </div>
                     {inactiveTeams.map(team => (
-                      <TeamRow
+                      <MemoTeamRow
                         key={team.id}
                         team={team}
                         onClick={setEditingTeam}
                         onArchive={handleArchiveTeam}
+                        actionsDisabled={busyTeamIds.includes(team.id)}
                       />
                     ))}
                   </>
@@ -1539,13 +1729,13 @@ export default function EmployeesPage() {
 
                 {archivedEmployees.length ? (
                   archivedEmployees.map(e => (
-                  <ArchivedEmployeeRow
+                  <MemoArchivedEmployeeRow
                     key={e.id}
                     employee={e}
                     onRestore={handleRestore}
                     onDelete={handleDeleteEmployee}
                     selectionEnabled={!isWriteBlocked}
-                    actionsDisabled={isWriteBlocked}
+                    actionsDisabled={isWriteBlocked || busyEmployeeIds.includes(e.id)}
                     selected={selectedArchivedEmployeeIds.includes(e.id)}
                     onToggleSelected={(employeeId, checked) =>
                       setSelectedArchivedEmployeeIds((current) =>
@@ -1563,11 +1753,12 @@ export default function EmployeesPage() {
             ) : (
               archivedTeams.length ? (
                 archivedTeams.map(t => (
-                  <ArchivedTeamRow
+                  <MemoArchivedTeamRow
                     key={t.id}
                     team={t}
                     onRestore={handleRestoreTeam}
                     onDelete={handleDeleteTeam}
+                    actionsDisabled={busyTeamIds.includes(t.id)}
                   />
                 ))
               ) : (

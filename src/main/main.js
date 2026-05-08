@@ -1622,8 +1622,29 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle('employees:list', async (_, options) => employeeRepo.listEmployees(options));
-  ipcMain.handle('employees:getById', async (_, id, options) => employeeRepo.getEmployeeById(id, options));
+  ipcMain.handle('employees:list', async (_, options) => {
+    const startedAt = Date.now();
+    logMainProcessEvent('employees:list:start', { includeDeleted: !!options?.includeDeleted });
+    const result = employeeRepo.listEmployees(options);
+    logMainProcessEvent('employees:list:end', {
+      includeDeleted: !!options?.includeDeleted,
+      count: Array.isArray(result) ? result.length : 0,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  });
+  ipcMain.handle('employees:getById', async (_, id, options) => {
+    const startedAt = Date.now();
+    logMainProcessEvent('employees:getById:start', { id: Number(id), includeDeleted: !!options?.includeDeleted });
+    const result = employeeRepo.getEmployeeById(id, options);
+    logMainProcessEvent('employees:getById:end', {
+      id: Number(id),
+      includeDeleted: !!options?.includeDeleted,
+      found: !!result,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  });
   ipcMain.handle('employees:findHistoryMatches', async (_, criteria) =>
     employeeRepo.findEmployeeHistoryMatches(criteria)
   );
@@ -1635,13 +1656,25 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('employees:update', async (_, id, payload) => {
     requireWritableLicense('La modifica dei dipendenti');
+    const startedAt = Date.now();
+    logMainProcessEvent('employees:update:start', { id: Number(id) });
     const result = employeeRepo.updateEmployee(id, payload);
+    logMainProcessEvent('employees:update:end', {
+      id: Number(id),
+      duration_ms: Date.now() - startedAt,
+    });
     try { authService.audit('employee:update', 'employee', id, {}); } catch {}
     return result;
   });
   ipcMain.handle('employees:archive', async (_, id) => {
     requireWritableLicense('La modifica dei dipendenti');
+    const startedAt = Date.now();
+    logMainProcessEvent('employees:archive:start', { id: Number(id) });
     const result = employeeRepo.archiveEmployee(id);
+    logMainProcessEvent('employees:archive:end', {
+      id: Number(id),
+      duration_ms: Date.now() - startedAt,
+    });
     try { authService.audit('employee:archive', 'employee', id, {}); } catch {}
     return result;
   });
@@ -1665,7 +1698,14 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('employees:restore', async (_, id) => {
     requireWritableLicense('La modifica dei dipendenti');
-    return employeeRepo.restoreEmployee(id);
+    const startedAt = Date.now();
+    logMainProcessEvent('employees:restore:start', { id: Number(id) });
+    const result = employeeRepo.restoreEmployee(id);
+    logMainProcessEvent('employees:restore:end', {
+      id: Number(id),
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
   });
   ipcMain.handle('employees:uploadHireDocument', async (_, employeeId) => {
     requireWritableLicense('La modifica dei dipendenti');
@@ -1717,15 +1757,60 @@ app.whenReady().then(async () => {
     return occupationRepo.ensureOccupation(name);
   });
 
-  ipcMain.handle('teams:list', async (_, options) => teamsRepo.listTeams(options));
-  ipcMain.handle('teams:getById', async (_, id, options) => teamsRepo.getTeamById(id, options));
+  ipcMain.handle('teams:list', async (_, options) => {
+    const startedAt = Date.now();
+    logMainProcessEvent('teams:list:start', { includeArchived: !!options?.includeArchived });
+    const result = teamsRepo.listTeams(options);
+    logMainProcessEvent('teams:list:end', {
+      includeArchived: !!options?.includeArchived,
+      count: Array.isArray(result) ? result.length : 0,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  });
+  ipcMain.handle('teams:getById', async (_, id, options) => {
+    const startedAt = Date.now();
+    logMainProcessEvent('teams:getById:start', { id: Number(id), includeArchived: !!options?.includeArchived });
+    const result = teamsRepo.getTeamById(id, options);
+    logMainProcessEvent('teams:getById:end', {
+      id: Number(id),
+      includeArchived: !!options?.includeArchived,
+      found: !!result,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  });
   ipcMain.handle('teams:create', async (_, payload) => {
     requireWritableLicense('La modifica delle squadre');
     return teamsRepo.createTeam(payload);
   });
   ipcMain.handle('teams:update', async (_, id, payload) => {
     requireWritableLicense('La modifica delle squadre');
-    return teamsRepo.updateTeam(id, payload);
+    const teamId = Number(id);
+    const startedAt = Date.now();
+    const previousTeam = teamsRepo.getTeamById(teamId, { includeArchived: true });
+    const previousMemberIds = new Set((previousTeam?.members || []).map((member) => Number(member.employee_id)));
+    const nextMembers = Array.isArray(payload?.members) ? payload.members : [];
+    const nextMemberIds = new Set(nextMembers.map((member) => Number(member.employee_id)).filter(Number.isFinite));
+    const addedCount = [...nextMemberIds].filter((memberId) => !previousMemberIds.has(memberId)).length;
+    const removedCount = [...previousMemberIds].filter((memberId) => !nextMemberIds.has(memberId)).length;
+    logMainProcessEvent('teams:updateMembers:start', {
+      teamId,
+      previous_count: previousMemberIds.size,
+      next_count: nextMemberIds.size,
+      addedCount,
+      removedCount,
+    });
+    const result = teamsRepo.updateTeam(teamId, payload);
+    logMainProcessEvent('teams:updateMembers:end', {
+      teamId,
+      previous_count: previousMemberIds.size,
+      next_count: nextMemberIds.size,
+      addedCount,
+      removedCount,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
   });
   ipcMain.handle('teams:archive', async (_, id) => {
     requireWritableLicense('La modifica delle squadre');
@@ -2299,9 +2384,21 @@ app.whenReady().then(async () => {
     try { authService.audit('attendance:bulkUpsert', 'attendance', null, { count: payload?.length }); } catch {}
     return result;
   });
-  ipcMain.handle('attendance:listByMonth', async (_, year, month) =>
-    attendanceRepo.listAttendanceByMonth(year, month)
-  );
+  ipcMain.handle('attendance:listByMonth', async (_, year, month) => {
+    const startedAt = Date.now();
+    logMainProcessEvent('attendance:listByMonth:start', {
+      year: Number(year),
+      month: Number(month),
+    });
+    const result = attendanceRepo.listAttendanceByMonth(year, month);
+    logMainProcessEvent('attendance:listByMonth:end', {
+      year: Number(year),
+      month: Number(month),
+      count: Array.isArray(result) ? result.length : 0,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  });
   ipcMain.handle('attendance:monthlySummary', async (_, month) =>
     attendanceRepo.getMonthlySummary(month)
   );

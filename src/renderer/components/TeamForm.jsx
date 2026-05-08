@@ -51,6 +51,7 @@ function formatHireDate(employee) {
 export default function TeamForm({ open, onClose, onSubmit, team, employees = [] }) {
   const [form, setForm] = useState(emptyForm);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const [saving, setSaving] = useState(false);
   const initialSnapshot = useMemo(
     () => normalizeTeamFormForDirtyCheck(
       team
@@ -88,6 +89,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
         : emptyForm
     );
     setSelectedEmployeeId('');
+    setSaving(false);
   }, [open, team]);
 
   const selectableEmployees = useMemo(() => {
@@ -96,6 +98,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
   }, [employees, form.members]);
 
   function addMember() {
+    if (saving) return;
     const employeeId = Number(selectedEmployeeId);
     if (!employeeId) return;
 
@@ -116,6 +119,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
   }
 
   function updateMember(index, field, value) {
+    if (saving) return;
     setForm((current) => ({
       ...current,
       members: current.members.map((member, currentIndex) =>
@@ -125,27 +129,35 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
   }
 
   function removeMember(index) {
+    if (saving) return;
     setForm((current) => ({
       ...current,
       members: current.members.filter((_, currentIndex) => currentIndex !== index),
     }));
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
-    onSubmit({
-      name: form.name.trim(),
-      notes: form.notes.trim(),
-      members: form.members.map((member) => ({
-        employee_id: Number(member.employee_id),
-        compensation: member.compensation === '' ? null : Number(member.compensation),
-        manage_by_days: !!member.manage_by_days,
-        notes: member.notes || '',
-      })),
-    });
+    if (saving) return;
+    setSaving(true);
+    try {
+      await onSubmit({
+        name: form.name.trim(),
+        notes: form.notes.trim(),
+        members: form.members.map((member) => ({
+          employee_id: Number(member.employee_id),
+          compensation: member.compensation === '' ? null : Number(member.compensation),
+          manage_by_days: !!member.manage_by_days,
+          notes: member.notes || '',
+        })),
+      });
+    } finally {
+      setSaving(false);
+    }
   }
 
   function requestClose() {
+    if (saving) return;
     if (isDirty && !window.confirm('Ci sono modifiche non salvate. Vuoi chiudere comunque la scheda?')) {
       return;
     }
@@ -171,6 +183,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
               <Field label="Nome squadra *">
                 <input
                   value={form.name}
+                  disabled={saving}
                   onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
                   placeholder="es. Squadra Serra Nord"
                   required
@@ -181,6 +194,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
                 <textarea
                   rows="2"
                   value={form.notes}
+                  disabled={saving}
                   onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))}
                   placeholder="Responsabile, commessa, appunti..."
                 />
@@ -207,7 +221,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
               </div>
 
               <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'minmax(260px, 1fr) auto' }}>
-                <select value={selectedEmployeeId} onChange={(event) => setSelectedEmployeeId(event.target.value)}>
+                <select value={selectedEmployeeId} disabled={saving} onChange={(event) => setSelectedEmployeeId(event.target.value)}>
                   <option value="">Seleziona dipendente da aggiungere...</option>
                   {selectableEmployees.map((employee) => (
                     <option key={employee.id} value={employee.id}>
@@ -215,7 +229,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
                     </option>
                   ))}
                 </select>
-                <button type="button" className="button-secondary" onClick={addMember} disabled={!selectedEmployeeId}>
+                <button type="button" className="button-secondary" onClick={addMember} disabled={saving || !selectedEmployeeId}>
                   Aggiungi
                 </button>
               </div>
@@ -240,6 +254,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
                             type="button"
                             className="button-danger"
                             onClick={() => removeMember(index)}
+                            disabled={saving}
                             style={{ minWidth: 110 }}
                           >
                             Rimuovi
@@ -259,6 +274,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
                               step="0.01"
                               min="0"
                               value={member.compensation}
+                              disabled={saving}
                               onChange={(event) => updateMember(index, 'compensation', event.target.value)}
                               placeholder="Compenso dedicato"
                             />
@@ -280,6 +296,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
                               <input
                                 type="checkbox"
                                 checked={member.manage_by_days}
+                                disabled={saving}
                                 onChange={(event) => updateMember(index, 'manage_by_days', event.target.checked)}
                                 style={{ width: 18, height: 18 }}
                               />
@@ -290,6 +307,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
                           <Field label="Note componente">
                             <input
                               value={member.notes}
+                              disabled={saving}
                               onChange={(event) => updateMember(index, 'notes', event.target.value)}
                               placeholder="Note opzionali per il componente"
                             />
@@ -308,11 +326,11 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
           </div>
 
           <div className="actions-row" style={{ marginTop: 0, paddingTop: 0, borderTop: 0 }}>
-            <button type="button" className="button-secondary" onClick={requestClose}>
+            <button type="button" className="button-secondary" onClick={requestClose} disabled={saving}>
               Annulla
             </button>
-            <button type="submit" className="button">
-              {team ? 'Salva squadra' : 'Crea squadra'}
+            <button type="submit" className="button" disabled={saving}>
+              {saving ? 'Salvataggio squadra...' : team ? 'Salva squadra' : 'Crea squadra'}
             </button>
           </div>
         </form>

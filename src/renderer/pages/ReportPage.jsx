@@ -542,6 +542,19 @@ export default function ReportPage() {
   const defaultEmployerValue = employerOptions[0]?.short_name || employerOptions[0]?.value || 'LC';
   const requestedEmployeeId = searchParams.get('employee');
   const requestedMonth = searchParams.get('month');
+  const attendanceByEmployeeId = useMemo(() => {
+    const map = new Map();
+    for (const item of attendance) {
+      const employeeId = String(item.employee_id);
+      const current = map.get(employeeId);
+      if (current) {
+        current.push(item);
+      } else {
+        map.set(employeeId, [item]);
+      }
+    }
+    return map;
+  }, [attendance]);
 
   const queryMonths = useMemo(() => {
     if (isTeamMode) {
@@ -1647,14 +1660,23 @@ export default function ReportPage() {
     });
   }
 
-  const employeeAttendance = employee
-    ? attendance.filter((item) => String(item.employee_id) === String(employee.id))
-    : [];
-  const attendanceBaseHours = getSafeStandardHours(settings?.general?.standard_day_hours);
-
-  const attendanceMap = Object.fromEntries(employeeAttendance.map((item) => [item.date, item]));
-  const employeeTotals = calculateAttendanceTotals(employeeAttendance, attendanceBaseHours);
-  const hoursFormat = getHoursFormat(settings);
+  const attendanceBaseHours = useMemo(
+    () => getSafeStandardHours(settings?.general?.standard_day_hours),
+    [settings?.general?.standard_day_hours]
+  );
+  const hoursFormat = useMemo(() => getHoursFormat(settings), [settings]);
+  const employeeAttendance = useMemo(
+    () => (employee ? attendanceByEmployeeId.get(String(employee.id)) || [] : []),
+    [attendanceByEmployeeId, employee]
+  );
+  const attendanceMap = useMemo(
+    () => Object.fromEntries(employeeAttendance.map((item) => [item.date, item])),
+    [employeeAttendance]
+  );
+  const employeeTotals = useMemo(
+    () => calculateAttendanceTotals(employeeAttendance, attendanceBaseHours),
+    [attendanceBaseHours, employeeAttendance]
+  );
   const dailyPay = Number(dailyPayInput || 0);
   const standardHours = getSafeStandardHours(employee?.standard_hours);
   const regularHourlyRate = standardHours > 0 ? dailyPay / standardHours : 0;
@@ -1931,7 +1953,10 @@ export default function ReportPage() {
   const teamEndDate = parseDateValue(teamPeriodEnd);
   const safeTeamStart = teamStartDate && teamEndDate && teamEndDate >= teamStartDate ? teamPeriodStart : formatLocalDate(startOfMonth(currentMonth));
   const safeTeamEnd = teamStartDate && teamEndDate && teamEndDate >= teamStartDate ? teamPeriodEnd : formatLocalDate(endOfMonth(currentMonth));
-  const teamPeriodDays = getMonthDays(parseDateValue(safeTeamStart), parseDateValue(safeTeamEnd));
+  const teamPeriodDays = useMemo(
+    () => getMonthDays(parseDateValue(safeTeamStart), parseDateValue(safeTeamEnd)),
+    [safeTeamEnd, safeTeamStart]
+  );
   const teamPeriodLabel = formatPeriodLabel(safeTeamStart, safeTeamEnd);
   const monthName = MONTH_NAMES[currentMonth.getMonth()];
   const yearStr = String(currentMonth.getFullYear());
@@ -1945,53 +1970,60 @@ export default function ReportPage() {
     }))
     .filter((advance) => advance.amount > 0);
 
-  const teamRows = getTeamRows(selectedTeam, selectedYear).map((member) => {
-    const memberAttendance = attendance.filter(
-      (item) =>
-        String(item.employee_id) === String(member.employee_id) &&
-        isDateWithinRange(item.date, safeTeamStart, safeTeamEnd)
-    );
-    const totals = calculateAttendanceTotals(memberAttendance, attendanceBaseHours);
-    const compensationRate = Number(
-      member.compensation !== null && member.compensation !== undefined
-        ? member.compensation
-        : member.employee?.daily_pay || 0
-    );
-    const workedDaysCount = totals.completeDaysTotal;
-    const estimatedCompensation = totals.completeDaysTotal * compensationRate;
-    const personalAdvances = getPayrollAdvancesInRange(teamPayrollMap[member.employee_id], safeTeamStart, safeTeamEnd);
-    const personalAdvancesTotal = personalAdvances.reduce((sum, advance) => sum + Number(advance.amount || 0), 0);
+  const teamRows = useMemo(
+    () =>
+      getTeamRows(selectedTeam, selectedYear).map((member) => {
+        const allMemberAttendance = attendanceByEmployeeId.get(String(member.employee_id)) || [];
+        const memberAttendance = allMemberAttendance.filter((item) =>
+          isDateWithinRange(item.date, safeTeamStart, safeTeamEnd)
+        );
+        const totals = calculateAttendanceTotals(memberAttendance, attendanceBaseHours);
+        const compensationRate = Number(
+          member.compensation !== null && member.compensation !== undefined
+            ? member.compensation
+            : member.employee?.daily_pay || 0
+        );
+        const workedDaysCount = totals.completeDaysTotal;
+        const estimatedCompensation = totals.completeDaysTotal * compensationRate;
+        const personalAdvances = getPayrollAdvancesInRange(teamPayrollMap[member.employee_id], safeTeamStart, safeTeamEnd);
+        const personalAdvancesTotal = personalAdvances.reduce((sum, advance) => sum + Number(advance.amount || 0), 0);
 
-    return {
-      member,
-      records: memberAttendance,
-      totals,
-      workedDays: workedDaysCount,
-      compensationRate,
-      estimatedCompensation,
-      personalAdvances,
-      personalAdvancesTotal,
-      individualNet: estimatedCompensation - personalAdvancesTotal,
-    };
-  });
+        return {
+          member,
+          records: memberAttendance,
+          totals,
+          workedDays: workedDaysCount,
+          compensationRate,
+          estimatedCompensation,
+          personalAdvances,
+          personalAdvancesTotal,
+          individualNet: estimatedCompensation - personalAdvancesTotal,
+        };
+      }),
+    [attendanceBaseHours, attendanceByEmployeeId, safeTeamEnd, safeTeamStart, selectedTeam, selectedYear, teamPayrollMap]
+  );
 
   const teamTransportTotal = teamTransportEnabled ? normalizeCurrency(teamTransportAmount) : 0;
   const teamAdvancesTotal = filteredTeamAdvances.reduce((sum, advance) => sum + advance.amount, 0);
-  const teamTotals = teamRows.reduce(
-    (acc, row) => ({
-      totalHours: acc.totalHours + row.totals.totalHours,
-      totalWorkedDays: acc.totalWorkedDays + row.workedDays,
-      totalCompensation: acc.totalCompensation + row.estimatedCompensation,
-      totalResidualHours: acc.totalResidualHours + row.totals.remainingTotalHours,
-      totalPersonalAdvances: acc.totalPersonalAdvances + row.personalAdvancesTotal,
-    }),
-    {
-      totalHours: 0,
-      totalWorkedDays: 0,
-      totalCompensation: 0,
-      totalResidualHours: 0,
-      totalPersonalAdvances: 0,
-    }
+  const teamTotals = useMemo(
+    () =>
+      teamRows.reduce(
+        (acc, row) => ({
+          totalHours: acc.totalHours + row.totals.totalHours,
+          totalWorkedDays: acc.totalWorkedDays + row.workedDays,
+          totalCompensation: acc.totalCompensation + row.estimatedCompensation,
+          totalResidualHours: acc.totalResidualHours + row.totals.remainingTotalHours,
+          totalPersonalAdvances: acc.totalPersonalAdvances + row.personalAdvancesTotal,
+        }),
+        {
+          totalHours: 0,
+          totalWorkedDays: 0,
+          totalCompensation: 0,
+          totalResidualHours: 0,
+          totalPersonalAdvances: 0,
+        }
+      ),
+    [teamRows]
   );
 
   const teamFinalBalance = teamTotals.totalCompensation + teamTransportTotal - teamAdvancesTotal;

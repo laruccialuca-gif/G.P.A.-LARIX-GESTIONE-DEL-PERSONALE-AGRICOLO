@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { calculateAttendanceTotals, formatHoursValue, formatWorkedSummary, getSafeStandardHours } from '../utils/attendanceSummary';
 import { getCalendarDayInfo } from '../utils/holidays';
 import QuickAttendanceModal from '../components/QuickAttendanceModal';
@@ -36,6 +36,24 @@ const DEFAULT_DAY_MARKERS = [
 ];
 
 const ATTENDANCE_LAYOUT_STORAGE_KEY = 'attendance_layout_mode_v1';
+const EMPTY_ROW_ATTENDANCE = Object.freeze({});
+
+function getPerfNow() {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+function logAttendancePerf(event, details = {}) {
+  if (typeof console === 'undefined' || typeof console.info !== 'function') {
+    return;
+  }
+
+  console.info('[attendance-perf]', {
+    event,
+    ...details,
+  });
+}
 
 function normalizeAttendanceLayoutMode(value) {
   return value === 'compact' ? 'compact' : 'standard';
@@ -198,6 +216,10 @@ function parseSelection(value) {
     return { type: 'all', id: null };
   }
 
+  if (value === 'no_team') {
+    return { type: 'no_team', id: null };
+  }
+
   const [type, id] = String(value).split(':');
   return { type, id: Number(id) };
 }
@@ -213,6 +235,16 @@ function buildTeamRows(team, year) {
       employee: member.employee,
       teamMember: member,
     }));
+}
+
+function buildTeamMemberEmployeeIdsSet(teams = [], year) {
+  const employeeIds = new Set();
+  for (const team of teams || []) {
+    for (const row of buildTeamRows(team, year)) {
+      employeeIds.add(Number(row.employee.id));
+    }
+  }
+  return employeeIds;
 }
 
 function sameNumberArray(left = [], right = []) {
@@ -599,7 +631,8 @@ export default function AttendancePage() {
   const [bulkOverwrite, setBulkOverwrite] = useState(false);
   const [bulkTargetDate, setBulkTargetDate] = useState(formatLocalDate(new Date()));
   const [bulkApplyFeedback, setBulkApplyFeedback] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [directoryLoading, setDirectoryLoading] = useState(true);
+  const [attendanceLoading, setAttendanceLoading] = useState(true);
   const [saveState, setSaveState] = useState('idle');
   const [showQuickEntry, setShowQuickEntry] = useState(false);
   const [quickEntryDate, setQuickEntryDate] = useState(formatLocalDate(new Date()));
@@ -614,11 +647,14 @@ export default function AttendancePage() {
   const horizontalScrollbarRef = useRef(null);
   const horizontalScrollbarContentRef = useRef(null);
   const horizontalScrollSyncRef = useRef(false);
+  const attendanceRowsCacheRef = useRef(new Map());
+  const pageLoadStartedAtRef = useRef(getPerfNow());
 
   const daysInMonth = useMemo(() => getMonthDays(currentMonth), [currentMonth]);
+  const dayKeys = useMemo(() => daysInMonth.map((day) => formatDate(day)), [daysInMonth]);
   const dayInfoMap = useMemo(
-    () => Object.fromEntries(daysInMonth.map((day) => [formatDate(day), getCalendarDayInfo(day)])),
-    [daysInMonth]
+    () => Object.fromEntries(daysInMonth.map((day, index) => [dayKeys[index], getCalendarDayInfo(day)])),
+    [dayKeys, daysInMonth]
   );
   const currentMonthKey = monthString(currentMonth);
   const pendingChangesRef = useRef({});
@@ -629,23 +665,80 @@ export default function AttendancePage() {
   const isWriteBlockedRef = useRef(false);
   const lastLicenseErrorRef = useRef(0);
 
-  async function loadData() {
-    setLoading(true);
+  const loading = directoryLoading || attendanceLoading;
+  const loadingMessage = directoryLoading
+    ? 'Caricamento anagrafica presenze...'
+    : 'Caricamento presenze mese...';
+
+  async function loadDirectoryData() {
+    const startedAt = getPerfNow();
+    setDirectoryLoading(true);
+    logAttendancePerf('page:directory-load:start', {
+      month: currentMonthKey,
+      selected_entity: selectedEntity,
+    });
     try {
-      const [employeeData, teamData, data, settingsData] = await Promise.all([
-        window.api.employees.list(),
-        window.api.teams.list(),
-        window.api.attendance.listByMonth(
-          currentMonth.getFullYear(),
-          currentMonth.getMonth() + 1
-        ),
-        window.api.settings.get(),
-      ]);
+      const employeesStartedAt = getPerfNow();
+      const employeeData = await window.api.employees.list();
+      logAttendancePerf('page:load-employees:end', {
+        count: Array.isArray(employeeData) ? employeeData.length : 0,
+        duration_ms: Math.round(getPerfNow() - employeesStartedAt),
+      });
+
+      const teamsStartedAt = getPerfNow();
+      const teamData = await window.api.teams.list();
+      logAttendancePerf('page:load-teams:end', {
+        count: Array.isArray(teamData) ? teamData.length : 0,
+        duration_ms: Math.round(getPerfNow() - teamsStartedAt),
+      });
+
+      const settingsStartedAt = getPerfNow();
+      const settingsData = await window.api.settings.get();
+      logAttendancePerf('page:load-settings:end', {
+        duration_ms: Math.round(getPerfNow() - settingsStartedAt),
+      });
 
       setEmployees(employeeData || []);
       setTeams(teamData || []);
-      setAttendance((data || []).map(normalizeAttendanceEntry));
       setSettings(settingsData || null);
+    } catch (err) {
+      console.error(err);
+      alert('Errore caricamento presenze');
+    } finally {
+      const durationMs = Math.round(getPerfNow() - startedAt);
+      logAttendancePerf('page:directory-load:end', {
+        duration_ms: durationMs,
+      });
+      setDirectoryLoading(false);
+    }
+  }
+
+  async function loadAttendanceMonthData() {
+    const startedAt = getPerfNow();
+    const daysCount = dayKeys.length;
+    setAttendanceLoading(true);
+    pageLoadStartedAtRef.current = startedAt;
+    logAttendancePerf('page:month-load:start', {
+      month: currentMonthKey,
+      selected_entity: selectedEntity,
+      days_count: daysCount,
+    });
+
+    try {
+      const attendanceStartedAt = getPerfNow();
+      const data = await window.api.attendance.listByMonth(
+        currentMonth.getFullYear(),
+        currentMonth.getMonth() + 1
+      );
+      const normalizedAttendance = (data || []).map(normalizeAttendanceEntry);
+      logAttendancePerf('page:load-attendance-month:end', {
+        month: currentMonthKey,
+        records_count: normalizedAttendance.length,
+        days_count: daysCount,
+        duration_ms: Math.round(getPerfNow() - attendanceStartedAt),
+      });
+
+      setAttendance(normalizedAttendance);
       setPendingChanges({});
       setInputDrafts({});
       setSelectedEmployeeIds([]);
@@ -655,12 +748,21 @@ export default function AttendancePage() {
       console.error(err);
       alert('Errore caricamento presenze');
     } finally {
-      setLoading(false);
+      const durationMs = Math.round(getPerfNow() - startedAt);
+      logAttendancePerf('page:month-load:end', {
+        month: currentMonthKey,
+        duration_ms: durationMs,
+      });
+      setAttendanceLoading(false);
     }
   }
 
   useEffect(() => {
-    loadData();
+    loadDirectoryData();
+  }, []);
+
+  useEffect(() => {
+    loadAttendanceMonthData();
   }, [currentMonthKey]);
 
   useEffect(() => {
@@ -772,6 +874,18 @@ export default function AttendancePage() {
     () => teams.filter((team) => buildTeamRows(team, selectedYear).length > 0),
     [teams, selectedYear]
   );
+  const groupedEmployeeIds = useMemo(
+    () => buildTeamMemberEmployeeIdsSet(visibleTeams, selectedYear),
+    [visibleTeams, selectedYear]
+  );
+  const employeesWithoutTeam = useMemo(
+    () => activeEmployees.filter((employee) => !groupedEmployeeIds.has(Number(employee.id))),
+    [activeEmployees, groupedEmployeeIds]
+  );
+  const visibleTeamCounts = useMemo(
+    () => new Map(visibleTeams.map((team) => [Number(team.id), buildTeamRows(team, selectedYear).length])),
+    [visibleTeams, selectedYear]
+  );
   const selectedTeam = useMemo(
     () => selectedMeta.type === 'team'
       ? visibleTeams.find((team) => Number(team.id) === selectedMeta.id) || null
@@ -780,20 +894,36 @@ export default function AttendancePage() {
   );
 
   const displayRows = useMemo(() => {
+    const startedAt = getPerfNow();
+    let rows;
+
     if (selectedMeta.type === 'employee') {
       const employee = activeEmployees.find((item) => Number(item.id) === selectedMeta.id);
-      return employee ? [{ employee, teamMember: null }] : [];
+      rows = employee ? [{ employee, teamMember: null }] : [];
+    } else if (selectedMeta.type === 'team') {
+      rows = buildTeamRows(selectedTeam, selectedYear);
+    } else if (selectedMeta.type === 'no_team') {
+      rows = employeesWithoutTeam.map((employee) => ({
+        employee,
+        teamMember: null,
+      }));
+    } else {
+      rows = activeEmployees.map((employee) => ({
+        employee,
+        teamMember: null,
+      }));
     }
 
-    if (selectedMeta.type === 'team') {
-      return buildTeamRows(selectedTeam, selectedYear);
-    }
+    logAttendancePerf('page:build-displayRows:end', {
+      selected_entity: selectedEntity,
+      selected_type: selectedMeta.type,
+      rows_count: rows.length,
+      active_employees_count: activeEmployees.length,
+      duration_ms: Math.round(getPerfNow() - startedAt),
+    });
 
-    return activeEmployees.map((employee) => ({
-      employee,
-      teamMember: null,
-    }));
-  }, [activeEmployees, selectedMeta, selectedTeam, selectedYear]);
+    return rows;
+  }, [activeEmployees, employeesWithoutTeam, selectedEntity, selectedMeta, selectedTeam, selectedYear]);
 
   const visibleEmployeeIds = useMemo(
     () => displayRows.map(({ employee }) => Number(employee.id)).filter(Number.isFinite),
@@ -808,8 +938,13 @@ export default function AttendancePage() {
 
     if (selectedMeta.type === 'team' && !visibleTeams.some((team) => Number(team.id) === selectedMeta.id)) {
       setSelectedEntity('all');
+      return;
     }
-  }, [selectedMeta.type, selectedMeta.id, activeEmployees, visibleTeams]);
+
+    if (selectedMeta.type === 'no_team' && employeesWithoutTeam.length === 0) {
+      setSelectedEntity('all');
+    }
+  }, [selectedMeta.type, selectedMeta.id, activeEmployees, employeesWithoutTeam.length, visibleTeams]);
 
   useEffect(() => {
     setSelectedEmployeeIds((current) => {
@@ -830,6 +965,7 @@ export default function AttendancePage() {
     const tableShell = tableShellRef.current;
     const horizontalScrollbar = horizontalScrollbarRef.current;
     const horizontalScrollbarContent = horizontalScrollbarContentRef.current;
+    const startedAt = getPerfNow();
 
     if (!tableShell || !horizontalScrollbar || !horizontalScrollbarContent) {
       return undefined;
@@ -866,6 +1002,13 @@ export default function AttendancePage() {
     };
 
     syncSizes();
+    logAttendancePerf('page:scrollbar-sync:init', {
+      month: currentMonthKey,
+      rows_count: displayRows.length,
+      duration_ms: Math.round(getPerfNow() - startedAt),
+      table_scroll_width: tableShell.scrollWidth,
+      table_client_width: tableShell.clientWidth,
+    });
 
     tableShell.addEventListener('scroll', handleTableShellScroll, { passive: true });
     horizontalScrollbar.addEventListener('scroll', handleHorizontalScrollbarScroll, { passive: true });
@@ -895,17 +1038,103 @@ export default function AttendancePage() {
   }, [currentMonthKey, displayRows, loading, layoutMode]);
 
   const attendanceMap = useMemo(() => {
+    const startedAt = getPerfNow();
     const map = {};
     for (const item of attendance) {
       map[`${item.employee_id}_${item.date}`] = item;
     }
+    logAttendancePerf('page:build-attendanceMap:end', {
+      records_count: attendance.length,
+      duration_ms: Math.round(getPerfNow() - startedAt),
+    });
     return map;
   }, [attendance]);
+
+  const attendanceByEmployeeId = useMemo(() => {
+    const map = new Map();
+    for (const item of attendance) {
+      const employeeId = Number(item.employee_id);
+      const current = map.get(employeeId);
+      if (current) {
+        current[item.date] = item;
+      } else {
+        map.set(employeeId, { [item.date]: item });
+      }
+    }
+    return map;
+  }, [attendance]);
+
+  const pendingChangesByEmployeeId = useMemo(() => {
+    const map = new Map();
+    for (const value of Object.values(pendingChanges)) {
+      const employeeId = Number(value.employee_id);
+      const current = map.get(employeeId);
+      if (current) {
+        current[value.date] = value;
+      } else {
+        map.set(employeeId, { [value.date]: value });
+      }
+    }
+    return map;
+  }, [pendingChanges]);
 
   const getAtt = (employeeId, date) => {
     const key = `${employeeId}_${date}`;
     return pendingChanges[key] !== undefined ? pendingChanges[key] : attendanceMap[key];
   };
+
+  const attendanceRowsData = useMemo(
+    () => {
+      const startedAt = getPerfNow();
+      const previousCache = attendanceRowsCacheRef.current;
+      const nextCache = new Map();
+      const rows = displayRows.map(({ employee, teamMember }) => {
+        const employeeId = Number(employee.id);
+        const baseAttendance = attendanceByEmployeeId.get(employeeId) || EMPTY_ROW_ATTENDANCE;
+        const pendingAttendance = pendingChangesByEmployeeId.get(employeeId) || EMPTY_ROW_ATTENDANCE;
+        const memberRecords = dayKeys.map((dateStr) =>
+          pendingAttendance[dateStr] !== undefined ? pendingAttendance[dateStr] : baseAttendance[dateStr]
+        );
+        const effectiveAttendance = pendingAttendance === EMPTY_ROW_ATTENDANCE
+          ? baseAttendance
+          : { ...baseAttendance, ...pendingAttendance };
+        const totals = calculateAttendanceTotals(memberRecords, attendanceSettings.baseHours);
+        const previousRow = previousCache.get(employeeId);
+
+        if (
+          previousRow &&
+          previousRow.employee === employee &&
+          previousRow.teamMember === teamMember &&
+          previousRow.effectiveAttendance === effectiveAttendance &&
+          previousRow.totals?.totalHours === totals.totalHours &&
+          previousRow.totals?.standardHours === totals.standardHours
+        ) {
+          nextCache.set(employeeId, previousRow);
+          return previousRow;
+        }
+
+        const nextRow = {
+          employee,
+          teamMember,
+          effectiveAttendance,
+          totals,
+        };
+        nextCache.set(employeeId, nextRow);
+        return nextRow;
+      });
+
+      attendanceRowsCacheRef.current = nextCache;
+      logAttendancePerf('page:calculate-totals:end', {
+        rows_count: rows.length,
+        cells_count: rows.length * dayKeys.length,
+        days_count: dayKeys.length,
+        duration_ms: Math.round(getPerfNow() - startedAt),
+      });
+
+      return rows;
+    },
+    [attendanceByEmployeeId, attendanceSettings.baseHours, dayKeys, displayRows, pendingChangesByEmployeeId]
+  );
 
   function getInputDraftKey(employeeId, date, field = 'main') {
     return `${employeeId}_${date}_${field}`;
@@ -1087,14 +1316,29 @@ export default function AttendancePage() {
     return !attendanceEntry || isEffectivelyEmptyAttendanceEntry(attendanceEntry);
   }
 
-  function handleAttendanceCellFocus(date) {
-    setBulkTargetDate(date);
-  }
+  useEffect(() => {
+    if (directoryLoading || attendanceLoading) {
+      return;
+    }
 
-  function handleGridInputFocus(date, event) {
+    logAttendancePerf('page:render-table:ready', {
+      month: currentMonthKey,
+      employees_count: activeEmployees.length,
+      rows_count: displayRows.length,
+      days_count: dayKeys.length,
+      cells_count: displayRows.length * dayKeys.length,
+      duration_ms: Math.round(getPerfNow() - pageLoadStartedAtRef.current),
+    });
+  }, [activeEmployees.length, attendanceLoading, currentMonthKey, dayKeys.length, directoryLoading, displayRows.length]);
+
+  const handleAttendanceCellFocus = useCallback((date) => {
+    setBulkTargetDate(date);
+  }, []);
+
+  const handleGridInputFocus = useCallback((date, event) => {
     handleAttendanceCellFocus(date);
     selectAllInputText(event);
-  }
+  }, [handleAttendanceCellFocus]);
 
   function showBulkApplyFeedback(message) {
     if (bulkFeedbackTimeoutRef.current) {
@@ -1717,10 +1961,14 @@ export default function AttendancePage() {
     [displayRows, quickEntryDate, pendingChanges, attendance]
   );
 
+  const selectedEmployeeIdsSet = useMemo(
+    () => new Set(selectedEmployeeIds.map((employeeId) => Number(employeeId))),
+    [selectedEmployeeIds]
+  );
+
   function getAttendancePrintRows(mode = 'all') {
-    if (mode === 'selected' && selectedEmployeeIds.length > 0) {
-      const selectedSet = new Set(selectedEmployeeIds.map((id) => Number(id)));
-      return displayRows.filter(({ employee }) => selectedSet.has(Number(employee.id)));
+    if (mode === 'selected' && selectedEmployeeIdsSet.size > 0) {
+      return displayRows.filter(({ employee }) => selectedEmployeeIdsSet.has(Number(employee.id)));
     }
     return displayRows;
   }
@@ -1735,6 +1983,8 @@ export default function AttendancePage() {
     const scopeLabel =
       selectedMeta.type === 'team' && selectedTeam
         ? selectedTeam.name
+        : selectedMeta.type === 'no_team'
+        ? 'Senza squadra'
         : selectedMeta.type === 'employee' && displayRows[0]?.employee
         ? `${displayRows[0].employee.first_name} ${displayRows[0].employee.last_name}`
         : 'mensili';
@@ -1746,6 +1996,15 @@ export default function AttendancePage() {
     await flushPendingChanges();
     setPrintSelectionMode(mode === 'selected' && selectedEmployeeIds.length > 0 ? 'selected' : 'all');
     setShowPrintPreview(true);
+    await new Promise((resolve) => {
+      if (typeof window === 'undefined') {
+        resolve();
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(resolve);
+      });
+    });
   }
 
   async function handlePreviewPdf(mode = 'all') {
@@ -1783,6 +2042,7 @@ export default function AttendancePage() {
   }
 
   async function handleSavePdf(mode = 'all') {
+    await ensurePrintPreviewVisible(mode);
     const printArea = printAreaRef.current;
     if (!printArea) {
       alert('Anteprima PDF non disponibile');
@@ -1790,7 +2050,6 @@ export default function AttendancePage() {
     }
 
     try {
-      await ensurePrintPreviewVisible(mode);
       const fileName = buildAttendancePdfFileName(mode);
 
       await window.api.reports.savePdf({
@@ -1816,10 +2075,23 @@ export default function AttendancePage() {
       : 'Autosave attivo';
 
   const hasPendingChanges = Object.keys(pendingChanges).length > 0;
-  const allVisibleSelected = visibleEmployeeIds.length > 0 && visibleEmployeeIds.every((employeeId) => selectedEmployeeIds.includes(employeeId));
-  const selectedPrintRows = getAttendancePrintRows('selected');
-  const activePrintRows = getAttendancePrintRows(printSelectionMode);
+  const allVisibleSelected = visibleEmployeeIds.length > 0 && visibleEmployeeIds.every((employeeId) => selectedEmployeeIdsSet.has(Number(employeeId)));
+  const selectedPrintRows = useMemo(() => getAttendancePrintRows('selected'), [displayRows, selectedEmployeeIdsSet]);
+  const activePrintRows = useMemo(() => getAttendancePrintRows(printSelectionMode), [displayRows, printSelectionMode, selectedEmployeeIdsSet]);
   const hasSelectedPrintRows = selectedPrintRows.length > 0;
+
+  useEffect(() => {
+    if (!showPrintPreview) {
+      return;
+    }
+
+    logAttendancePerf('page:print-preview:mount', {
+      month: currentMonthKey,
+      rows_count: activePrintRows.length,
+      mode: printSelectionMode,
+    });
+  }, [activePrintRows.length, currentMonthKey, printSelectionMode, showPrintPreview]);
+
   const todayKey = formatLocalDate(new Date());
   const isCompactLayout = layoutMode === 'compact';
   const thStyleLeftCurrent = isCompactLayout ? thStyleLeftCompact : thStyleLeft;
@@ -1834,6 +2106,8 @@ export default function AttendancePage() {
     !String(bulkHoursValue || '').trim() &&
     !String(bulkMarkerValue || '').trim() &&
     !String(bulkOvertimeValue || '').trim();
+  const allEmployeesCount = activeEmployees.length;
+  const ungroupedEmployeesCount = employeesWithoutTeam.length;
 
   return (
     <div className="attendance-page">
@@ -1959,7 +2233,8 @@ export default function AttendancePage() {
             value={selectedEntity}
             onChange={(event) => setSelectedEntity(event.target.value)}
           >
-            <option value="all">Tutti i dipendenti</option>
+            <option value="all">Tutti ({allEmployeesCount})</option>
+            <option value="no_team">Senza squadra ({ungroupedEmployeesCount})</option>
             <optgroup label="Dipendenti">
               {activeEmployees.map((employee) => (
                 <option key={`employee-${employee.id}`} value={`employee:${employee.id}`}>
@@ -1970,7 +2245,7 @@ export default function AttendancePage() {
             <optgroup label="Squadre">
               {visibleTeams.map((team) => (
                 <option key={`team-${team.id}`} value={`team:${team.id}`}>
-                  Squadra • {team.name}
+                  Squadra • {team.name} ({visibleTeamCounts.get(Number(team.id)) || 0})
                 </option>
               ))}
             </optgroup>
@@ -2004,6 +2279,27 @@ export default function AttendancePage() {
               {selectedTeam.notes}
             </div>
           ) : null}
+        </div>
+      ) : selectedMeta.type === 'no_team' ? (
+        <div className="panel panel-section" style={{ padding: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+            <div>
+              <div className="page-kicker" style={{ marginBottom: 6 }}>Contesto filtro</div>
+              <div style={{ fontSize: 24, fontWeight: 800 }}>Dipendenti senza squadra</div>
+              <div style={{ color: '#667085', marginTop: 6 }}>
+                Visualizzi solo i dipendenti attivi che non risultano assegnati ad alcuna squadra.
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
+                {displayRows.length} dipendenti visibili
+              </span>
+              <span className="soft-chip" style={{ background: 'rgba(20, 33, 61, 0.06)', color: '#314762' }}>
+                Filtro senza squadra
+              </span>
+            </div>
+          </div>
         </div>
       ) : null}
 
@@ -2180,7 +2476,16 @@ export default function AttendancePage() {
       </div>
 
       {loading ? (
-        <div>Caricamento...</div>
+        <div className="panel panel-section" style={{ padding: 18 }}>
+          <div style={{ display: 'grid', gap: 6 }}>
+            <strong>{loadingMessage}</strong>
+            <span style={{ color: '#667085' }}>
+              {directoryLoading
+                ? 'Sto caricando dipendenti, squadre e impostazioni del foglio presenze.'
+                : 'Sto caricando le presenze del mese selezionato.'}
+            </span>
+          </div>
+        </div>
       ) : (
         <div className={`attendance-table-region ${isCompactLayout ? 'attendance-table-region--compact' : ''}`}>
           <div
@@ -2236,10 +2541,7 @@ export default function AttendancePage() {
               </tr>
             </thead>
             <tbody>
-              {displayRows.map(({ employee, teamMember }) => {
-                const memberRecords = daysInMonth.map((day) => getAtt(employee.id, formatDate(day)));
-                const totals = calculateAttendanceTotals(memberRecords, attendanceSettings.baseHours);
-
+              {attendanceRowsData.map(({ employee, teamMember, effectiveAttendance, totals }) => {
                 return (
                   <tr key={employee.id}>
                     <td style={tdStyleLeftCurrent}>
@@ -2260,9 +2562,9 @@ export default function AttendancePage() {
                       </div>
                     </td>
 
-                    {daysInMonth.map((day) => {
-                      const dateStr = formatDate(day);
-                      const att = getAtt(employee.id, dateStr);
+                    {daysInMonth.map((day, index) => {
+                      const dateStr = dayKeys[index];
+                      const att = effectiveAttendance[dateStr];
                       const isSpecial = att?.status && att.status !== 'presente' && att.status !== 'assente';
                       const specialOpt = getMainTypeMeta(att?.status);
                       const markerMeta = getMarkerMeta(att?.marker_code, availableMarkers);
@@ -2496,6 +2798,8 @@ export default function AttendancePage() {
         scopeLabel={
           selectedMeta.type === 'team'
             ? selectedTeam?.name || 'Squadra'
+            : selectedMeta.type === 'no_team'
+            ? 'Dipendenti senza squadra'
             : selectedMeta.type === 'employee'
             ? displayRows[0]?.employee
               ? `${displayRows[0].employee.first_name} ${displayRows[0].employee.last_name}`
@@ -2514,41 +2818,43 @@ export default function AttendancePage() {
         markers={activeMarkers}
       />
 
-      <div
-        className="panel panel-section"
-        style={{
-          padding: 18,
-          display: showPrintPreview ? 'grid' : 'none',
-          gap: 14,
-        }}
-      >
-        <div className="no-print" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <div className="page-kicker" style={{ marginBottom: 6 }}>Anteprima PDF</div>
-            <div style={{ color: '#667085' }}>
-              Questa area riproduce il layout usato per PDF e stampa del foglio presenze.
+      {showPrintPreview ? (
+        <div
+          className="panel panel-section"
+          style={{
+            padding: 18,
+            display: 'grid',
+            gap: 14,
+          }}
+        >
+          <div className="no-print" style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <div className="page-kicker" style={{ marginBottom: 6 }}>Anteprima PDF</div>
+              <div style={{ color: '#667085' }}>
+                Questa area riproduce il layout usato per PDF e stampa del foglio presenze.
+              </div>
             </div>
+            <button className="button-secondary" onClick={() => setShowPrintPreview(false)}>
+              Chiudi anteprima
+            </button>
           </div>
-          <button className="button-secondary" onClick={() => setShowPrintPreview(false)}>
-            Chiudi anteprima
-          </button>
-        </div>
 
-        <AttendancePrintAreaPaginated
-          ref={printAreaRef}
-          currentMonth={currentMonth}
-          baseHours={attendanceSettings.baseHours}
-          hoursFormat={attendanceSettings.hoursFormat}
-          markers={availableMarkers}
-          selectedMeta={selectedMeta}
-          selectedTeam={selectedTeam}
-          displayRows={activePrintRows}
-          modeLabel={getAttendancePrintModeLabel(printSelectionMode)}
-          daysInMonth={daysInMonth}
-          dayInfoMap={dayInfoMap}
-          getAtt={getAtt}
-        />
-      </div>
+          <AttendancePrintAreaPaginated
+            ref={printAreaRef}
+            currentMonth={currentMonth}
+            baseHours={attendanceSettings.baseHours}
+            hoursFormat={attendanceSettings.hoursFormat}
+            markers={availableMarkers}
+            selectedMeta={selectedMeta}
+            selectedTeam={selectedTeam}
+            displayRows={activePrintRows}
+            modeLabel={getAttendancePrintModeLabel(printSelectionMode)}
+            daysInMonth={daysInMonth}
+            dayInfoMap={dayInfoMap}
+            getAtt={getAtt}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
