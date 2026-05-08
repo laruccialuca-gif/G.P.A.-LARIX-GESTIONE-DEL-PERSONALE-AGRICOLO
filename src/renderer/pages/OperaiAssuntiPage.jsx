@@ -58,6 +58,20 @@ function matchEmployeeFilter(employee, filters) {
   return true;
 }
 
+const nameButtonStyle = {
+  background: 'transparent',
+  border: 'none',
+  padding: 0,
+  margin: 0,
+  font: 'inherit',
+  color: '#0f172a',
+  fontWeight: 700,
+  cursor: 'pointer',
+  textDecoration: 'underline',
+  textUnderlineOffset: 3,
+  textDecorationColor: 'rgba(15, 23, 42, 0.25)',
+};
+
 export default function OperaiAssuntiPage() {
   const [employees, setEmployees] = useState([]);
   const [settings, setSettings] = useState(null);
@@ -888,20 +902,6 @@ const td = {
 
 const selectedRowStyle = {
   background: 'rgba(22, 163, 74, 0.06)',
-};
-
-const nameButtonStyle = {
-  background: 'transparent',
-  border: 'none',
-  padding: 0,
-  margin: 0,
-  font: 'inherit',
-  color: '#0f172a',
-  fontWeight: 700,
-  cursor: 'pointer',
-  textDecoration: 'underline',
-  textUnderlineOffset: 3,
-  textDecorationColor: 'rgba(15, 23, 42, 0.25)',
 };
 
 const drawerBackdropStyle = {

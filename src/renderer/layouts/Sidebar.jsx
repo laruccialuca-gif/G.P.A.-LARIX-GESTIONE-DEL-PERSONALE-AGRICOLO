@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import larixLogo from '../../assets/larix-logo.png';
 import { useAuth } from '../context/AuthContext';
@@ -83,8 +83,37 @@ export default function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { currentUser, logout } = useAuth();
+  const [pendingPath, setPendingPath] = useState('');
 
   const isActive = (path) => location.pathname === path;
+
+  useEffect(() => {
+    setPendingPath('');
+  }, [location.pathname]);
+
+  function handleLinkClick(event, path) {
+    if (path === location.pathname) {
+      return;
+    }
+
+    if (pendingPath) {
+      event.preventDefault();
+      console.info('[route-lifecycle] navigation skipped while transition pending', {
+        currentPath: location.pathname,
+        pendingPath,
+        attemptedPath: path,
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    setPendingPath(path);
+    console.info('[route-lifecycle] navigation requested', {
+      from: location.pathname,
+      to: path,
+      timestamp: new Date().toISOString(),
+    });
+  }
 
   const visibleLinks = [
     ...links,
@@ -110,6 +139,9 @@ export default function Sidebar() {
             key={link.path}
             to={link.path}
             className={`sidebar-link ${isActive(link.path) ? 'sidebar-link-active' : ''}`}
+            aria-disabled={!!pendingPath && !isActive(link.path)}
+            onClick={(event) => handleLinkClick(event, link.path)}
+            style={pendingPath && !isActive(link.path) ? { pointerEvents: 'none', opacity: 0.72 } : undefined}
           >
             <span className="sidebar-link-label">
               <span className="sidebar-link-icon">{link.icon}</span>

@@ -611,7 +611,21 @@ export default function EmployeesPage() {
   const [busyEmployeeIds, setBusyEmployeeIds] = useState([]);
   const [busyTeamIds, setBusyTeamIds] = useState([]);
   const pdfImportOperationRef = useRef({ id: 0, cancelled: false });
+  const mountedRef = useRef(false);
   const requestedEmployeeId = searchParams.get('employee');
+
+  useEffect(() => {
+    mountedRef.current = true;
+    console.info('[route-lifecycle] enter', { page: 'employees' });
+    return () => {
+      mountedRef.current = false;
+      pdfImportOperationRef.current = {
+        id: pdfImportOperationRef.current.id,
+        cancelled: true,
+      };
+      console.info('[route-lifecycle] leave', { page: 'employees' });
+    };
+  }, []);
 
   function setEmployeeBusy(employeeId, busy) {
     setBusyEmployeeIds((current) => {
@@ -676,7 +690,7 @@ export default function EmployeesPage() {
   async function loadDirectoryData({ showGlobalLoading = false, reason = 'manual' } = {}) {
     const startedAt = performance.now();
     logEmployeesPerf('loadDirectoryData:start', { reason, showGlobalLoading });
-    if (showGlobalLoading) {
+    if (showGlobalLoading && mountedRef.current) {
       setLoading(true);
     }
     try {
@@ -684,6 +698,14 @@ export default function EmployeesPage() {
         window.api.employees.list({ includeDeleted: true }),
         window.api.teams.list({ includeArchived: true }),
       ]);
+      if (!mountedRef.current) {
+        console.info('[route-lifecycle] async cancelled', {
+          page: 'employees',
+          task: 'loadDirectoryData',
+          reason,
+        });
+        return;
+      }
       setEmployees(employeeData || []);
       setTeams(teamData || []);
       logEmployeesPerf('loadDirectoryData:end', {
@@ -693,8 +715,14 @@ export default function EmployeesPage() {
         duration_ms: Math.round(performance.now() - startedAt),
       });
     } finally {
-      if (showGlobalLoading) {
+      if (showGlobalLoading && mountedRef.current) {
         setLoading(false);
+      } else if (showGlobalLoading && !mountedRef.current) {
+        console.info('[route-lifecycle] setState skipped after unmount', {
+          page: 'employees',
+          task: 'loadDirectoryData',
+          state: 'loading=false',
+        });
       }
     }
   }
@@ -706,6 +734,14 @@ export default function EmployeesPage() {
       window.api.license.getStatus(),
       window.api.settings.get(),
     ]);
+    if (!mountedRef.current) {
+      console.info('[route-lifecycle] async cancelled', {
+        page: 'employees',
+        task: 'loadAuxiliaryData',
+        reason,
+      });
+      return;
+    }
     setLicenseStatus(nextLicenseStatus || null);
     setSettings(nextSettings || null);
     logEmployeesPerf('loadAuxiliaryData:end', {
@@ -715,7 +751,9 @@ export default function EmployeesPage() {
   }
 
   async function loadData() {
-    setLoading(true);
+    if (mountedRef.current) {
+      setLoading(true);
+    }
     try {
       await Promise.all([
         loadDirectoryData({ reason: 'initial-load' }),
@@ -723,9 +761,19 @@ export default function EmployeesPage() {
       ]);
     } catch (err) {
       console.error(err);
-      alert('Errore caricamento archivio');
+      if (mountedRef.current) {
+        alert('Errore caricamento archivio');
+      }
     } finally {
-      setLoading(false);
+      if (mountedRef.current) {
+        setLoading(false);
+      } else {
+        console.info('[route-lifecycle] setState skipped after unmount', {
+          page: 'employees',
+          task: 'loadData',
+          state: 'loading=false',
+        });
+      }
     }
   }
 
@@ -1039,7 +1087,7 @@ export default function EmployeesPage() {
         targetYear: getTargetYear(),
       });
       const isCurrentOperation = pdfImportOperationRef.current.id === operationId;
-      if (!isCurrentOperation || pdfImportOperationRef.current.cancelled) {
+      if (!mountedRef.current || !isCurrentOperation || pdfImportOperationRef.current.cancelled) {
         console.info('[pdf-import] import ignored after cancel', { operationId });
         return;
       }
@@ -1053,7 +1101,7 @@ export default function EmployeesPage() {
       setPdfImportData(result);
       setShowPdfImport(true);
     } catch (err) {
-      if (pdfImportOperationRef.current.id !== operationId || pdfImportOperationRef.current.cancelled) {
+      if (!mountedRef.current || pdfImportOperationRef.current.id !== operationId || pdfImportOperationRef.current.cancelled) {
         console.info('[pdf-import] import ignored after cancel', { operationId });
         return;
       }
@@ -1071,11 +1119,17 @@ export default function EmployeesPage() {
         alert('Errore lettura PDF: ' + errorMessage);
       }
     } finally {
-      if (pdfImportOperationRef.current.id === operationId) {
+      if (mountedRef.current && pdfImportOperationRef.current.id === operationId) {
         setPdfImportLoading(false);
         if (!pdfImportOperationRef.current.cancelled) {
           setPdfImportStatus('');
         }
+      } else if (!mountedRef.current) {
+        console.info('[route-lifecycle] setState skipped after unmount', {
+          page: 'employees',
+          task: 'handleOpenPdfImport',
+          operationId,
+        });
       }
     }
   }

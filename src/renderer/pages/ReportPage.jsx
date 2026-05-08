@@ -447,6 +447,13 @@ function getHoursFormat(settings) {
   return settings?.general?.attendance_hours_format === 'hours_minutes' ? 'hours_minutes' : 'decimal';
 }
 
+const rp2DayIndicatorSlotStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  minHeight: 26,
+};
+
 export default function ReportPage() {
   const { selectedYear, setSelectedYear, yearOptions } = useYearContext();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -456,7 +463,8 @@ export default function ReportPage() {
   const [attendance, setAttendance] = useState([]);
   const [settings, setSettings] = useState(null);
   const [selectedEntity, setSelectedEntity] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [directoryLoading, setDirectoryLoading] = useState(true);
+  const [attendanceLoading, setAttendanceLoading] = useState(true);
 
   const [datore, setDatore] = useState('');
   const [importoBustaPaga, setImportoBustaPaga] = useState('');
@@ -503,6 +511,7 @@ export default function ReportPage() {
   const [pendingSavePrompt, setPendingSavePrompt] = useState(null);
   const [importedFinancialMovementIds, setImportedFinancialMovementIds] = useState([]);
   const autosaveTimeoutRef = useRef(null);
+  const mountedRef = useRef(false);
 
   const [teamPeriodStart, setTeamPeriodStart] = useState(formatLocalDate(startOfMonth(currentMonth)));
   const [teamPeriodEnd, setTeamPeriodEnd] = useState(formatLocalDate(endOfMonth(currentMonth)));
@@ -566,6 +575,32 @@ export default function ReportPage() {
   }, [isTeamMode, currentMonth, teamPeriodStart, teamPeriodEnd]);
 
   const queryMonthsKey = queryMonths.map((item) => item.key).join('|');
+  const loading = directoryLoading || attendanceLoading;
+
+  function logReportPerf(stage, details = {}) {
+    console.info('[report-perf]', stage, {
+      ...details,
+      currentMonth: monthString(currentMonth),
+      selectedEntity: selectedEntity || null,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    console.info('[route-lifecycle] enter Report', {
+      pathname: window.location.pathname,
+      timestamp: new Date().toISOString(),
+    });
+
+    return () => {
+      mountedRef.current = false;
+      console.info('[route-lifecycle] leave Report', {
+        pathname: window.location.pathname,
+        timestamp: new Date().toISOString(),
+      });
+    };
+  }, []);
 
   useEffect(() => {
     setTeamPeriodStart(formatLocalDate(startOfMonth(currentMonth)));
@@ -659,19 +694,31 @@ export default function ReportPage() {
 
   async function refreshFinancialImportCounts(targetEmployeeId = employee?.id) {
     if (!targetEmployeeId || !window.api.financialMovements) {
-      setFinancialImportCounts({ advance: 0, installment: 0 });
+      if (mountedRef.current) {
+        setFinancialImportCounts({ advance: 0, installment: 0 });
+      }
       return;
     }
 
     try {
       const counts = await window.api.financialMovements.countAvailable(targetEmployeeId);
+      if (!mountedRef.current) {
+        console.info('[route-lifecycle] setState skipped after unmount', {
+          page: 'Report',
+          source: 'refreshFinancialImportCounts',
+        });
+        return;
+      }
+
       setFinancialImportCounts({
         advance: Number(counts?.advance || 0),
         installment: Number(counts?.installment || 0),
       });
     } catch (err) {
       console.error(err);
-      setFinancialImportCounts({ advance: 0, installment: 0 });
+      if (mountedRef.current) {
+        setFinancialImportCounts({ advance: 0, installment: 0 });
+      }
     }
   }
 
@@ -683,36 +730,113 @@ export default function ReportPage() {
     refreshFinancialImportCounts(employee.id);
   }, [isEmployeeMode, employee?.id, currentMonth]);
 
-  async function loadData() {
-    setLoading(true);
-    try {
-      const attendanceChunks = await Promise.all(
-        queryMonths.map((entry) => window.api.attendance.listByMonth(entry.year, entry.month))
-      );
+  useEffect(() => {
+    let cancelled = false;
+    const startedAt = Date.now();
+    logReportPerf('page:directory-load:start');
 
-      const [employeeData, teamData, settingsData] = await Promise.all([
-        window.api.employees.list(),
-        window.api.teams.list(),
-        window.api.settings.get(),
-      ]);
+    async function loadDirectoryData() {
+      if (mountedRef.current) {
+        setDirectoryLoading(true);
+      }
 
-      setEmployees(employeeData || []);
-      setTeams(teamData || []);
-      setSettings(settingsData || null);
-      setAttendance(attendanceChunks.flat());
-    } catch (err) {
-      console.error(err);
-      alert('Errore caricamento report');
-    } finally {
-      setLoading(false);
+      try {
+        const [employeeData, teamData, settingsData] = await Promise.all([
+          window.api.employees.list(),
+          window.api.teams.list(),
+          window.api.settings.get(),
+        ]);
+
+        if (cancelled || !mountedRef.current) {
+          console.info('[route-lifecycle] async cancelled', {
+            page: 'Report',
+            source: 'loadDirectoryData',
+          });
+          return;
+        }
+
+        setEmployees(employeeData || []);
+        setTeams(teamData || []);
+        setSettings(settingsData || null);
+        logReportPerf('page:directory-load:end', {
+          duration_ms: Date.now() - startedAt,
+          employees_count: Array.isArray(employeeData) ? employeeData.length : 0,
+          teams_count: Array.isArray(teamData) ? teamData.length : 0,
+        });
+      } catch (err) {
+        console.error(err);
+        if (!cancelled && mountedRef.current) {
+          alert('Errore caricamento report');
+        }
+      } finally {
+        if (!cancelled && mountedRef.current) {
+          setDirectoryLoading(false);
+        }
+      }
     }
-  }
+
+    loadDirectoryData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
-    loadData();
+    let cancelled = false;
+    const startedAt = Date.now();
+    logReportPerf('page:attendance-load:start', {
+      months_count: queryMonths.length,
+      month_keys: queryMonths.map((entry) => entry.key),
+    });
+
+    async function loadAttendanceData() {
+      if (mountedRef.current) {
+        setAttendanceLoading(true);
+      }
+
+      try {
+        const attendanceChunks = await Promise.all(
+          queryMonths.map((entry) => window.api.attendance.listByMonth(entry.year, entry.month))
+        );
+
+        if (cancelled || !mountedRef.current) {
+          console.info('[route-lifecycle] async cancelled', {
+            page: 'Report',
+            source: 'loadAttendanceData',
+          });
+          return;
+        }
+
+        const flattenedAttendance = attendanceChunks.flat();
+        setAttendance(flattenedAttendance);
+        logReportPerf('page:attendance-load:end', {
+          duration_ms: Date.now() - startedAt,
+          months_count: queryMonths.length,
+          attendance_count: flattenedAttendance.length,
+        });
+      } catch (err) {
+        console.error(err);
+        if (!cancelled && mountedRef.current) {
+          alert('Errore caricamento report');
+        }
+      } finally {
+        if (!cancelled && mountedRef.current) {
+          setAttendanceLoading(false);
+        }
+      }
+    }
+
+    loadAttendanceData();
+
+    return () => {
+      cancelled = true;
+    };
   }, [queryMonthsKey]);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function loadPayrollContext() {
       function splitDebtPlansByStatus(plans = []) {
         return plans.reduce(
@@ -829,6 +953,7 @@ export default function ReportPage() {
       }
 
       if (!isEmployeeMode || !employee) {
+        if (!mountedRef.current || cancelled) return;
         applyEditorState(buildSavedStateFromPreviousBalance(null));
         setSavedEditorState(null);
         setSavedEconomicSnapshot(null);
@@ -841,6 +966,13 @@ export default function ReportPage() {
 
       try {
         const existing = await window.api.payroll.getRecord(employee.id, currentMonthKey);
+        if (cancelled || !mountedRef.current) {
+          console.info('[route-lifecycle] async cancelled', {
+            page: 'Report',
+            source: 'loadPayrollContext:getRecord',
+          });
+          return;
+        }
 
         if (existing) {
           const nextSavedState = buildSavedStateFromRecord(existing);
@@ -875,6 +1007,13 @@ export default function ReportPage() {
         }
 
         const previous = await window.api.payroll.getPreviousBalance(employee.id, currentMonthKey);
+        if (cancelled || !mountedRef.current) {
+          console.info('[route-lifecycle] async cancelled', {
+            page: 'Report',
+            source: 'loadPayrollContext:getPreviousBalance',
+          });
+          return;
+        }
         const nextSavedState = buildSavedStateFromPreviousBalance(previous);
         applyEditorState(nextSavedState);
         setSavedEditorState(nextSavedState);
@@ -906,38 +1045,70 @@ export default function ReportPage() {
         setPreviousBalanceWarning('');
       } catch (err) {
         console.error(err);
-        alert('Errore caricamento saldo precedente');
+        if (!cancelled && mountedRef.current) {
+          alert('Errore caricamento saldo precedente');
+        }
       }
     }
 
     loadPayrollContext();
+    return () => {
+      cancelled = true;
+    };
   }, [isEmployeeMode, employee, currentMonth, defaultEmployerValue]);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function loadTeamPayroll() {
       if (!isTeamMode || !selectedTeam) {
-        setTeamPayrollMap({});
+        if (mountedRef.current) {
+          setTeamPayrollMap({});
+        }
         return;
       }
 
+      const startedAt = Date.now();
+      const rows = getTeamRows(selectedTeam, selectedYear);
+      logReportPerf('page:team-payroll-load:start', {
+        team_id: selectedTeam.id,
+        member_count: rows.length,
+      });
+
       try {
-        const rows = getTeamRows(selectedTeam, selectedYear);
         const records = await Promise.all(
           rows.map((row) => window.api.payroll.listByEmployee(row.employee_id))
         );
+        if (cancelled || !mountedRef.current) {
+          console.info('[route-lifecycle] async cancelled', {
+            page: 'Report',
+            source: 'loadTeamPayroll',
+          });
+          return;
+        }
 
         const next = {};
         rows.forEach((row, index) => {
           next[row.employee_id] = records[index] || [];
         });
         setTeamPayrollMap(next);
+        logReportPerf('page:team-payroll-load:end', {
+          team_id: selectedTeam.id,
+          member_count: rows.length,
+          duration_ms: Date.now() - startedAt,
+        });
       } catch (err) {
         console.error(err);
-        setTeamPayrollMap({});
+        if (!cancelled && mountedRef.current) {
+          setTeamPayrollMap({});
+        }
       }
     }
 
     loadTeamPayroll();
+    return () => {
+      cancelled = true;
+    };
   }, [isTeamMode, selectedTeam, currentMonth, selectedYear]);
 
   useEffect(() => {
@@ -1227,16 +1398,7 @@ export default function ReportPage() {
     }
 
     const currentMonthKey = monthString(currentMonth);
-    const employeeAttendance = attendance.filter((item) => String(item.employee_id) === String(employee.id));
-    const employeeTotals = calculateAttendanceTotals(employeeAttendance, employee?.standard_hours);
     const workedDays = employeeTotals.completeDaysTotal;
-    const dailyPay = Number(dailyPayInput || 0);
-    const standardHours = getSafeStandardHours(employee?.standard_hours);
-    const regularHourlyRate = standardHours > 0 ? dailyPay / standardHours : 0;
-    const overtimeHourlyRate = overtimeRateOverride !== '' ? (Number(overtimeRateOverride) || 0) : getEffectiveOvertimeRate(employee, settings);
-    const totalRegularPay = employeeTotals.totalRegularHours * regularHourlyRate;
-    const totalOvertimePay = employeeTotals.totalOvertimeHours * overtimeHourlyRate;
-    const totalCalculatedPay = totalRegularPay + totalOvertimePay;
     const normalizedAdvances = advances
       .map((advance, index) => ({
         id: advance.id || `advance-${index}`,
@@ -4673,12 +4835,6 @@ const rp2DayHeaderTopStyle = {
   justifyContent: 'center',
   gap: 0,
   minHeight: 24,
-};
-const rp2DayIndicatorSlotStyle = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  minHeight: 26,
 };
 const rp2DayHeaderLabelStyle = { fontSize: 9, lineHeight: 1.1, color: '#111827', fontWeight: 700, textTransform: 'uppercase', whiteSpace: 'nowrap' };
 const rp2DayHeaderNumberStyle = { fontSize: 12.5, lineHeight: 1.1, color: '#111827', fontWeight: 800 };
