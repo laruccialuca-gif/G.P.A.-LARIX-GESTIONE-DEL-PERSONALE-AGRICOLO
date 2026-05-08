@@ -21,9 +21,10 @@ function getRawAppVariant() {
 }
 
 function getAppVariant() {
-  const variant = getRawAppVariant();
-
-  return variant === 'demo' ? 'demo' : 'standard';
+  const runtime = getRuntimeContext();
+  if (runtime.isDemo) return 'demo';
+  if (runtime.isDev) return 'dev';
+  return 'standard';
 }
 
 function getRuntimeContext() {
@@ -59,6 +60,7 @@ function getVariantConfig() {
   if (isDemoVariant()) {
     return {
       variant: 'demo',
+      appId: 'com.company.gestionale.demo',
       packageName: 'gestionale-demo',
       appDataDirName: 'GestionaleDemo',
       legacyAppDataDirName: 'Gestionale Dipendenti Offline Demo',
@@ -68,8 +70,22 @@ function getVariantConfig() {
     };
   }
 
+  if (isDevelopmentVariant()) {
+    return {
+      variant: 'dev',
+      appId: 'com.company.gestionaledipendentioffline.dev',
+      packageName: 'gestionale-dev',
+      appDataDirName: 'GestionaleDev',
+      legacyAppDataDirName: 'Gestionale Dev',
+      productName: 'GPA 1.0.1 Dev',
+      installerBaseName: 'GPA-Dev-1.0.1',
+      legacyPackageUserDataDirName: `${packageJson.name}-dev`,
+    };
+  }
+
   return {
     variant: 'standard',
+    appId: 'com.company.gestionaledipendentioffline',
     packageName: 'gestionale',
     appDataDirName: 'Gestionale',
     legacyAppDataDirName: 'Gestionale Dipendenti Offline',

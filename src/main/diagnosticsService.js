@@ -6,6 +6,7 @@ const settingsService = require('./settingsService');
 const backupService = require('./backupService');
 const licenseService = require('./licenseService');
 const { getDb, getDbPath, runIntegrityCheck } = require('./db');
+const { getVariantConfig } = require('./runtimeContext');
 
 let logWriter = () => {};
 
@@ -100,6 +101,7 @@ function getEmployeeCounts() {
 }
 
 function buildReportContent() {
+  const variantConfig = getVariantConfig();
   const settingsSummary = settingsService.buildSettingsSummary();
   const licenseStatus = licenseService.getLicenseStatus();
   const backups = backupService.listBackups();
@@ -126,6 +128,9 @@ function buildReportContent() {
       '[DATI GENERALI]',
       `Versione app: ${settingsSummary.runtime_info?.app_version || app.getVersion()}`,
       `App variant: ${settingsSummary.runtime_info?.app_variant || 'standard'}`,
+      `App name: ${app.getName()}`,
+      `Product name: ${variantConfig.productName}`,
+      `App ID: ${variantConfig.appId || '—'}`,
       `Sistema operativo: ${os.platform()} ${os.release()} (${os.arch()})`,
       `Data e ora: ${formatLocalDateTime(new Date())}`,
       '',
@@ -135,6 +140,7 @@ function buildReportContent() {
       `backup path: ${backupPath}`,
       `log path: ${logPath}`,
       `license path: ${licensePath}`,
+      `developer-machine path: ${licenseService.getDeveloperMachineConfigPath()}`,
       '',
       '[STATO LICENZA]',
       `status: ${licenseStatus?.code || 'non disponibile'}${licenseStatus?.label ? ` (${licenseStatus.label})` : ''}`,

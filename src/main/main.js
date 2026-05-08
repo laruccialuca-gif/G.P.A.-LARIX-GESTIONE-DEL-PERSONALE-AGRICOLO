@@ -34,6 +34,9 @@ function getResolvedUserDataPath() {
 
 function configureAppIdentity() {
   app.setName(variantConfig.productName);
+  if (typeof app.setAppUserModelId === 'function' && variantConfig.appId) {
+    app.setAppUserModelId(variantConfig.appId);
+  }
   app.setPath('userData', getResolvedUserDataPath());
 }
 
@@ -240,6 +243,7 @@ function buildAppIdentitySnapshot() {
   return {
     variant: getAppVariant(),
     app_version: app.getVersion(),
+    app_id: variantConfig.appId || '',
     app_variant: runtime.appVariant,
     is_dev: runtime.isDev,
     is_demo: runtime.isDemo,
@@ -252,6 +256,7 @@ function buildAppIdentitySnapshot() {
     app_path: app.getAppPath(),
     cwd: process.cwd(),
     packaged: runtime.isPackaged,
+    developer_machine_config_path: licenseService.getDeveloperMachineConfigPath(),
     known_user_data_paths: getKnownUserDataPaths(),
   };
 }
@@ -1249,7 +1254,9 @@ app.whenReady().then(async () => {
   await backupService.checkAndHandleIncompleteRestore();
   getDb();
   pdfImportService.init({ userDataDir: app.getPath('userData') });
+  licenseService.setLogger(logMainProcessEvent);
   const bootRuntime = getRuntimeContext();
+  const developerModeInfo = licenseService.getDeveloperModeInfo();
   logMainProcessEvent('bootstrap:runtime-info', {
     ...buildAppIdentitySnapshot(),
     runtime_context: bootRuntime,
@@ -1258,17 +1265,22 @@ app.whenReady().then(async () => {
     database_path: getDbPath(),
     backup_path: backupService.getEffectiveBackupDir(),
     license_path: licenseService.getLicenseFilePath(),
+    developer_mode: developerModeInfo,
     preload_path: getPreloadPath(),
     preload_exists: fs.existsSync(getPreloadPath()),
     renderer: getRendererAssetInfo(),
   });
-  if (bootRuntime.isDev && !bootRuntime.isDemo) {
-    logMainProcessEvent('bootstrap:dev-license-bypass', {
+  if (developerModeInfo.enabled) {
+    logMainProcessEvent('bootstrap:developer-license-bypass', {
       appVariant: bootRuntime.appVariant,
       isDev: bootRuntime.isDev,
       isDemo: bootRuntime.isDemo,
       isProduction: bootRuntime.isProduction,
-      message: 'DEV MODE - license bypass attivo',
+      source: developerModeInfo.source,
+      configPath: developerModeInfo.configPath,
+      message: developerModeInfo.source === 'development-variant'
+        ? 'DEV MODE - license bypass attivo'
+        : 'Developer machine whitelist attiva',
     });
   }
   if (variantConfig.variant === 'demo') {
@@ -1313,7 +1325,6 @@ app.whenReady().then(async () => {
     }
   });
   await backupService.maybeRunAutomaticBackup();
-  licenseService.setLogger(logMainProcessEvent);
   logMainProcessEvent('bootstrap:license-config', licenseService.getPublicKeyInfo());
   await licenseService.bootstrapLicenseMonitoring();
 

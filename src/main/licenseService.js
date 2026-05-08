@@ -10,6 +10,7 @@ const { getRawAppVariant, getRuntimeContext, isDemoVariant, isDevelopmentVariant
 
 const LICENSE_FILE_NAME = 'license.dat';
 const LICENSE_PUBLIC_KEY_FILE = 'license-public.pem';
+const DEVELOPER_MACHINE_FILE = 'developer-machine.json';
 const LOCAL_TEST_LICENSE_KEY = 'GPA-TEST-2026';
 const LOCAL_LICENSE_SCHEMA_VERSION = 3;
 const STORAGE_PREFIX = 'GPA-LICENSE-V1:';
@@ -45,13 +46,250 @@ function isDevLicenseBypassEnabled() {
   return runtime.isDev && !runtime.isDemo;
 }
 
-function getDevBypassStatus() {
+function isEnvDeveloperBypassEnabled() {
+  return ['1', 'true', 'yes', 'on'].includes(String(process.env.GPA_DEV_BYPASS || '').trim().toLowerCase());
+}
+
+function getDeveloperMachineConfigPath() {
+  return path.join(getConfigDir(), DEVELOPER_MACHINE_FILE);
+}
+
+function readDeveloperMachineConfig() {
+  const filePath = getDeveloperMachineConfigPath();
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8').trim();
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (error) {
+    logLicenseEvent('developer-config-read-failed', {
+      message: error?.message || String(error),
+      file_path: filePath,
+    });
+    return null;
+  }
+}
+
+function sanitizeDeveloperMachineConfig(config) {
+  if (!config || typeof config !== 'object') return null;
+  return {
+    enabled: config.enabled !== false,
+    label: String(config.label || '').trim(),
+    note: String(config.note || '').trim(),
+    machine_fingerprint: String(config.machine_fingerprint || '').trim(),
+    machine_id_hash: String(config.machine_id_hash || '').trim(),
+    allowed_hostnames: Array.isArray(config.allowed_hostnames) ? config.allowed_hostnames.map((item) => String(item || '').trim()) : [],
+    allowed_usernames: Array.isArray(config.allowed_usernames) ? config.allowed_usernames.map((item) => String(item || '').trim()) : [],
+  };
+}
+
+function matchesOptionalList(value, list) {
+  if (!Array.isArray(list) || !list.length) return true;
+  const normalizedValue = String(value || '').trim().toLowerCase();
+  return list
+    .map((item) => String(item || '').trim().toLowerCase())
+    .filter(Boolean)
+    .includes(normalizedValue);
+}
+
+function getDeveloperModeInfo() {
+  const runtime = getRuntimeContext();
+  const context = getInstallContext();
+  const configPath = getDeveloperMachineConfigPath();
+  const currentHostname = os.hostname();
+  const currentUsername = os.userInfo().username;
+
+  if (isEnvDeveloperBypassEnabled()) {
+    const result = {
+      enabled: true,
+      source: 'env:GPA_DEV_BYPASS',
+      label: 'Developer Mode',
+      configPath,
+      note: 'Bypass temporaneo locale via variabile ambiente',
+      diagnostic: {
+        app_user_data_path: app.getPath('userData'),
+        config_path: configPath,
+        config_exists: fs.existsSync(configPath),
+        hostname: currentHostname,
+        username: currentUsername,
+        machine_fingerprint: context.machine_fingerprint,
+        machine_id_hash: context.machine_id_hash,
+        env_bypass: true,
+        decision: 'ATTIVO',
+        failure_reason: '',
+      },
+    };
+    logLicenseEvent('developer-mode-eval', result.diagnostic);
+    return result;
+  }
+
+  if (runtime.isDev && !runtime.isDemo) {
+    const result = {
+      enabled: true,
+      source: 'development-variant',
+      label: 'Developer Mode',
+      configPath,
+      note: 'Bypass automatico variante sviluppo',
+      diagnostic: {
+        app_user_data_path: app.getPath('userData'),
+        config_path: configPath,
+        config_exists: fs.existsSync(configPath),
+        hostname: currentHostname,
+        username: currentUsername,
+        machine_fingerprint: context.machine_fingerprint,
+        machine_id_hash: context.machine_id_hash,
+        env_bypass: false,
+        decision: 'ATTIVO',
+        failure_reason: '',
+      },
+    };
+    logLicenseEvent('developer-mode-eval', result.diagnostic);
+    return result;
+  }
+
+  if (runtime.isDemo) {
+    const result = {
+      enabled: false,
+      source: 'demo-variant',
+      label: '',
+      configPath,
+      note: '',
+      diagnostic: {
+        app_user_data_path: app.getPath('userData'),
+        config_path: configPath,
+        config_exists: fs.existsSync(configPath),
+        hostname: currentHostname,
+        username: currentUsername,
+        machine_fingerprint: context.machine_fingerprint,
+        machine_id_hash: context.machine_id_hash,
+        env_bypass: false,
+        decision: 'NON ATTIVO',
+        failure_reason: 'demo-variant',
+      },
+    };
+    logLicenseEvent('developer-mode-eval', result.diagnostic);
+    return result;
+  }
+
+  const config = readDeveloperMachineConfig();
+  if (!config || config.enabled === false) {
+    const result = {
+      enabled: false,
+      source: config ? 'disabled-config' : 'missing-config',
+      label: '',
+      configPath,
+      note: '',
+      diagnostic: {
+        app_user_data_path: app.getPath('userData'),
+        config_path: configPath,
+        config_exists: fs.existsSync(configPath),
+        hostname: currentHostname,
+        username: currentUsername,
+        machine_fingerprint: context.machine_fingerprint,
+        machine_id_hash: context.machine_id_hash,
+        env_bypass: false,
+        config_json: sanitizeDeveloperMachineConfig(config),
+        decision: 'NON ATTIVO',
+        failure_reason: config ? 'config-disabled' : 'config-missing',
+      },
+    };
+    logLicenseEvent('developer-mode-eval', result.diagnostic);
+    return result;
+  }
+
+  const expectedFingerprint = String(config.machine_fingerprint || '').trim().toLowerCase();
+  const expectedMachineIdHash = String(config.machine_id_hash || '').trim().toLowerCase();
+
+  const fingerprintMatches = expectedFingerprint && expectedFingerprint === String(context.machine_fingerprint || '').trim().toLowerCase();
+  const machineIdHashMatches = !expectedMachineIdHash || expectedMachineIdHash === String(context.machine_id_hash || '').trim().toLowerCase();
+  const hostnameMatches = matchesOptionalList(currentHostname, config.allowed_hostnames);
+  const usernameMatches = matchesOptionalList(currentUsername, config.allowed_usernames);
+  let failureReason = '';
+  if (!expectedFingerprint) {
+    failureReason = 'machine_fingerprint_missing_in_config';
+  } else if (!fingerprintMatches) {
+    failureReason = 'machine_fingerprint_mismatch';
+  } else if (!machineIdHashMatches) {
+    failureReason = 'machine_id_hash_mismatch';
+  } else if (!hostnameMatches) {
+    failureReason = 'hostname_mismatch';
+  } else if (!usernameMatches) {
+    failureReason = 'username_mismatch';
+  }
+
+  if (fingerprintMatches && machineIdHashMatches && hostnameMatches && usernameMatches) {
+    const result = {
+      enabled: true,
+      source: 'local-machine-whitelist',
+      label: String(config.label || '').trim() || 'Developer Mode',
+      configPath,
+      note: String(config.note || '').trim(),
+      diagnostic: {
+        app_user_data_path: app.getPath('userData'),
+        config_path: configPath,
+        config_exists: true,
+        hostname: currentHostname,
+        username: currentUsername,
+        machine_fingerprint: context.machine_fingerprint,
+        machine_id_hash: context.machine_id_hash,
+        env_bypass: false,
+        config_json: sanitizeDeveloperMachineConfig(config),
+        decision: 'ATTIVO',
+        failure_reason: '',
+      },
+    };
+    logLicenseEvent('developer-mode-eval', result.diagnostic);
+    return result;
+  }
+
+  const result = {
+    enabled: false,
+    source: 'config-mismatch',
+    label: '',
+    configPath,
+    note: '',
+    diagnostic: {
+      app_user_data_path: app.getPath('userData'),
+      config_path: configPath,
+      config_exists: true,
+      hostname: currentHostname,
+      username: currentUsername,
+      machine_fingerprint: context.machine_fingerprint,
+      machine_id_hash: context.machine_id_hash,
+      env_bypass: false,
+      expected_machine_fingerprint: String(config.machine_fingerprint || '').trim(),
+      expected_machine_id_hash: String(config.machine_id_hash || '').trim(),
+      expected_hostnames: Array.isArray(config.allowed_hostnames) ? config.allowed_hostnames : [],
+      expected_usernames: Array.isArray(config.allowed_usernames) ? config.allowed_usernames : [],
+      fingerprint_matches: fingerprintMatches,
+      machine_id_hash_matches: machineIdHashMatches,
+      hostname_matches: hostnameMatches,
+      username_matches: usernameMatches,
+      config_json: sanitizeDeveloperMachineConfig(config),
+      decision: 'NON ATTIVO',
+      failure_reason: failureReason || 'config-mismatch',
+    },
+  };
+  logLicenseEvent('developer-mode-eval', result.diagnostic);
+  return result;
+}
+
+function isDeveloperModeEnabled() {
+  return getDeveloperModeInfo().enabled;
+}
+
+function buildDeveloperBypassStatus(modeInfo) {
   const context = getInstallContext();
   const settings = settingsService.getSettings();
   const runtime = getRuntimeContext();
+  const info = modeInfo || getDeveloperModeInfo();
   const status = {
     status: 'active',
-    reason: 'dev-bypass',
+    reason: info.source || 'developer-mode',
     isValid: true,
     expires_at: null,
     daysOfflineRemaining: null,
@@ -59,16 +297,23 @@ function getDevBypassStatus() {
     label: 'Attiva',
     environment: 'development',
     license_state: 'active',
-    message: 'DEV MODE - license bypass attivo',
+    message: info.source === 'development-variant'
+      ? 'Developer Mode attivo nella variante sviluppo.'
+      : 'Licenza sviluppatore locale attiva su questo PC.',
     is_active: true,
     is_blocking: false,
     is_write_blocked: false,
-    block_reason: 'dev-bypass',
+    block_reason: info.source || 'developer-mode',
     install_context: context,
     activation_request: null,
+    is_developer_mode: true,
+    developer_mode_source: info.source || 'developer-mode',
+    developer_mode_label: info.label || 'Developer Mode',
+    developer_mode_note: info.note || '',
+    developer_mode_config_path: info.configPath || '',
     verification: {
       backend_configured: false,
-      backend_provider: 'dev-bypass',
+      backend_provider: info.source || 'developer-mode',
       backend_mandatory: false,
       last_checked_at: new Date().toISOString(),
       last_successful_at: new Date().toISOString(),
@@ -79,13 +324,13 @@ function getDevBypassStatus() {
       last_error: '',
       clock_tampering_detected_at: '',
       local_fallback_allowed: true,
-      local_fallback_reason: 'development_variant',
+      local_fallback_reason: info.source || 'developer-mode',
     },
     license: buildLicensePayload({
       company_name: settings.company.name || '',
-      activation_method: 'dev_bypass',
+      activation_method: info.source === 'development-variant' ? 'dev_bypass' : 'developer_machine_whitelist',
       license_status: 'active',
-      admin_notes: 'dev-bypass',
+      admin_notes: info.source || 'developer-mode',
     }),
     is_admin: true,
     runtime,
@@ -1296,16 +1541,21 @@ async function activateLicense(activationInput) {
 
 async function verifyLicense(options = {}) {
   const runtime = getRuntimeContext();
-  if (isDevLicenseBypassEnabled()) {
-    logLicenseEvent('dev-bypass', {
-      message: 'DEV MODE - license bypass attivo',
+  const developerMode = getDeveloperModeInfo();
+  if (developerMode.enabled) {
+    logLicenseEvent('developer-mode', {
+      message: developerMode.source === 'development-variant'
+        ? 'DEV MODE - license bypass attivo'
+        : 'Developer machine whitelist attiva',
       app_variant: runtime.appVariant,
       is_dev: runtime.isDev,
       is_demo: runtime.isDemo,
       is_production: runtime.isProduction,
+      source: developerMode.source,
+      config_path: developerMode.configPath,
       reason: options.reason || 'dev-bypass',
     });
-    return getDevBypassStatus();
+    return buildDeveloperBypassStatus(developerMode);
   }
 
   if (isDemoVariant()) {
@@ -1417,16 +1667,21 @@ async function verifyLicense(options = {}) {
 
 function getLicenseStatus() {
   const runtime = getRuntimeContext();
-  if (isDevLicenseBypassEnabled()) {
-    logLicenseEvent('dev-bypass', {
-      message: 'DEV MODE - license bypass attivo',
+  const developerMode = getDeveloperModeInfo();
+  if (developerMode.enabled) {
+    logLicenseEvent('developer-mode', {
+      message: developerMode.source === 'development-variant'
+        ? 'DEV MODE - license bypass attivo'
+        : 'Developer machine whitelist attiva',
       app_variant: runtime.appVariant,
       is_dev: runtime.isDev,
       is_demo: runtime.isDemo,
       is_production: runtime.isProduction,
+      source: developerMode.source,
+      config_path: developerMode.configPath,
       reason: 'read-status',
     });
-    return getDevBypassStatus();
+    return buildDeveloperBypassStatus(developerMode);
   }
 
   const state = readStoredLicenseState();
@@ -1444,8 +1699,9 @@ function getLicenseStatus() {
 }
 
 function enforceLicenseGuard(actionLabel = 'questa operazione') {
-  if (isDevLicenseBypassEnabled()) {
-    return getDevBypassStatus();
+  const developerMode = getDeveloperModeInfo();
+  if (developerMode.enabled) {
+    return buildDeveloperBypassStatus(developerMode);
   }
 
   const status = getLicenseStatus();
@@ -1519,6 +1775,8 @@ module.exports = {
   deactivate,
   enforceLicenseGuard,
   getInstallContext,
+  getDeveloperMachineConfigPath,
+  getDeveloperModeInfo,
   getLicenseFilePath,
   getLicenseStatus,
   getPublicKeyInfo,

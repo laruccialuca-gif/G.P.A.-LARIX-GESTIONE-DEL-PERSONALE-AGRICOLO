@@ -349,6 +349,15 @@ export default function AppLayout() {
 
             {currentUser ? (
               <div className="toolbar-group">
+                {!demoInfo?.is_demo && licenseStatus?.is_developer_mode ? (
+                  <span
+                    className="soft-chip"
+                    title={licenseStatus?.developer_mode_note || licenseStatus?.message || 'Bypass licenza locale attivo'}
+                    style={{ background: 'rgba(30, 64, 175, 0.12)', color: '#1d4ed8' }}
+                  >
+                    {licenseStatus?.developer_mode_label || 'Developer Mode'}
+                  </span>
+                ) : null}
                 <span className="soft-chip" style={{ background: 'rgba(22, 101, 52, 0.12)', color: '#166534' }}>
                   {currentUser.fullName}
                 </span>

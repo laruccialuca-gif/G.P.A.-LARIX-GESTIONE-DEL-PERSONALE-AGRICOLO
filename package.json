@@ -10,6 +10,7 @@
     "check:ocr": "node tools/check-ocr.cjs",
     "check:smart-quotes": "node tools/check-smart-quotes.cjs",
     "clean:build:artifacts": "node tools/clean-build-artifacts.mjs",
+    "cleanup:old-folders:check": "node tools/cleanup-old-project-folders.mjs --dry-run",
     "clean:demo:output": "node tools/report-demo-build.mjs --clean",
     "rebuild:native:electron": "electron-builder install-app-deps && electron-rebuild -f -w better-sqlite3",
     "verify:win:native:standard": "node tools/verify-win-native-module.mjs standard",
