@@ -480,10 +480,11 @@ function listEmployees(options = {}) {
   return result;
 }
 
-function listBasicEmployeesForAttendance(options = {}) {
+function listBasicEmployees(options = {}) {
   const startedAt = nowMs();
   const db = getDb();
   const includeDeleted = !!options.includeDeleted;
+  const includePeriods = options.includePeriods !== false;
   const whereClause = includeDeleted ? '' : 'WHERE e.is_deleted = 0';
 
   const queryStartedAt = nowMs();
@@ -501,47 +502,61 @@ function listBasicEmployeesForAttendance(options = {}) {
     ${whereClause}
     ORDER BY e.is_deleted ASC, e.last_name COLLATE NOCASE, e.first_name COLLATE NOCASE
   `).all();
-  logEmployeeRepoPerf('listBasicEmployeesForAttendance:query', {
+  logEmployeeRepoPerf('listBasic:query', {
     include_deleted: includeDeleted,
+    include_periods: includePeriods,
     row_count: rows.length,
     duration_ms: Math.round(nowMs() - queryStartedAt),
   });
 
-  const employeeIds = rows.map((row) => row.id);
-  const periodsStartedAt = nowMs();
-  const periodsMap = loadEmploymentPeriodsBasic(employeeIds);
-  logEmployeeRepoPerf('listBasicEmployeesForAttendance:periods', {
-    employee_count: employeeIds.length,
-    duration_ms: Math.round(nowMs() - periodsStartedAt),
-  });
+  const periodsMap = includePeriods ? (() => {
+    const employeeIds = rows.map((row) => row.id);
+    const periodsStartedAt = nowMs();
+    const map = loadEmploymentPeriodsBasic(employeeIds);
+    logEmployeeRepoPerf('listBasic:periods', {
+      employee_count: employeeIds.length,
+      duration_ms: Math.round(nowMs() - periodsStartedAt),
+    });
+    return map;
+  })() : null;
 
   const mapStartedAt = nowMs();
-  const result = rows.map((row) => ({
-    id: row.id,
-    first_name: row.first_name,
-    last_name: row.last_name,
-    role: row.role,
-    status: row.status,
-    is_deleted: !!row.is_deleted,
-    hire_date_from: row.hire_date_from || null,
-    hire_date_to: row.hire_date_to || null,
-    employment_periods: periodsMap.get(row.id) || [{
+  const result = rows.map((row) => {
+    const base = {
+      id: row.id,
+      first_name: row.first_name,
+      last_name: row.last_name,
+      role: row.role,
+      status: row.status,
+      is_deleted: !!row.is_deleted,
       hire_date_from: row.hire_date_from || null,
       hire_date_to: row.hire_date_to || null,
-    }],
-  }));
-  logEmployeeRepoPerf('listBasicEmployeesForAttendance:map', {
+    };
+    if (periodsMap) {
+      base.employment_periods = periodsMap.get(row.id) || [{
+        hire_date_from: row.hire_date_from || null,
+        hire_date_to: row.hire_date_to || null,
+      }];
+    }
+    return base;
+  });
+  logEmployeeRepoPerf('listBasic:map', {
     employee_count: result.length,
     duration_ms: Math.round(nowMs() - mapStartedAt),
   });
 
-  logEmployeeRepoPerf('listBasicEmployeesForAttendance:total', {
+  logEmployeeRepoPerf('listBasic:total', {
     include_deleted: includeDeleted,
+    include_periods: includePeriods,
     employee_count: result.length,
     duration_ms: Math.round(nowMs() - startedAt),
   });
 
   return result;
+}
+
+function listBasicEmployeesForAttendance(options = {}) {
+  return listBasicEmployees(options);
 }
 
 function getEmployeeById(id, options = {}) {
@@ -1547,6 +1562,7 @@ module.exports = {
   getEmployeeById,
   getEmploymentPeriodHireDocument,
   getHireDocument,
+  listBasicEmployees,
   listBasicEmployeesForAttendance,
   listEmploymentYears,
   listEmployees,

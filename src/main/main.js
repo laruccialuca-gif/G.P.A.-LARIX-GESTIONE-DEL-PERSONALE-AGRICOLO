@@ -1644,6 +1644,21 @@ app.whenReady().then(async () => {
     });
     return result;
   });
+  ipcMain.handle('employees:listBasic', async (_, options) => {
+    const startedAt = Date.now();
+    logMainProcessEvent('employees:listBasic:start', {
+      includeDeleted: !!options?.includeDeleted,
+      includePeriods: options?.includePeriods !== false,
+    });
+    const result = employeeRepo.listBasicEmployees(options);
+    logMainProcessEvent('employees:listBasic:end', {
+      includeDeleted: !!options?.includeDeleted,
+      includePeriods: options?.includePeriods !== false,
+      count: Array.isArray(result) ? result.length : 0,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  });
   ipcMain.handle('employees:getById', async (_, id, options) => {
     const startedAt = Date.now();
     logMainProcessEvent('employees:getById:start', { id: Number(id), includeDeleted: !!options?.includeDeleted });

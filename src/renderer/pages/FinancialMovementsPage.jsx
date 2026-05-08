@@ -85,12 +85,19 @@ export default function FinancialMovementsPage() {
 
   async function loadBaseData() {
     setLoading(true);
+    const __t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     try {
-      const [employeeRows, teamRows, settingsData] = await Promise.all([
-        window.api.employees.list(),
-        window.api.teams.list(),
-        window.api.settings.get(),
-      ]);
+      const __empT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const employeesPromise = window.api.employees.listBasic({ includePeriods: false });
+      const teamsPromise = window.api.teams.list();
+      const settingsPromise = window.api.settings.get();
+      const employeeRows = await employeesPromise;
+      const __empMs = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - __empT0;
+      console.info('[page-perf] financial:employees-load:end', {
+        count: Array.isArray(employeeRows) ? employeeRows.length : 0,
+        duration_ms: Math.round(__empMs),
+      });
+      const [teamRows, settingsData] = await Promise.all([teamsPromise, settingsPromise]);
       setEmployees(employeeRows || []);
       setTeams(teamRows || []);
       setSettings(settingsData || null);
@@ -99,6 +106,8 @@ export default function FinancialMovementsPage() {
       alert('Errore caricamento dati acconti e rate');
     } finally {
       setLoading(false);
+      const __dt = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - __t0;
+      console.info('[page-perf] financial:loadBaseData:end', { duration_ms: Math.round(__dt) });
     }
   }
 
