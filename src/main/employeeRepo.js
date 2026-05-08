@@ -497,7 +497,9 @@ function listBasicEmployees(options = {}) {
       e.status,
       e.is_deleted,
       e.hire_date_from,
-      e.hire_date_to
+      e.hire_date_to,
+      e.fiscal_code,
+      e.hired_by
     FROM employees e
     ${whereClause}
     ORDER BY e.is_deleted ASC, e.last_name COLLATE NOCASE, e.first_name COLLATE NOCASE
@@ -531,6 +533,8 @@ function listBasicEmployees(options = {}) {
       is_deleted: !!row.is_deleted,
       hire_date_from: row.hire_date_from || null,
       hire_date_to: row.hire_date_to || null,
+      fiscal_code: row.fiscal_code || null,
+      hired_by: row.hired_by || null,
     };
     if (periodsMap) {
       base.employment_periods = periodsMap.get(row.id) || [{

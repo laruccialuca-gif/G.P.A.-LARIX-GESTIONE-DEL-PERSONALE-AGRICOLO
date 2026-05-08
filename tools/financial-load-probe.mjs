@@ -12,6 +12,30 @@ const ROOT = path.resolve(__dirname, '..');
 const REPORT_DIR = path.join(ROOT, 'diagnostics');
 const TIMEOUT_MS = 60000;
 
+const PAGES = {
+  financial: {
+    label: 'Acconti e Rate',
+    route: '#/acconti-rate',
+    heading: 'Acconti e Rate',
+    relevantTags: ['[employee-repo-perf] listBasic:', '[page-perf] financial:', 'employees:listBasic:start', 'employees:listBasic:end'],
+    reportPrefix: 'financial-load-probe',
+  },
+  payroll: {
+    label: 'Buste paga',
+    route: '#/buste-paga',
+    heading: 'Buste paga',
+    relevantTags: ['[employee-repo-perf]', 'listBasic:', '[page-perf] payroll:', 'employees:listBasic'],
+    reportPrefix: 'payroll-load-probe',
+  },
+};
+
+const PAGE_KEY = process.argv.find((a) => a.startsWith('--page='))?.slice('--page='.length) || 'financial';
+const PAGE = PAGES[PAGE_KEY];
+if (!PAGE) {
+  console.error(`Unknown --page value "${PAGE_KEY}". Use one of: ${Object.keys(PAGES).join(', ')}`);
+  process.exit(2);
+}
+
 const creds = {
   fullName: process.env.ATTENDANCE_DIAG_FULL_NAME || 'Diagnostic Admin',
   username: process.env.ATTENDANCE_DIAG_USERNAME || 'admin',
@@ -88,18 +112,17 @@ async function main() {
   await page.waitForFunction(() => !window.location.hash.includes('/login') && !window.location.hash.includes('/setup-admin'), null, { timeout: TIMEOUT_MS });
   await page.waitForFunction(() => Boolean(window.api?.employees?.listBasic), null, { timeout: TIMEOUT_MS });
 
-  // Navigate to Acconti e Rate
+  // Navigate to target page
   const navStartedAt = Date.now();
-  await page.evaluate(() => { window.location.hash = '#/acconti-rate'; });
+  await page.evaluate((route) => { window.location.hash = route; }, PAGE.route);
 
-  // Wait for heading and for the loading state to be over.
-  // Loading is over when the "Caricamento..." hint disappears (count text replaces it).
-  await page.waitForFunction(() => {
-    const heading = [...document.querySelectorAll('h1')].find((node) => node.textContent?.trim() === 'Acconti e Rate');
-    if (!heading) return false;
+  // Wait for heading + loading to be over (no "Caricamento..." text in body).
+  await page.waitForFunction((heading) => {
+    const found = [...document.querySelectorAll('h1, h2')].find((node) => node.textContent?.trim() === heading);
+    if (!found) return false;
     const bodyText = document.body.innerText || '';
     return !bodyText.includes('Caricamento...');
-  }, null, { timeout: TIMEOUT_MS });
+  }, PAGE.heading, { timeout: TIMEOUT_MS });
   const navDoneAt = Date.now();
   const navMs = navDoneAt - navStartedAt;
 
@@ -109,19 +132,13 @@ async function main() {
   await electronApp.close();
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const reportPath = path.join(REPORT_DIR, `financial-load-probe-${stamp}.txt`);
-  const relevantTags = [
-    '[employee-repo-perf] listBasic:',
-    '[page-perf] financial:',
-    '[main:stdout] [employee-repo-perf]',
-    'employees:listBasic:start',
-    'employees:listBasic:end',
-  ];
-  const filtered = messages.filter((line) => relevantTags.some((tag) => line.includes(tag)));
+  const reportPath = path.join(REPORT_DIR, `${PAGE.reportPrefix}-${stamp}.txt`);
+  const filtered = messages.filter((line) => PAGE.relevantTags.some((tag) => line.includes(tag)));
 
   const summary = [
-    'Acconti e Rate load probe',
+    `${PAGE.label} load probe`,
     `generated_at: ${new Date().toISOString()}`,
+    `route: ${PAGE.route}`,
     `nav_to_ready_ms: ${navMs}`,
     '',
     '--- relevant log lines ---',
@@ -131,6 +148,7 @@ async function main() {
   ].join('\n');
 
   fs.writeFileSync(reportPath, summary, 'utf8');
+  fs.writeFileSync(reportPath.replace(/\.txt$/, '-full.txt'), messages.join('\n'), 'utf8');
   console.log(`Probe report: ${reportPath}`);
   console.log(`nav_to_ready_ms = ${navMs}`);
   for (const line of filtered) console.log(line);

@@ -46,8 +46,16 @@ export default function BustePagaPage() {
 
     async function loadData() {
       setLoading(true);
+      const __nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const __t0 = __nowMs();
       try {
-        const employeeData = await window.api.employees.list({ includeDeleted: true });
+        const __empT0 = __nowMs();
+        const employeeData = await window.api.employees.listBasic({ includeDeleted: true });
+        const __empMs = __nowMs() - __empT0;
+        console.info('[page-perf] payroll:employees-load:end', {
+          count: Array.isArray(employeeData) ? employeeData.length : 0,
+          duration_ms: Math.round(__empMs),
+        });
         if (cancelled) return;
 
         const normalizedEmployees = (employeeData || [])
@@ -80,6 +88,8 @@ export default function BustePagaPage() {
         if (!cancelled) {
           setLoading(false);
         }
+        const __dt = __nowMs() - __t0;
+        console.info('[page-perf] payroll:loadBaseData:end', { duration_ms: Math.round(__dt) });
       }
     }
 
