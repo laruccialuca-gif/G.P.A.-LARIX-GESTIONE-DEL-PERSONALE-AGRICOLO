@@ -741,11 +741,16 @@ export default function ReportPage() {
       }
 
       try {
-        const [employeeData, teamData, settingsData] = await Promise.all([
-          window.api.employees.list(),
-          window.api.teams.list(),
-          window.api.settings.get(),
-        ]);
+        const __empT0 = Date.now();
+        const employeesPromise = window.api.employees.listBasic({ includePeriods: true });
+        const teamsPromise = window.api.teams.list();
+        const settingsPromise = window.api.settings.get();
+        const employeeData = await employeesPromise;
+        console.info('[page-perf] report:employees-load:end', {
+          count: Array.isArray(employeeData) ? employeeData.length : 0,
+          duration_ms: Date.now() - __empT0,
+        });
+        const [teamData, settingsData] = await Promise.all([teamsPromise, settingsPromise]);
 
         if (cancelled || !mountedRef.current) {
           console.info('[route-lifecycle] async cancelled', {
@@ -758,11 +763,13 @@ export default function ReportPage() {
         setEmployees(employeeData || []);
         setTeams(teamData || []);
         setSettings(settingsData || null);
+        const __dirDt = Date.now() - startedAt;
         logReportPerf('page:directory-load:end', {
-          duration_ms: Date.now() - startedAt,
+          duration_ms: __dirDt,
           employees_count: Array.isArray(employeeData) ? employeeData.length : 0,
           teams_count: Array.isArray(teamData) ? teamData.length : 0,
         });
+        console.info('[page-perf] report:loadBaseData:end', { duration_ms: __dirDt });
       } catch (err) {
         console.error(err);
         if (!cancelled && mountedRef.current) {
