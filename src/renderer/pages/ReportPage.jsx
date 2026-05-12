@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import DocumentActions from '../components/DocumentActions';
 import { calculateAttendanceTotals, formatHoursValue, formatWorkedSummary, getSafeStandardHours } from '../utils/attendanceSummary';
 import { formatDisplayDate, formatDisplayDateTime } from '../utils/dateFormat';
@@ -457,6 +457,7 @@ const rp2DayIndicatorSlotStyle = {
 export default function ReportPage() {
   const { selectedYear, setSelectedYear, yearOptions } = useYearContext();
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const [currentMonth, setCurrentMonth] = useState(() => new Date(selectedYear, new Date().getMonth(), 1));
   const [employees, setEmployees] = useState([]);
   const [teams, setTeams] = useState([]);
@@ -1062,7 +1063,23 @@ export default function ReportPage() {
     return () => {
       cancelled = true;
     };
-  }, [isEmployeeMode, employee, currentMonth, defaultEmployerValue]);
+  }, [isEmployeeMode, employee, currentMonth, defaultEmployerValue, location.key]);
+
+  useEffect(() => {
+    const isProcessed = !!currentPayrollRecord?.processed_at;
+    const isDisabled = isProcessed && !isEditUnlocked;
+    console.log('[report-debug] editability state', {
+      employee_id: employee?.id ?? null,
+      month: employee ? monthString(currentMonth) : null,
+      payroll_record_id: currentPayrollRecord?.id ?? null,
+      hasSavedReport: currentPayrollRecord != null,
+      isProcessed,
+      isEditUnlocked,
+      isDisabled,
+      disabled_reason: isDisabled ? 'processed_at set and edit not unlocked' : (isProcessed ? 'processed but unlocked' : 'no processed record'),
+      record_processed_at: currentPayrollRecord?.processed_at ?? null,
+    });
+  }, [currentPayrollRecord, isEditUnlocked, employee, currentMonth]);
 
   useEffect(() => {
     let cancelled = false;

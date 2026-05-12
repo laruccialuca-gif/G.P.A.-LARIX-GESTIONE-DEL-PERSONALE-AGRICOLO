@@ -304,6 +304,45 @@ export default function StoricoOperaioPage() {
     loadHistory();
   }, [selectedYear, deferredSearch, periodFilter, historyOffset]);
 
+  // [report-debug] TEMPORANEO — rimuovere dopo diagnosi
+  useEffect(() => {
+    if (!previewRecord) return;
+    const snap = typeof previewRecord.report_snapshot_json === 'string'
+      ? (() => { try { return JSON.parse(previewRecord.report_snapshot_json); } catch { return null; } })()
+      : previewRecord.report_snapshot_json;
+
+    const rawLive = previewRecord.live_installments_total;
+    const liveFieldPresent = rawLive !== undefined && rawLive !== null;
+    const computedLive = Number(rawLive ?? snap?.current_installments_total ?? 0);
+    const computedSnapshot = Number(snap?.current_installments_total ?? 0);
+    const computedMismatch =
+      liveFieldPresent &&
+      (!!previewRecord.installments_snapshot_mismatch ||
+        Math.abs(computedSnapshot - Number(rawLive)) > 0.009);
+    const renderedValue = computedMismatch
+      ? `€ ${computedLive.toFixed(2)} · valore storico salvato: € ${computedSnapshot.toFixed(2)}`
+      : `€ ${computedLive.toFixed(2)}`;
+
+    console.log('[report-debug] Rate/trattenute renderer', {
+      employee: `${previewRecord.employee?.last_name || ''} ${previewRecord.employee?.first_name || ''}`.trim(),
+      month: previewRecord.month,
+      // campi dal backend
+      live_installments_total: rawLive,
+      live_field_present: liveFieldPresent,
+      snapshot_installments_total: previewRecord.snapshot_installments_total,
+      installments_snapshot_mismatch: previewRecord.installments_snapshot_mismatch,
+      // valore dentro lo snapshot JSON
+      snap_current_installments_total: snap?.current_installments_total,
+      report_snapshot_json_type: typeof previewRecord.report_snapshot_json,
+      // valori computati
+      computed_live: computedLive,
+      computed_snapshot: computedSnapshot,
+      computed_mismatch: computedMismatch,
+      // stringa renderizzata nella riga
+      rendered_value: renderedValue,
+    });
+  }, [previewRecord]);
+
   useEffect(() => {
     setHistoryOffset(0);
   }, [selectedYear, deferredSearch, periodFilter]);
@@ -531,11 +570,23 @@ export default function StoricoOperaioPage() {
     previewPaymentSummary?.grossBalance > 0 ? previewPaymentSummary.originAmount : 0;
   const previewDebtAmount =
     previewPaymentSummary?.grossBalance < 0 ? previewPaymentSummary.originAmount : 0;
-  const previewLiveInstallments = Number(previewRecord?.live_installments_total ?? 0);
+  // Usa live_installments_total se presente (anche se 0 è un valore valido).
+  // Fallback allo snapshot SOLO per record storici non ancora arricchiti dal backend.
+  // NON usare || perché 0 verrebbe ignorato come falsy.
+  const previewLiveInstallments = Number(
+    previewRecord?.live_installments_total ?? previewSnapshot?.current_installments_total ?? 0
+  );
   const previewSnapshotInstallments = Number(previewSnapshot?.current_installments_total ?? 0);
+  // Mostra l'annotazione solo quando il campo live è effettivamente presente
+  // (record arricchito dal backend) e il valore differisce dallo snapshot.
+  const previewLiveFieldPresent =
+    previewRecord != null &&
+    previewRecord.live_installments_total !== undefined &&
+    previewRecord.live_installments_total !== null;
   const previewInstallmentsMismatch =
-    !!previewRecord?.installments_snapshot_mismatch ||
-    Math.abs(previewSnapshotInstallments - previewLiveInstallments) > 0.009;
+    previewLiveFieldPresent &&
+    (!!previewRecord.installments_snapshot_mismatch ||
+      Math.abs(previewSnapshotInstallments - Number(previewRecord.live_installments_total)) > 0.009);
 
   return (
     <div className="page">
@@ -830,8 +881,13 @@ export default function StoricoOperaioPage() {
 
             {previewRecord.report_html_snapshot ? (
               <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.8fr) minmax(280px, 0.8fr)', gap: 18, alignItems: 'start' }}>
-                <div style={{ maxHeight: '72vh', overflow: 'auto', padding: 8, background: '#f8fafc', borderRadius: 16 }}>
-                  <div dangerouslySetInnerHTML={{ __html: previewRecord.report_html_snapshot }} />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ fontSize: 11, color: '#92400e', padding: '5px 10px', background: '#fef3c7', borderRadius: 6, borderLeft: '3px solid #f59e0b', lineHeight: 1.4 }}>
+                    Anteprima storica — i valori mostrati qui riflettono il momento del salvataggio. Per i dati aggiornati (incluse rate/trattenute) usa la Sintesi nel pannello a destra.
+                  </div>
+                  <div style={{ maxHeight: '68vh', overflow: 'auto', padding: 8, background: '#f8fafc', borderRadius: 16 }}>
+                    <div dangerouslySetInnerHTML={{ __html: previewRecord.report_html_snapshot }} />
+                  </div>
                 </div>
 
                 <div style={{ display: 'grid', gap: 14 }}>
@@ -850,6 +906,24 @@ export default function StoricoOperaioPage() {
                       <HistorySummaryRow label="Straordinario" value={formatHours(previewPaymentSummary?.overtimeHours)} />
                       <HistorySummaryRow label="Importo straordinario" value={formatCurrency(previewPaymentSummary?.overtimeAmount)} />
                       <HistorySummaryRow label="Acconti" value={formatCurrency(previewRecord.acconti)} />
+                      {/* [report-debug] TEMPORANEO — rimuovere dopo diagnosi */}
+                      {(() => {
+                        const _rawLive = previewRecord?.live_installments_total;
+                        const _snapVal = previewSnapshot?.current_installments_total;
+                        const _finalValue = Number(_rawLive ?? _snapVal ?? 0);
+                        const _source = (_rawLive !== undefined && _rawLive !== null) ? 'live' : (_snapVal !== undefined ? 'snapshot' : 'missing');
+                        console.log('[report-debug] Rate/trattenute JSX render', {
+                          employee: `${previewRecord?.employee?.last_name || ''} ${previewRecord?.employee?.first_name || ''}`.trim(),
+                          month: previewRecord?.month,
+                          record_id: previewRecord?.id,
+                          'record.live_installments_total': _rawLive,
+                          'record.snapshot_installments_total': previewRecord?.snapshot_installments_total,
+                          'snapshot.current_installments_total': _snapVal,
+                          finalValuePrinted: _finalValue,
+                          finalSource: _source,
+                        });
+                        return null;
+                      })()}
                       <HistorySummaryRow
                         label="Rate / trattenute"
                         value={

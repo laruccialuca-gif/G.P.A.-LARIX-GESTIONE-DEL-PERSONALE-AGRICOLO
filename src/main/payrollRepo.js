@@ -79,6 +79,22 @@ function loadLiveInstallmentsMap(payrollRecordIds) {
   }
 
   const placeholders = payrollRecordIds.map(() => '?').join(', ');
+
+  // [report-debug] TEMPORANEO — controllare anche le rate di piani archiviati per confronto
+  const allRows = db.prepare(`
+    SELECT i.paid_record_id AS record_id,
+           p.status AS plan_status,
+           COALESCE(SUM(i.amount), 0) AS total,
+           COUNT(*) AS count
+    FROM payroll_debt_installments i
+    JOIN payroll_debt_plans p ON p.id = i.plan_id
+    WHERE i.paid_record_id IN (${placeholders})
+    GROUP BY i.paid_record_id, p.status
+  `).all(...payrollRecordIds);
+  if (allRows.length) {
+    console.log('[report-debug] loadLiveInstallmentsMap — rate per record (tutti i piani):', allRows);
+  }
+
   const rows = db.prepare(`
     SELECT i.paid_record_id AS record_id,
            COALESCE(SUM(i.amount), 0) AS total,
