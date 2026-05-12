@@ -72,32 +72,91 @@ function loadAdvancesMap(payrollRecordIds) {
   return map;
 }
 
-function attachAdvances(records) {
-  const advancesMap = loadAdvancesMap(records.map((record) => record.id));
+function loadLiveInstallmentsMap(payrollRecordIds) {
+  const db = getDb();
+  if (!payrollRecordIds.length) {
+    return new Map();
+  }
 
-  return records.map((record) => ({
-    ...record,
-    is_pagato: !!record.is_pagato,
-    resto_pagato: !!record.resto_pagato,
-    is_processed: !!record.processed_at,
-    is_archived: !!record.archived_at,
-    report_snapshot_json: parseJsonValue(record.report_snapshot_json, null),
-    advances: advancesMap.get(record.id) || [],
-    payroll_document: record.payroll_document_id
-      ? describeStoredFile({
-          id: record.payroll_document_id,
-          file_name: record.payroll_document_file_name,
-          stored_name: record.payroll_document_stored_name,
-          relative_path: record.payroll_document_relative_path,
-          mime_type: record.payroll_document_mime_type,
-          size_bytes: record.payroll_document_size_bytes,
-          sha256: record.payroll_document_sha256,
-          file_created_at: record.payroll_document_file_created_at,
-          uploaded_at: record.payroll_document_uploaded_at,
-          updated_at: record.payroll_document_updated_at,
-        })
-      : null,
-  }));
+  const placeholders = payrollRecordIds.map(() => '?').join(', ');
+  const rows = db.prepare(`
+    SELECT i.paid_record_id AS record_id,
+           COALESCE(SUM(i.amount), 0) AS total,
+           COUNT(*) AS count
+    FROM payroll_debt_installments i
+    JOIN payroll_debt_plans p ON p.id = i.plan_id
+    WHERE i.paid_record_id IN (${placeholders})
+      AND p.status = 'active'
+    GROUP BY i.paid_record_id
+  `).all(...payrollRecordIds);
+
+  const map = new Map();
+  for (const row of rows) {
+    map.set(row.record_id, {
+      total: Number(row.total || 0),
+      count: Number(row.count || 0),
+    });
+  }
+  return map;
+}
+
+function attachAdvances(records, options = {}) {
+  const advancesMap = loadAdvancesMap(records.map((record) => record.id));
+  const liveInstallmentsMap = loadLiveInstallmentsMap(records.map((record) => record.id));
+  const debugSource = options.debugSource || '';
+
+  return records.map((record) => {
+    const snapshot = parseJsonValue(record.report_snapshot_json, null);
+    const snapshotInstallments = Number(snapshot?.current_installments_total || 0);
+    const liveInfo = liveInstallmentsMap.get(record.id) || { total: 0, count: 0 };
+
+    if (debugSource && (snapshotInstallments !== 0 || liveInfo.total !== 0)) {
+      try {
+        console.log('[report-debug] employee/month source totals', {
+          source: debugSource,
+          employee_id: record.employee_id,
+          month: record.month,
+          record_id: record.id,
+          snapshot_installments_total: Number(snapshotInstallments.toFixed(2)),
+          live_installments_total: Number(liveInfo.total.toFixed(2)),
+          live_installments_count: liveInfo.count,
+          archived_record: !!record.archived_at,
+          status_note: snapshotInstallments !== liveInfo.total ? 'snapshot/live mismatch' : 'ok',
+          tables: 'payroll_records.report_snapshot_json + payroll_debt_installments (status=active)',
+        });
+      } catch {
+        // best-effort logging
+      }
+    }
+
+    return {
+      ...record,
+      is_pagato: !!record.is_pagato,
+      resto_pagato: !!record.resto_pagato,
+      is_processed: !!record.processed_at,
+      is_archived: !!record.archived_at,
+      report_snapshot_json: snapshot,
+      live_installments_total: liveInfo.total,
+      live_installments_count: liveInfo.count,
+      snapshot_installments_total: snapshotInstallments,
+      installments_snapshot_mismatch: Math.abs(snapshotInstallments - liveInfo.total) > 0.009,
+      advances: advancesMap.get(record.id) || [],
+      payroll_document: record.payroll_document_id
+        ? describeStoredFile({
+            id: record.payroll_document_id,
+            file_name: record.payroll_document_file_name,
+            stored_name: record.payroll_document_stored_name,
+            relative_path: record.payroll_document_relative_path,
+            mime_type: record.payroll_document_mime_type,
+            size_bytes: record.payroll_document_size_bytes,
+            sha256: record.payroll_document_sha256,
+            file_created_at: record.payroll_document_file_created_at,
+            uploaded_at: record.payroll_document_uploaded_at,
+            updated_at: record.payroll_document_updated_at,
+          })
+        : null,
+    };
+  });
 }
 
 function getJoinedRecordSql(whereClause) {
@@ -465,7 +524,7 @@ function listPayrollRecordsByEmployee(employeeId) {
     ${getJoinedRecordSql('WHERE pr.employee_id = ? AND pr.archived_at IS NULL ORDER BY pr.month DESC')}
   `).all(employeeId);
 
-  return attachAdvances(rows).map((record) => ({
+  return attachAdvances(rows, { debugSource: 'listPayrollRecordsByEmployee' }).map((record) => ({
     ...record,
     debt_plans: getDebtPlansByEmployee(employeeId, { includeArchived: true }),
   }));
@@ -548,7 +607,7 @@ function listPayrollHistory(options = {}) {
     ${paginationSql}
   `).all(...queryParams);
 
-  const items = attachAdvances(rows).map((record) => ({
+  const items = attachAdvances(rows, { debugSource: 'listPayrollHistory' }).map((record) => ({
     ...record,
     employee: {
       id: record.employee_id,
@@ -600,7 +659,7 @@ function getPayrollRecord(employeeId, month) {
     ${getJoinedRecordSql('WHERE pr.employee_id = ? AND pr.month = ? AND pr.archived_at IS NULL LIMIT 1')}
   `).get(employeeId, month);
 
-  const record = attachAdvances(row ? [row] : [])[0] || null;
+  const record = attachAdvances(row ? [row] : [], { debugSource: 'getPayrollRecord' })[0] || null;
   if (!record) return null;
   return {
     ...record,
@@ -629,10 +688,12 @@ function getPreviousBalance(employeeId, month) {
       ${effectiveBalanceSql} AS effective_balance
     FROM payroll_records pr
     LEFT JOIN (
-      SELECT paid_record_id, SUM(amount) AS current_installments_total
-      FROM payroll_debt_installments
-      WHERE paid_record_id IS NOT NULL
-      GROUP BY paid_record_id
+      SELECT i.paid_record_id, SUM(i.amount) AS current_installments_total
+      FROM payroll_debt_installments i
+      JOIN payroll_debt_plans p ON p.id = i.plan_id
+      WHERE i.paid_record_id IS NOT NULL
+        AND p.status = 'active'
+      GROUP BY i.paid_record_id
     ) installments
       ON installments.paid_record_id = pr.id
     WHERE pr.employee_id = ?
@@ -659,10 +720,12 @@ function getPreviousBalance(employeeId, month) {
       ${effectiveBalanceSql} AS effective_balance
     FROM payroll_records pr
     LEFT JOIN (
-      SELECT paid_record_id, SUM(amount) AS current_installments_total
-      FROM payroll_debt_installments
-      WHERE paid_record_id IS NOT NULL
-      GROUP BY paid_record_id
+      SELECT i.paid_record_id, SUM(i.amount) AS current_installments_total
+      FROM payroll_debt_installments i
+      JOIN payroll_debt_plans p ON p.id = i.plan_id
+      WHERE i.paid_record_id IS NOT NULL
+        AND p.status = 'active'
+      GROUP BY i.paid_record_id
     ) installments
       ON installments.paid_record_id = pr.id
     WHERE pr.employee_id = ?

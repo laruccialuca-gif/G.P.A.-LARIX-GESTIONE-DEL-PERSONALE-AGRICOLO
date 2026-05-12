@@ -531,6 +531,11 @@ export default function StoricoOperaioPage() {
     previewPaymentSummary?.grossBalance > 0 ? previewPaymentSummary.originAmount : 0;
   const previewDebtAmount =
     previewPaymentSummary?.grossBalance < 0 ? previewPaymentSummary.originAmount : 0;
+  const previewLiveInstallments = Number(previewRecord?.live_installments_total ?? 0);
+  const previewSnapshotInstallments = Number(previewSnapshot?.current_installments_total ?? 0);
+  const previewInstallmentsMismatch =
+    !!previewRecord?.installments_snapshot_mismatch ||
+    Math.abs(previewSnapshotInstallments - previewLiveInstallments) > 0.009;
 
   return (
     <div className="page">
@@ -845,7 +850,14 @@ export default function StoricoOperaioPage() {
                       <HistorySummaryRow label="Straordinario" value={formatHours(previewPaymentSummary?.overtimeHours)} />
                       <HistorySummaryRow label="Importo straordinario" value={formatCurrency(previewPaymentSummary?.overtimeAmount)} />
                       <HistorySummaryRow label="Acconti" value={formatCurrency(previewRecord.acconti)} />
-                      <HistorySummaryRow label="Rate / trattenute" value={formatCurrency(previewSnapshot?.current_installments_total)} />
+                      <HistorySummaryRow
+                        label="Rate / trattenute"
+                        value={
+                          previewInstallmentsMismatch
+                            ? `${formatCurrency(previewLiveInstallments)} · valore storico salvato: ${formatCurrency(previewSnapshotInstallments)}`
+                            : formatCurrency(previewLiveInstallments)
+                        }
+                      />
                       <HistorySummaryRow label="Recuperi" value={formatCurrency(previewSnapshot?.recoveries_total)} />
                       <HistorySummaryRow label="Resto precedente" value={formatCurrency(previewRecord.resto_precedente)} />
                       <HistorySummaryRow label="Busta paga" value={formatCurrency(previewRecord.importo_busta_paga)} />

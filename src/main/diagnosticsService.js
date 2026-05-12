@@ -100,6 +100,169 @@ function getEmployeeCounts() {
   };
 }
 
+function getInstallmentsHistoricDebug() {
+  const db = getDb();
+
+  const safeGet = (sql, ...params) => {
+    try {
+      return db.prepare(sql).get(...params) || {};
+    } catch {
+      return {};
+    }
+  };
+  const safeAll = (sql, ...params) => {
+    try {
+      return db.prepare(sql).all(...params) || [];
+    } catch {
+      return [];
+    }
+  };
+
+  const activePlans = safeGet(`
+    SELECT COUNT(*) AS total
+    FROM payroll_debt_plans
+    WHERE status = 'active'
+  `);
+  const archivedPlans = safeGet(`
+    SELECT COUNT(*) AS total
+    FROM payroll_debt_plans
+    WHERE status <> 'active'
+  `);
+  const openInstallments = safeGet(`
+    SELECT COUNT(*) AS total
+    FROM payroll_debt_installments i
+    JOIN payroll_debt_plans p ON p.id = i.plan_id
+    WHERE p.status = 'active' AND COALESCE(i.is_paid, 0) = 0
+  `);
+  const closedInstallments = safeGet(`
+    SELECT COUNT(*) AS total
+    FROM payroll_debt_installments i
+    JOIN payroll_debt_plans p ON p.id = i.plan_id
+    WHERE p.status = 'active' AND COALESCE(i.is_paid, 0) = 1
+  `);
+  const orphanInstallments = safeGet(`
+    SELECT COUNT(*) AS total
+    FROM payroll_debt_installments i
+    LEFT JOIN payroll_debt_plans p ON p.id = i.plan_id
+    WHERE p.id IS NULL OR p.status <> 'active'
+  `);
+
+  const pendingMovements = safeGet(`
+    SELECT COUNT(*) AS total
+    FROM employee_financial_movements
+    WHERE status = 'pending'
+  `);
+  const insertedMovements = safeGet(`
+    SELECT COUNT(*) AS total
+    FROM employee_financial_movements
+    WHERE status = 'inserted'
+  `);
+  const unlinkedMovements = safeGet(`
+    SELECT COUNT(*) AS total
+    FROM employee_financial_movements
+    WHERE status = 'inserted' AND inserted_report_id IS NULL
+  `);
+
+  const snapshotRecords = safeAll(`
+    SELECT pr.id, pr.employee_id, pr.month, pr.report_snapshot_json,
+           pr.archived_at, e.first_name, e.last_name
+    FROM payroll_records pr
+    LEFT JOIN employees e ON e.id = pr.employee_id
+    WHERE pr.report_snapshot_json IS NOT NULL
+      AND pr.report_snapshot_json LIKE '%current_installments_total%'
+  `);
+
+  const mismatches = [];
+  let snapshotsWithInstallments = 0;
+
+  for (const row of snapshotRecords) {
+    let snapshotValue = 0;
+    try {
+      const parsed = JSON.parse(row.report_snapshot_json);
+      snapshotValue = Number(parsed?.current_installments_total || 0);
+    } catch {
+      continue;
+    }
+    if (Math.abs(snapshotValue) <= 0.009) {
+      continue;
+    }
+    snapshotsWithInstallments += 1;
+
+    const liveRow = safeGet(`
+      SELECT COALESCE(SUM(i.amount), 0) AS total, COUNT(*) AS count
+      FROM payroll_debt_installments i
+      JOIN payroll_debt_plans p ON p.id = i.plan_id
+      WHERE i.paid_record_id = ? AND p.status = 'active'
+    `, row.id);
+    const liveValue = Number(liveRow?.total || 0);
+    const liveCount = Number(liveRow?.count || 0);
+
+    if (Math.abs(snapshotValue - liveValue) > 0.009) {
+      mismatches.push({
+        employee_id: row.employee_id,
+        employee_name: `${row.last_name || ''} ${row.first_name || ''}`.trim() || '—',
+        month: row.month,
+        record_id: row.id,
+        archived_record: !!row.archived_at,
+        snapshot_installments: snapshotValue,
+        live_installments: liveValue,
+        live_count: liveCount,
+        diff: snapshotValue - liveValue,
+      });
+    }
+  }
+
+  mismatches.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+  return {
+    active_plans: Number(activePlans?.total || 0),
+    archived_plans: Number(archivedPlans?.total || 0),
+    open_installments: Number(openInstallments?.total || 0),
+    closed_installments: Number(closedInstallments?.total || 0),
+    orphan_installments: Number(orphanInstallments?.total || 0),
+    pending_movements: Number(pendingMovements?.total || 0),
+    inserted_movements: Number(insertedMovements?.total || 0),
+    unlinked_inserted_movements: Number(unlinkedMovements?.total || 0),
+    snapshots_with_installments: snapshotsWithInstallments,
+    mismatches,
+  };
+}
+
+function formatInstallmentsHistoricDebug(debug) {
+  const lines = [
+    `piani attivi: ${debug.active_plans}`,
+    `piani archiviati: ${debug.archived_plans}`,
+    `rate aperte (piani attivi): ${debug.open_installments}`,
+    `rate chiuse (piani attivi): ${debug.closed_installments}`,
+    `rate orfane (piani archiviati o senza piano): ${debug.orphan_installments}`,
+    `movimenti finanziari attivi (pending): ${debug.pending_movements}`,
+    `movimenti finanziari inseriti: ${debug.inserted_movements}`,
+    `movimenti inseriti scollegati dal report: ${debug.unlinked_inserted_movements}`,
+    `report snapshot con rate/trattenute (>0): ${debug.snapshots_with_installments}`,
+    `differenze snapshot ↔ DB attuale: ${debug.mismatches.length}`,
+  ];
+
+  if (debug.mismatches.length) {
+    lines.push('dettaglio differenze (snapshot € → DB attuale €):');
+    for (const m of debug.mismatches.slice(0, 50)) {
+      lines.push(
+        `  - ${m.employee_name} (id ${m.employee_id}) · ${m.month}` +
+          ` · snapshot € ${m.snapshot_installments.toFixed(2)}` +
+          ` → DB € ${m.live_installments.toFixed(2)} (rate attive: ${m.live_count})` +
+          ` · diff € ${m.diff.toFixed(2)}` +
+          (m.archived_record ? ' · report archiviato' : '')
+      );
+    }
+    if (debug.mismatches.length > 50) {
+      lines.push(`  ... e altri ${debug.mismatches.length - 50} report con differenze.`);
+    }
+  } else {
+    lines.push('nessuna differenza rilevata.');
+  }
+
+  return lines;
+}
+
 function buildReportContent() {
   const variantConfig = getVariantConfig();
   const settingsSummary = settingsService.buildSettingsSummary();
@@ -110,6 +273,12 @@ function buildReportContent() {
   const dbSize = dbExists ? fs.statSync(dbPath).size : 0;
   const integrity = runIntegrityCheck();
   const employeeCounts = getEmployeeCounts();
+  let installmentsDebug;
+  try {
+    installmentsDebug = getInstallmentsHistoricDebug();
+  } catch (err) {
+    installmentsDebug = { error: err?.message || String(err), mismatches: [] };
+  }
   const logPath = path.join(app.getPath('userData'), 'main-process.log');
   const logLines = readTailLines(logPath, 100);
   const rendererErrorBlocks = getRecentRendererErrorBlocks(logPath, 10);
@@ -162,6 +331,11 @@ function buildReportContent() {
       '[ARCHIVI]',
       `numero dipendenti attivi: ${employeeCounts.active}`,
       `numero dipendenti archiviati: ${employeeCounts.archived}`,
+      '',
+      '[DEBUG RATE/TRATTENUTE STORICO]',
+      ...(installmentsDebug?.error
+        ? [`errore raccolta diagnostica: ${installmentsDebug.error}`]
+        : formatInstallmentsHistoricDebug(installmentsDebug)),
       '',
       '[ULTIMI ERRORI RENDERER]',
       ...(rendererErrorBlocks.length ? rendererErrorBlocks : ['Nessun errore renderer recente registrato.']),

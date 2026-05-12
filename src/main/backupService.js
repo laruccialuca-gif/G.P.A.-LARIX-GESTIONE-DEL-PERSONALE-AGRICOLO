@@ -6,7 +6,18 @@ const { getDataDir, getConfigDir, getDocumentsDir, getBackupsDir, getUserDataRoo
 const settingsService = require('./settingsService');
 const { getDb, getDbPath } = require('./db');
 
-const MAX_AUTO_BACKUPS = 20;
+const BACKUP_RETENTION = Object.freeze({
+  automatic: 20,
+  'pre-operation': 30,
+  manual: null,
+});
+
+const BACKUP_TYPE_TOKENS = Object.freeze([
+  { type: 'pre-operation', token: '-pre-operation' },
+  { type: 'automatic', token: '-automatic' },
+  { type: 'manual', token: '-manual' },
+]);
+
 let logWriter = () => {};
 
 function ensureDir(dirPath) {
@@ -219,53 +230,72 @@ function getBackupStats(backupDir) {
   };
 }
 
-function getAutomaticBackupsSorted(backupRoot) {
-  if (!fs.existsSync(backupRoot)) {
-    return [];
+function inferBackupTypeFromFolderName(name) {
+  if (!name) return null;
+  for (const { type, token } of BACKUP_TYPE_TOKENS) {
+    if (name.includes(token)) return type;
   }
-
-  const automaticBackups = fs.readdirSync(backupRoot, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => path.join(backupRoot, e.name))
-    .filter((d) => fs.existsSync(getManifestPath(d)))
-    .map((d) => {
-      try {
-        const manifest = readBackupManifest(d);
-        return {
-          dir: d,
-          fileName: path.basename(d),
-          type: manifest.type,
-          created_at: manifest.created_at || '',
-        };
-      } catch {
-        return null;
-      }
-    })
-    .filter((backup) => backup && backup.type === 'automatic');
-
-  automaticBackups.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
-  return automaticBackups;
+  return null;
 }
 
-async function rotateAutomaticBackups(backupRoot = getEffectiveBackupDir()) {
+function groupBackupsByType(backupRoot) {
+  const groups = { automatic: [], 'pre-operation': [], manual: [] };
+  if (!fs.existsSync(backupRoot)) return groups;
+
+  const entries = fs.readdirSync(backupRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const type = inferBackupTypeFromFolderName(entry.name);
+    if (!type || !(type in groups)) continue;
+
+    const dirPath = path.join(backupRoot, entry.name);
+    if (!fs.existsSync(getManifestPath(dirPath))) continue;
+
+    let createdAt = '';
+    try {
+      createdAt = readBackupManifest(dirPath).created_at || '';
+    } catch {
+      continue;
+    }
+    groups[type].push({ dir: dirPath, fileName: entry.name, created_at: createdAt });
+  }
+
+  for (const type of Object.keys(groups)) {
+    groups[type].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  }
+  return groups;
+}
+
+async function rotateBackups(backupRoot = getEffectiveBackupDir()) {
   logBackupMessage('ROTATION START');
 
-  const automaticBackups = getAutomaticBackupsSorted(backupRoot);
-  logBackupMessage(`Backup automatici trovati: ${automaticBackups.length}`, {
-    count: automaticBackups.length,
-  });
+  const groups = groupBackupsByType(backupRoot);
 
-  const toDelete = automaticBackups.slice(0, Math.max(0, automaticBackups.length - MAX_AUTO_BACKUPS));
-  for (const backup of toDelete) {
-    try {
-      await withRetry(() => fs.rmSync(backup.dir, { recursive: true, force: true }));
-      logBackupMessage(`Backup eliminato: ${backup.fileName}`, {
-        backup_dir: backup.dir,
-        file_name: backup.fileName,
-      });
-    } catch {}
+  for (const [type, limit] of Object.entries(BACKUP_RETENTION)) {
+    const backups = groups[type] || [];
+    logBackupMessage(`Backup ${type} trovati: ${backups.length}`, {
+      type,
+      count: backups.length,
+    });
+
+    if (limit === null || limit === undefined) continue;
+    if (backups.length <= limit) continue;
+
+    const toDelete = backups.slice(0, backups.length - limit);
+    for (const backup of toDelete) {
+      try {
+        await withRetry(() => fs.rmSync(backup.dir, { recursive: true, force: true }));
+        logBackupMessage(`Backup eliminato: ${backup.fileName}`, {
+          backup_dir: backup.dir,
+          file_name: backup.fileName,
+          type,
+        });
+      } catch {}
+    }
   }
 }
+
+const rotateAutomaticBackups = rotateBackups;
 
 function createBackup(type = 'manual') {
   const settings = settingsService.getSettings();
@@ -327,6 +357,14 @@ function createBackup(type = 'manual') {
         ...settings.backup,
         last_auto_backup_at: manifest.created_at,
       },
+    });
+  }
+
+  if (validation.valid) {
+    rotateBackups(backupRoot).catch((error) => {
+      logBackupEvent('rotation_error', {
+        message: error?.message || String(error),
+      });
     });
   }
 
@@ -565,12 +603,11 @@ async function createBackupSafe(type = 'automatic') {
   const settings = settingsService.getSettings();
   if (!shouldRunScheduledBackup(settings)) {
     logBackupMessage('Backup saltato: già eseguito oggi');
-    await rotateAutomaticBackups();
+    await rotateBackups();
     return null;
   }
 
   const backup = createBackup('automatic');
-  await rotateAutomaticBackups();
   logBackupMessage('Backup eseguito');
   return backup;
 }
@@ -749,6 +786,7 @@ module.exports = {
   maybeRunExitBackup,
   openBackupDirectory,
   rotateAutomaticBackups,
+  rotateBackups,
   restoreBackup,
   setLogger,
   validateBackup,
