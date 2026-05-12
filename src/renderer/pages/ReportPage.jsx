@@ -2967,6 +2967,28 @@ export default function ReportPage() {
 
             <div style={editorBlockStyle}>
               <div style={editorBlockTitleStyle}>5. Resto / saldo finale</div>
+              {(() => {
+                const _showControls = restoPrecedenteNum !== 0 || differenzaFinale !== 0;
+                const _reason = !_showControls
+                  ? 'differenzaFinale === 0 and restoPrecedenteNum === 0'
+                  : differenzaFinale > 0
+                  ? 'differenzaFinale > 0 (resto da dare)'
+                  : differenzaFinale < 0
+                  ? 'differenzaFinale < 0 (da ricevere)'
+                  : 'restoPrecedenteNum !== 0';
+                console.log('[report-debug] payment status visibility', {
+                  employee_id: employee?.id ?? null,
+                  month: monthString(currentMonth),
+                  finalBalance: differenzaFinale,
+                  payroll_record_id: currentPayrollRecord?.id ?? null,
+                  isProcessedRecord: !!currentPayrollRecord?.processed_at,
+                  restoPaid,
+                  showPaymentStatusControls: _showControls,
+                  reasonHidden: _showControls ? null : 'differenzaFinale === 0 and restoPrecedenteNum === 0',
+                  condition: _reason,
+                });
+                return null;
+              })()}
               <div style={{ ...editorBlockGridStyle, alignItems: 'end' }}>
                 <div style={{ gridColumn: '1 / -1' }}>
                   <div style={getBalanceBoxStyle(differenzaFinale)}>
@@ -2978,7 +3000,7 @@ export default function ReportPage() {
                   </div>
                 </div>
 
-                {restoPrecedenteNum !== 0 || differenzaFinale > 0 ? (
+                {restoPrecedenteNum !== 0 || differenzaFinale !== 0 ? (
                   <>
                     <div>
                       <div style={fieldLabelStyle}>Stato saldo</div>
