@@ -37,7 +37,22 @@ function configureAppIdentity() {
   if (typeof app.setAppUserModelId === 'function' && variantConfig.appId) {
     app.setAppUserModelId(variantConfig.appId);
   }
-  app.setPath('userData', getResolvedUserDataPath());
+
+  const envOverride = process.env.GPA_USER_DATA_PATH
+    ? String(process.env.GPA_USER_DATA_PATH).trim()
+    : '';
+
+  if (envOverride) {
+    app.setPath('userData', envOverride);
+    console.log(`[runtime] forced userData path from GPA_USER_DATA_PATH: ${envOverride}`);
+  } else {
+    app.setPath('userData', getResolvedUserDataPath());
+  }
+
+  const finalUserData = app.getPath('userData');
+  const finalDbPath = path.join(finalUserData, 'data', 'presenze.sqlite');
+  console.log(`[runtime] final userData path: ${finalUserData}`);
+  console.log(`[runtime] final database path: ${finalDbPath}`);
 }
 
 configureAppIdentity();
@@ -46,7 +61,11 @@ const LOG_MAX_BYTES = 5 * 1024 * 1024;
 
 function appendMainProcessLog(context, errorLike) {
   try {
-    const targetDir = app.isReady() ? app.getPath('userData') : getResolvedUserDataPath();
+    const targetDir = app.isReady()
+      ? app.getPath('userData')
+      : (process.env.GPA_USER_DATA_PATH
+          ? String(process.env.GPA_USER_DATA_PATH).trim()
+          : getResolvedUserDataPath());
     fs.mkdirSync(targetDir, { recursive: true });
 
     const logPath = path.join(targetDir, 'main-process.log');

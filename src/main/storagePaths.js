@@ -37,6 +37,13 @@ function getPackageLegacyUserDataRoot() {
 }
 
 function getUserDataRoot() {
+  const envOverride = process.env.GPA_USER_DATA_PATH
+    ? String(process.env.GPA_USER_DATA_PATH).trim()
+    : '';
+  if (envOverride) {
+    return envOverride;
+  }
+
   const stableRoot = path.join(app.getPath('appData'), STABLE_APP_DATA_DIRNAME);
   const legacyRoot = getLegacyElectronUserDataRoot();
   const namedLegacyRoot = path.join(app.getPath('appData'), legacyAppDataDirName);
