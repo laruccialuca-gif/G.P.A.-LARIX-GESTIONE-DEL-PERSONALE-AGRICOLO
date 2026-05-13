@@ -212,7 +212,7 @@ export default function AppLayout() {
       </div>
 
       <main className="app-main">
-        <div className="container app-main-inner">
+        <div className="app-main-inner">
           {demoInfo?.is_demo ? (
             <div className="demo-banner no-print">
               <div>
