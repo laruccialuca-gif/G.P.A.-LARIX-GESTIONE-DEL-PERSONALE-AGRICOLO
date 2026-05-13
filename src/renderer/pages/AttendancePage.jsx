@@ -23,6 +23,7 @@ import {
 } from '../utils/attendancePrintUtils';
 import AttendanceToolbar from '../components/attendance/AttendanceToolbar';
 import AttendanceTable from '../components/attendance/AttendanceTable';
+import AttendanceEmployeeFilter from '../components/attendance/AttendanceEmployeeFilter';
 import {
   parseMainInputValue,
   formatDecimalPreview,
@@ -43,6 +44,22 @@ function useStableCallback(fn) {
 }
 
 const ATTENDANCE_LAYOUT_STORAGE_KEY = 'attendance_layout_mode_v1';
+const ATTENDANCE_EMPLOYEE_FILTER_STORAGE_KEY = 'attendance_employee_filter_v1';
+
+function readStoredEmployeeFilter() {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(ATTENDANCE_EMPLOYEE_FILTER_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id));
+  } catch {
+    return [];
+  }
+}
 const EMPTY_ROW_ATTENDANCE = Object.freeze({});
 const ATTENDANCE_DIAG_MODE = 'off'; // 'off' | 'a' | 'b' | 'c'
 const ATTENDANCE_DIAG = {
@@ -321,6 +338,19 @@ function isEffectivelyEmptyAttendanceEntry(item) {
   );
 }
 
+function hashAttendanceEntry(entry) {
+  if (!entry) return null;
+  const status = entry.status || 'presente';
+  const marker = entry.marker_code || '';
+  const code = entry.entry_code || '';
+  const hours = entry.hours_worked === '' || entry.hours_worked === null || entry.hours_worked === undefined
+    ? ''
+    : Number(entry.hours_worked || 0);
+  const overtime = Number(entry.overtime_hours || 0);
+  const notes = entry.notes || '';
+  return `${status}|${marker}|${code}|${hours}|${overtime}|${notes}`;
+}
+
 function areAttendanceEntriesEquivalent(a, b) {
   const left = normalizeAttendanceEntry(a || {});
   const right = normalizeAttendanceEntry(b || {});
@@ -533,6 +563,7 @@ export default function AttendancePage() {
   const [pendingChanges, setPendingChanges] = useState({});
   const [inputDrafts, setInputDrafts] = useState({});
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
+  const [employeeFilterIds, setEmployeeFilterIds] = useState(() => readStoredEmployeeFilter());
   const [bulkHoursValue, setBulkHoursValue] = useState('');
   const [bulkMarkerValue, setBulkMarkerValue] = useState('');
   const [bulkOvertimeValue, setBulkOvertimeValue] = useState('');
@@ -813,6 +844,20 @@ export default function AttendancePage() {
     window.localStorage.setItem(ATTENDANCE_LAYOUT_STORAGE_KEY, layoutMode);
   }, [layoutMode]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        ATTENDANCE_EMPLOYEE_FILTER_STORAGE_KEY,
+        JSON.stringify(employeeFilterIds)
+      );
+    } catch {
+      // localStorage may be unavailable; ignore.
+    }
+  }, [employeeFilterIds]);
+
   const isWriteBlocked = Boolean(licenseStatus?.is_write_blocked);
 
   useEffect(() => {
@@ -891,8 +936,8 @@ export default function AttendancePage() {
     [selectedMeta.type, selectedMeta.id, visibleTeams]
   );
 
-  const displayRows = useMemo(() => {
-    const diagToken = diagStart('displayRows useMemo');
+  const entityRows = useMemo(() => {
+    const diagToken = diagStart('entityRows useMemo');
     const startedAt = getPerfNow();
     let rows;
 
@@ -913,14 +958,14 @@ export default function AttendancePage() {
       }));
     }
 
-    logAttendancePerf('page:build-displayRows:end', {
+    logAttendancePerf('page:build-entityRows:end', {
       selected_entity: selectedEntity,
       selected_type: selectedMeta.type,
       rows_count: rows.length,
       active_employees_count: activeEmployees.length,
       duration_ms: Math.round(getPerfNow() - startedAt),
     });
-    setAttendanceDiagValue('displayRows.count', rows.length);
+    setAttendanceDiagValue('entityRows.count', rows.length);
     diagEnd(diagToken, {
       rowsCount: rows.length,
       selectedType: selectedMeta.type,
@@ -928,6 +973,23 @@ export default function AttendancePage() {
 
     return rows;
   }, [activeEmployees, employeesWithoutTeam, selectedEntity, selectedMeta, selectedTeam, selectedYear]);
+
+  const employeeFilterSet = useMemo(
+    () => new Set(employeeFilterIds.map((id) => Number(id))),
+    [employeeFilterIds]
+  );
+
+  const displayRows = useMemo(() => {
+    if (employeeFilterSet.size === 0) {
+      return entityRows;
+    }
+    return entityRows.filter(({ employee }) => employeeFilterSet.has(Number(employee.id)));
+  }, [entityRows, employeeFilterSet]);
+
+  const filterAvailableEmployees = useMemo(
+    () => entityRows.map(({ employee }) => employee),
+    [entityRows]
+  );
 
   const visibleEmployeeIds = useMemo(
     () => displayRows.map(({ employee }) => Number(employee.id)).filter(Number.isFinite),
@@ -1193,20 +1255,61 @@ export default function AttendancePage() {
     }));
   }
 
-  function queuePendingEntry(employeeId, date, nextEntry) {
+  function buildBaseEntryForPatch(currentEntry, savedEntry, employeeId, date) {
+    const source = currentEntry || savedEntry;
+    if (source) {
+      return {
+        employee_id: source.employee_id ?? employeeId,
+        date: source.date ?? date,
+        status: source.status || 'presente',
+        marker_code: source.marker_code || null,
+        entry_code: source.entry_code || null,
+        hours_worked: source.hours_worked ?? '',
+        overtime_hours: source.overtime_hours || 0,
+        notes: source.notes || null,
+      };
+    }
+    return {
+      employee_id: employeeId,
+      date,
+      status: 'presente',
+      marker_code: null,
+      entry_code: null,
+      hours_worked: '',
+      overtime_hours: 0,
+      notes: null,
+    };
+  }
+
+  function applyEntryPatch(employeeId, date, patch, debugMeta) {
     const __qt0 = getPerfNow();
     if (isWriteBlockedRef.current) {
       showLicenseBlockedToast();
       return;
     }
     const key = `${employeeId}_${date}`;
-    const normalizedEntry = normalizeAttendanceEntry(nextEntry);
     const savedEntry = attendanceMap[key];
 
     setPendingChanges((current) => {
       const currentEntry = current[key];
+      const baseEntry = buildBaseEntryForPatch(currentEntry, savedEntry, employeeId, date);
+      const mergedEntry = normalizeAttendanceEntry({ ...baseEntry, ...patch });
 
-      if (savedEntry && areAttendanceEntriesEquivalent(normalizedEntry, savedEntry)) {
+      if (debugMeta) {
+        console.info('[attendance-debug] cell-update', {
+          employee_id: employeeId,
+          date_key: date,
+          field: debugMeta.field || null,
+          source: debugMeta.source || null,
+          previous_value: currentEntry || savedEntry || null,
+          next_value: mergedEntry,
+          changed_fields: Object.keys(patch),
+          row_hash_before: currentEntry || savedEntry ? hashAttendanceEntry(currentEntry || savedEntry) : null,
+          row_hash_after: hashAttendanceEntry(mergedEntry),
+        });
+      }
+
+      if (savedEntry && areAttendanceEntriesEquivalent(mergedEntry, savedEntry)) {
         if (currentEntry === undefined) {
           return current;
         }
@@ -1216,7 +1319,7 @@ export default function AttendancePage() {
         return next;
       }
 
-      if (!savedEntry && isEffectivelyEmptyAttendanceEntry(normalizedEntry)) {
+      if (!savedEntry && isEffectivelyEmptyAttendanceEntry(mergedEntry)) {
         if (currentEntry === undefined) {
           return current;
         }
@@ -1226,13 +1329,13 @@ export default function AttendancePage() {
         return next;
       }
 
-      if (currentEntry && areAttendanceEntriesEquivalent(currentEntry, normalizedEntry)) {
+      if (currentEntry && areAttendanceEntriesEquivalent(currentEntry, mergedEntry)) {
         return current;
       }
 
       const next = {
         ...current,
-        [key]: normalizedEntry,
+        [key]: mergedEntry,
       };
       pendingChangesRef.current = next;
       return next;
@@ -1240,7 +1343,7 @@ export default function AttendancePage() {
 
     markDirtyState();
     const __qdt = getPerfNow() - __qt0;
-    if (__qdt > 1) console.info('[attendance-perf] queuePendingEntry', { ms: Math.round(__qdt * 100) / 100 });
+    if (__qdt > 1) console.info('[attendance-perf] applyEntryPatch', { ms: Math.round(__qdt * 100) / 100 });
   }
 
   function clearPendingChange(employeeId, date) {
@@ -1752,7 +1855,6 @@ export default function AttendancePage() {
   const handleMainValueChange = useStableCallback((employeeId, date, value) => {
     const diagToken = diagStart('handleMainValueChange');
     const __t0 = getPerfNow();
-    const existing = getAtt(employeeId, date);
     setInputDraft(employeeId, date, 'main', value);
     updateLiveHoursPreview(value);
     const parsed = parseMainInputValue(value, attendanceSettings);
@@ -1761,49 +1863,35 @@ export default function AttendancePage() {
       return;
     }
 
-    const nextEntry =
-      parsed.kind === 'type'
-        ? {
-            employee_id: employeeId,
-            date,
-            status: parsed.status,
-            marker_code: existing?.marker_code || null,
-            entry_code: null,
-            hours_worked: 0,
-            overtime_hours: 0,
-            notes: existing?.notes || null,
-          }
-        : parsed.kind === 'symbol'
-        ? {
-            employee_id: employeeId,
-            date,
-            status: 'presente',
-            marker_code: existing?.marker_code || null,
-            entry_code: parsed.symbol,
-            hours_worked: parsed.hours,
-            overtime_hours: existing?.overtime_hours || 0,
-            notes: existing?.notes || null,
-          }
-        : {
-            employee_id: employeeId,
-            date,
-            status:
-              parsed.kind === 'empty'
-                ? 'presente'
-                : parsed.hours === 0
-                ? 'assente'
-                : 'presente',
-            marker_code: existing?.marker_code || null,
-            entry_code: null,
-            hours_worked:
-              parsed.kind === 'empty'
-                ? ''
-                : parsed.hours,
-            overtime_hours: existing?.overtime_hours || 0,
-            notes: existing?.notes || null,
-          };
+    let patch;
+    if (parsed.kind === 'type') {
+      patch = {
+        status: parsed.status,
+        entry_code: null,
+        hours_worked: 0,
+        overtime_hours: 0,
+      };
+    } else if (parsed.kind === 'symbol') {
+      patch = {
+        status: 'presente',
+        entry_code: parsed.symbol,
+        hours_worked: parsed.hours,
+      };
+    } else if (parsed.kind === 'empty') {
+      patch = {
+        status: 'presente',
+        entry_code: null,
+        hours_worked: '',
+      };
+    } else {
+      patch = {
+        status: parsed.hours === 0 ? 'assente' : 'presente',
+        entry_code: null,
+        hours_worked: parsed.hours,
+      };
+    }
 
-    queuePendingEntry(employeeId, date, nextEntry);
+    applyEntryPatch(employeeId, date, patch, { field: 'main', source: 'handleMainValueChange' });
     const __dt = getPerfNow() - __t0;
     if (__dt > 1) console.info('[attendance-perf] handleMainValueChange', { ms: Math.round(__dt * 100) / 100 });
     diagEnd(diagToken, { employeeId, date, value });
@@ -1838,20 +1926,12 @@ export default function AttendancePage() {
       return;
     }
 
-    const existing = getAtt(employeeId, date);
-    queuePendingEntry(employeeId, date, {
-        employee_id: employeeId,
-        date,
-        status: existing?.status || 'presente',
-        marker_code: existing?.marker_code || null,
-        entry_code: existing?.entry_code || null,
-        hours_worked: existing?.hours_worked ?? '',
-        overtime_hours:
-          parsed.kind === 'empty'
-            ? 0
-            : parsed.hours,
-        notes: existing?.notes || null,
-    });
+    applyEntryPatch(
+      employeeId,
+      date,
+      { overtime_hours: parsed.kind === 'empty' ? 0 : parsed.hours },
+      { field: 'overtime', source: 'handleOvertimeValueChange' }
+    );
   });
 
   const handleOvertimeValueBlur = useStableCallback((employeeId, date) => {
@@ -1879,22 +1959,26 @@ export default function AttendancePage() {
       return;
     }
 
-    queuePendingEntry(employeeId, date, {
-        employee_id: employeeId,
-        date,
-        status: existing?.status || 'presente',
-        marker_code: markerCode || null,
-        entry_code: existing?.entry_code || null,
-        hours_worked: existing?.hours_worked ?? '',
-        overtime_hours: existing?.overtime_hours || 0,
-        notes: existing?.notes || null,
-    });
+    applyEntryPatch(
+      employeeId,
+      date,
+      { marker_code: markerCode || null },
+      { field: 'marker', source: 'handleMarkerChange' }
+    );
   });
 
   function applyQuickHours(employeeIds, date, value, minutesValue = '') {
     if (!Array.isArray(employeeIds) || !employeeIds.length) {
       return;
     }
+
+    console.info('[attendance-debug] quick-day-insert', {
+      action: 'hours',
+      selected_employees: employeeIds,
+      day_key: date,
+      inserted_value: value,
+      affected_rows: employeeIds.length,
+    });
 
     if (value === '' && minutesValue === '') {
       employeeIds.forEach((employeeId) => {
@@ -1913,24 +1997,27 @@ export default function AttendancePage() {
       return;
     }
 
+    const parsed = parseOvertimeInputValue(value, attendanceSettings);
+    if (parsed.kind === 'invalid') {
+      return;
+    }
+
+    const overtimeValue = parsed.kind === 'empty' ? 0 : parsed.hours;
+    console.info('[attendance-debug] quick-day-insert', {
+      action: 'overtime',
+      selected_employees: employeeIds,
+      day_key: date,
+      inserted_value: overtimeValue,
+      affected_rows: employeeIds.length,
+    });
+
     employeeIds.forEach((employeeId) => {
-      const parsed = parseOvertimeInputValue(value, attendanceSettings);
-
-      if (parsed.kind === 'invalid') {
-        return;
-      }
-
-      const existing = getAtt(employeeId, date);
-      queuePendingEntry(employeeId, date, {
-          employee_id: employeeId,
-          date,
-          status: existing?.status || 'presente',
-          marker_code: existing?.marker_code || null,
-          entry_code: existing?.entry_code || null,
-          hours_worked: existing?.hours_worked ?? '',
-          overtime_hours: parsed.kind === 'empty' ? 0 : parsed.hours,
-          notes: existing?.notes || null,
-      });
+      applyEntryPatch(
+        employeeId,
+        date,
+        { overtime_hours: overtimeValue },
+        { field: 'overtime', source: 'applyQuickOvertime' }
+      );
     });
   }
 
@@ -2295,6 +2382,15 @@ export default function AttendancePage() {
           visibleTeamCounts={visibleTeamCounts}
           monthString={monthString}
           parseDateValue={parseDateValue}
+          filterSlot={
+            filterAvailableEmployees.length > 1 ? (
+              <AttendanceEmployeeFilter
+                availableEmployees={filterAvailableEmployees}
+                selectedIds={employeeFilterIds}
+                onChange={setEmployeeFilterIds}
+              />
+            ) : null
+          }
         />
       </div>
 
