@@ -80,21 +80,6 @@ function loadLiveInstallmentsMap(payrollRecordIds) {
 
   const placeholders = payrollRecordIds.map(() => '?').join(', ');
 
-  // [report-debug] TEMPORANEO — controllare anche le rate di piani archiviati per confronto
-  const allRows = db.prepare(`
-    SELECT i.paid_record_id AS record_id,
-           p.status AS plan_status,
-           COALESCE(SUM(i.amount), 0) AS total,
-           COUNT(*) AS count
-    FROM payroll_debt_installments i
-    JOIN payroll_debt_plans p ON p.id = i.plan_id
-    WHERE i.paid_record_id IN (${placeholders})
-    GROUP BY i.paid_record_id, p.status
-  `).all(...payrollRecordIds);
-  if (allRows.length) {
-    console.log('[report-debug] loadLiveInstallmentsMap — rate per record (tutti i piani):', allRows);
-  }
-
   const rows = db.prepare(`
     SELECT i.paid_record_id AS record_id,
            COALESCE(SUM(i.amount), 0) AS total,
@@ -119,31 +104,14 @@ function loadLiveInstallmentsMap(payrollRecordIds) {
 function attachAdvances(records, options = {}) {
   const advancesMap = loadAdvancesMap(records.map((record) => record.id));
   const liveInstallmentsMap = loadLiveInstallmentsMap(records.map((record) => record.id));
-  const debugSource = options.debugSource || '';
+  const includePreviewData = options.includePreviewData !== false;
 
   return records.map((record) => {
-    const snapshot = parseJsonValue(record.report_snapshot_json, null);
+    const snapshot = includePreviewData
+      ? parseJsonValue(record.report_snapshot_json, null)
+      : null;
     const snapshotInstallments = Number(snapshot?.current_installments_total || 0);
     const liveInfo = liveInstallmentsMap.get(record.id) || { total: 0, count: 0 };
-
-    if (debugSource && (snapshotInstallments !== 0 || liveInfo.total !== 0)) {
-      try {
-        console.log('[report-debug] employee/month source totals', {
-          source: debugSource,
-          employee_id: record.employee_id,
-          month: record.month,
-          record_id: record.id,
-          snapshot_installments_total: Number(snapshotInstallments.toFixed(2)),
-          live_installments_total: Number(liveInfo.total.toFixed(2)),
-          live_installments_count: liveInfo.count,
-          archived_record: !!record.archived_at,
-          status_note: snapshotInstallments !== liveInfo.total ? 'snapshot/live mismatch' : 'ok',
-          tables: 'payroll_records.report_snapshot_json + payroll_debt_installments (status=active)',
-        });
-      } catch {
-        // best-effort logging
-      }
-    }
 
     return {
       ...record,
@@ -151,7 +119,8 @@ function attachAdvances(records, options = {}) {
       resto_pagato: !!record.resto_pagato,
       is_processed: !!record.processed_at,
       is_archived: !!record.archived_at,
-      report_snapshot_json: snapshot,
+      report_snapshot_json: includePreviewData ? snapshot : null,
+      report_html_snapshot: includePreviewData ? (record.report_html_snapshot || null) : null,
       live_installments_total: liveInfo.total,
       live_installments_count: liveInfo.count,
       snapshot_installments_total: snapshotInstallments,
@@ -179,6 +148,53 @@ function getJoinedRecordSql(whereClause) {
   return `
     SELECT
       pr.*,
+      pd.id AS payroll_document_id,
+      pd.file_name AS payroll_document_file_name,
+      pd.stored_name AS payroll_document_stored_name,
+      pd.relative_path AS payroll_document_relative_path,
+      pd.mime_type AS payroll_document_mime_type,
+      pd.size_bytes AS payroll_document_size_bytes,
+      pd.sha256 AS payroll_document_sha256,
+      pd.file_created_at AS payroll_document_file_created_at,
+      pd.uploaded_at AS payroll_document_uploaded_at,
+      pd.updated_at AS payroll_document_updated_at
+    FROM payroll_records pr
+    LEFT JOIN payroll_documents pd
+      ON pd.payroll_record_id = pr.id
+      AND pd.category = '${PAYROLL_DOCUMENT_CATEGORY}'
+    ${whereClause}
+  `;
+}
+
+function getHistoryListSql(whereClause) {
+  return `
+    SELECT
+      pr.id,
+      pr.employee_id,
+      pr.month,
+      pr.datore,
+      pr.giornate_effettuate,
+      pr.ore_totali,
+      pr.retribuzione_calcolata,
+      pr.giornate_busta_paga,
+      pr.importo_busta_paga,
+      pr.acconti,
+      pr.acconti_details,
+      pr.resto_precedente,
+      pr.differenza_finale,
+      pr.n_macchine_mese,
+      pr.prezzo_per_macchina,
+      pr.totale_trasporto,
+      pr.regalo_importo,
+      pr.regalo_descrizione,
+      pr.is_pagato,
+      pr.resto_pagato,
+      pr.resto_pagato_data,
+      pr.processed_at,
+      pr.archived_at,
+      pr.note,
+      pr.created_at,
+      pr.updated_at,
       pd.id AS payroll_document_id,
       pd.file_name AS payroll_document_file_name,
       pd.stored_name AS payroll_document_stored_name,
@@ -540,7 +556,7 @@ function listPayrollRecordsByEmployee(employeeId) {
     ${getJoinedRecordSql('WHERE pr.employee_id = ? AND pr.archived_at IS NULL ORDER BY pr.month DESC')}
   `).all(employeeId);
 
-  return attachAdvances(rows, { debugSource: 'listPayrollRecordsByEmployee' }).map((record) => ({
+  return attachAdvances(rows).map((record) => ({
     ...record,
     debt_plans: getDebtPlansByEmployee(employeeId, { includeArchived: true }),
   }));
@@ -588,7 +604,7 @@ function listPayrollHistory(options = {}) {
   const totalRow = db.prepare(`
     SELECT COUNT(*) AS total
     FROM (
-      ${getJoinedRecordSql('')}
+      ${getHistoryListSql('')}
     ) AS history_rows
     JOIN employees e ON e.id = history_rows.employee_id
     ${whereClause}
@@ -607,7 +623,7 @@ function listPayrollHistory(options = {}) {
       e.hired_by AS employee_hired_by,
       team_lookup.team_names
     FROM (
-      ${getJoinedRecordSql('')}
+      ${getHistoryListSql('')}
     ) AS history_rows
     JOIN employees e ON e.id = history_rows.employee_id
     LEFT JOIN (
@@ -623,7 +639,9 @@ function listPayrollHistory(options = {}) {
     ${paginationSql}
   `).all(...queryParams);
 
-  const items = attachAdvances(rows, { debugSource: 'listPayrollHistory' }).map((record) => ({
+  const items = attachAdvances(rows, {
+    includePreviewData: false,
+  }).map((record) => ({
     ...record,
     employee: {
       id: record.employee_id,
@@ -675,7 +693,7 @@ function getPayrollRecord(employeeId, month) {
     ${getJoinedRecordSql('WHERE pr.employee_id = ? AND pr.month = ? AND pr.archived_at IS NULL LIMIT 1')}
   `).get(employeeId, month);
 
-  const record = attachAdvances(row ? [row] : [], { debugSource: 'getPayrollRecord' })[0] || null;
+  const record = attachAdvances(row ? [row] : [])[0] || null;
   if (!record) return null;
   return {
     ...record,

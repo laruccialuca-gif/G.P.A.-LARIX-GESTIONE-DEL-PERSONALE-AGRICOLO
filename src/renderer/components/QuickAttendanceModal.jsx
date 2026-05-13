@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 
 function formatDateForDisplay(value) {
   const [year, month, day] = String(value || '').split('-');
@@ -52,6 +52,27 @@ function sortRows(rows = []) {
   );
 }
 
+const QuickAttendanceListRow = memo(function QuickAttendanceListRow({
+  employeeId,
+  label,
+  selected,
+  onToggle,
+}) {
+  return (
+    <label
+      className={`quick-attendance-row ${selected ? 'quick-attendance-row--selected' : ''}`}
+      onDoubleClick={() => onToggle(employeeId, !selected)}
+    >
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={(event) => onToggle(employeeId, event.target.checked)}
+      />
+      <span className="quick-attendance-row__name">{label}</span>
+    </label>
+  );
+});
+
 export default function QuickAttendanceModal({
   open,
   quickDate,
@@ -66,18 +87,34 @@ export default function QuickAttendanceModal({
   markers = [],
 }) {
   const didInitOpenRef = useRef(false);
+  const presenceInputRef = useRef(null);
   const [selectionState, setSelectionState] = useState({});
   const [presenceValue, setPresenceValue] = useState('');
   const [overtimeValue, setOvertimeValue] = useState('');
   const [markerSelection, setMarkerSelection] = useState('keep');
   const [searchText, setSearchText] = useState('');
   const [dateInput, setDateInput] = useState(formatDateForDisplay(quickDate));
+  const [keepSelection, setKeepSelection] = useState(true);
 
   const sortedRows = useMemo(() => sortRows(rows), [rows]);
+  const sortedEmployeeIds = useMemo(
+    () => sortedRows.map((row) => Number(row.employee.id)),
+    [sortedRows]
+  );
 
   useEffect(() => {
     setDateInput(formatDateForDisplay(quickDate));
   }, [quickDate]);
+
+  useEffect(() => {
+    if (!open || !searchText.trim()) {
+      return;
+    }
+    console.info('[attendance-debug] quick-entry-search', {
+      query: searchText,
+      total_rows: sortedRows.length,
+    });
+  }, [open, searchText, sortedRows.length]);
 
   useEffect(() => {
     if (!open) {
@@ -94,13 +131,21 @@ export default function QuickAttendanceModal({
       nextSelection[row.employee.id] = true;
     }
 
-    setSelectionState(nextSelection);
+    setSelectionState((current) => (keepSelection && Object.keys(current).length ? current : nextSelection));
     setPresenceValue(formatDefaultPresenceValue(attendanceSettings));
     setOvertimeValue('');
     setMarkerSelection('keep');
     setSearchText('');
     didInitOpenRef.current = true;
-  }, [attendanceSettings, open, sortedRows]);
+    window.requestAnimationFrame(() => {
+      presenceInputRef.current?.focus();
+      presenceInputRef.current?.select?.();
+    });
+    console.info('[attendance-debug] quick-entry-open', {
+      date: quickDate,
+      employees_count: sortedRows.length,
+    });
+  }, [attendanceSettings, keepSelection, open, quickDate, sortedRows]);
 
   const filteredRows = useMemo(() => {
     if (!searchText.trim()) {
@@ -117,31 +162,20 @@ export default function QuickAttendanceModal({
   const selectedIds = useMemo(
     () => Object.entries(selectionState)
       .filter(([, selected]) => !!selected)
-      .map(([employeeId]) => Number(employeeId)),
-    [selectionState]
+      .map(([employeeId]) => Number(employeeId))
+      .filter((employeeId) => sortedEmployeeIds.includes(employeeId)),
+    [selectionState, sortedEmployeeIds]
   );
+  const saveStateTone =
+    saveState === 'saving' || saveState === 'saved' || saveState === 'error'
+      ? saveState
+      : 'idle';
 
   function handleToggle(employeeId, checked) {
     setSelectionState((current) => ({
       ...current,
       [employeeId]: checked,
     }));
-  }
-
-  function handleSelectAll() {
-    const next = {};
-    for (const row of sortedRows) {
-      next[row.employee.id] = true;
-    }
-    setSelectionState(next);
-  }
-
-  function handleDeselectAll() {
-    const next = {};
-    for (const row of sortedRows) {
-      next[row.employee.id] = false;
-    }
-    setSelectionState(next);
   }
 
   function handleDateInputChange(value) {
@@ -157,10 +191,26 @@ export default function QuickAttendanceModal({
     setDateInput(formatDateForDisplay(parsed || quickDate));
   }
 
+  function handleToggleAll(nextValue) {
+    const next = {};
+    for (const row of sortedRows) {
+      next[row.employee.id] = nextValue;
+    }
+    setSelectionState(next);
+  }
+
   function handleApply() {
     if (!selectedIds.length) {
       return;
     }
+
+    console.info('[attendance-debug] quick-entry-apply', {
+      date: quickDate,
+      selected_count: selectedIds.length,
+      presence: presenceValue.trim(),
+      overtime: overtimeValue.trim(),
+      marker: markerSelection,
+    });
 
     if (presenceValue.trim()) {
       onApplyHours(selectedIds, quickDate, presenceValue.trim());
@@ -196,6 +246,7 @@ export default function QuickAttendanceModal({
           <div className="quick-attendance-modal__field">
             <span>Presenza</span>
             <input
+              ref={presenceInputRef}
               type="text"
               value={presenceValue}
               onChange={(event) => setPresenceValue(event.target.value)}
@@ -237,31 +288,8 @@ export default function QuickAttendanceModal({
           </div>
 
           <div className="quick-attendance-modal__summary">
-            <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
+            <span className="quick-attendance-modal__counter">
               {selectedIds.length} selezionati
-            </span>
-            <span
-              className="soft-chip"
-              style={{
-                background:
-                  saveState === 'saving'
-                    ? 'rgba(15, 118, 110, 0.12)'
-                    : saveState === 'saved'
-                    ? 'rgba(16, 185, 129, 0.14)'
-                    : saveState === 'error'
-                    ? 'rgba(239, 68, 68, 0.12)'
-                    : 'rgba(20, 33, 61, 0.06)',
-                color:
-                  saveState === 'saving'
-                    ? '#115e59'
-                    : saveState === 'saved'
-                    ? '#047857'
-                    : saveState === 'error'
-                    ? '#b91c1c'
-                    : '#314762',
-              }}
-            >
-              {saveState === 'saving' ? 'Salvataggio...' : saveState === 'saved' ? 'Salvato' : saveState === 'error' ? 'Errore' : 'Pronto'}
             </span>
           </div>
 
@@ -276,34 +304,36 @@ export default function QuickAttendanceModal({
         </div>
 
         <div className="quick-attendance-modal__list-head">
-          <button type="button" className="button-secondary" onClick={handleSelectAll}>
+          <button type="button" className="button-secondary" onClick={() => handleToggleAll(true)}>
             Seleziona tutti
           </button>
-          <button type="button" className="button-secondary" onClick={handleDeselectAll}>
+          <button type="button" className="button-secondary" onClick={() => handleToggleAll(false)}>
             Deseleziona tutti
           </button>
+          <label className="quick-attendance-modal__keep">
+            <input
+              type="checkbox"
+              checked={keepSelection}
+              onChange={(event) => setKeepSelection(event.target.checked)}
+            />
+            <span>Mantieni selezione</span>
+          </label>
+          <span className={`quick-attendance-modal__status quick-attendance-modal__status--${saveStateTone}`}>
+            {saveState === 'saving' ? 'Salvataggio...' : saveState === 'saved' ? 'Salvato' : saveState === 'error' ? 'Errore' : 'Pronto'}
+          </span>
         </div>
 
         <div className="quick-attendance-modal__list">
           {filteredRows.map((row) => {
             const isSelected = !!selectionState[row.employee.id];
             return (
-              <label key={row.employee.id} className={`quick-attendance-row ${isSelected ? 'quick-attendance-row--selected' : ''}`}>
-                <div className="quick-attendance-row__main">
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={(event) => handleToggle(row.employee.id, event.target.checked)}
-                  />
-                  <div className="quick-attendance-row__name">
-                    {row.employee.last_name} {row.employee.first_name}
-                  </div>
-                </div>
-                <div className="quick-attendance-row__meta">
-                  <span>{row.employee.role || 'Nessuna mansione'}</span>
-                  {row.teamName ? <span>{row.teamName}</span> : null}
-                </div>
-              </label>
+              <QuickAttendanceListRow
+                key={row.employee.id}
+                employeeId={row.employee.id}
+                label={`${row.employee.last_name} ${row.employee.first_name}`}
+                selected={isSelected}
+                onToggle={handleToggle}
+              />
             );
           })}
         </div>

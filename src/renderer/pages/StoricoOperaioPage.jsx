@@ -6,6 +6,16 @@ import { useYearContext } from '../context/YearContext';
 
 const MONTH_NAMES = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
 
+function sortByEmployeeName(items = []) {
+  return [...items].sort((left, right) =>
+    `${left.last_name || ''} ${left.first_name || ''}`.localeCompare(
+      `${right.last_name || ''} ${right.first_name || ''}`,
+      'it',
+      { sensitivity: 'base' }
+    )
+  );
+}
+
 function StatCard({ label, value, color = '#111827' }) {
   return (
     <div className="stat-card">
@@ -22,7 +32,7 @@ function formatMonth(monthStr) {
 }
 
 function formatCurrency(value) {
-  return `€ ${Number(value || 0).toFixed(2)}`;
+  return `â‚¬ ${Number(value || 0).toFixed(2)}`;
 }
 
 function formatHours(value) {
@@ -30,23 +40,39 @@ function formatHours(value) {
   return Number.isInteger(hours) ? `${hours} h` : `${hours.toFixed(2).replace('.', ',')} h`;
 }
 
-function getRecordEffectiveBalance(record) {
-  const snapshot =
-    typeof record?.report_snapshot_json === 'string'
-      ? (() => {
-          try {
-            return JSON.parse(record.report_snapshot_json);
-          } catch {
-            return null;
-          }
-        })()
-      : record?.report_snapshot_json || null;
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
-  const currentInstallmentsTotal = Number(
-    snapshot?.current_installments_total ??
+function parseSnapshot(record) {
+  return typeof record?.report_snapshot_json === 'string'
+    ? (() => {
+        try {
+          return JSON.parse(record.report_snapshot_json);
+        } catch {
+          return null;
+        }
+      })()
+    : record?.report_snapshot_json || null;
+}
+
+function getCurrentInstallmentsTotal(record, snapshot = null) {
+  const resolvedSnapshot = snapshot ?? parseSnapshot(record);
+  return Number(
+    record?.live_installments_total ??
       record?.current_installments_total ??
+      resolvedSnapshot?.current_installments_total ??
       0
   );
+}
+
+function getRecordEffectiveBalance(record) {
+  const currentInstallmentsTotal = getCurrentInstallmentsTotal(record);
 
   return (
     Number(record?.retribuzione_calcolata || 0) +
@@ -63,11 +89,6 @@ function employeeStatusLabel(employee) {
   if (!employee) return '';
   if (employee.is_deleted) return 'archiviato';
   return employee.status === 'attivo' ? 'attivo' : 'inattivo';
-}
-
-function monthToDateValue(month) {
-  if (!month) return '';
-  return `${month}-01`;
 }
 
 function buildHistoryDetail(record) {
@@ -87,7 +108,7 @@ function buildHistoryDetail(record) {
     parts.push(record.employee.role);
   }
 
-  return parts.join(' · ');
+  return parts.join(' Â· ');
 }
 
 function getIpcRecoveryMessage(error, fallbackMessage) {
@@ -153,15 +174,7 @@ function HistoryPayrollActions({
 }
 
 function getSnapshot(record) {
-  return typeof record?.report_snapshot_json === 'string'
-    ? (() => {
-        try {
-          return JSON.parse(record.report_snapshot_json);
-        } catch {
-          return null;
-        }
-      })()
-    : record?.report_snapshot_json || null;
+  return parseSnapshot(record);
 }
 
 function getRecordPaymentSummary(record) {
@@ -171,18 +184,18 @@ function getRecordPaymentSummary(record) {
   const basePaidAmount =
     Number(record?.importo_busta_paga || 0) +
     Number(record?.acconti || 0) +
-    Number(snapshot?.current_installments_total || 0);
+    getCurrentInstallmentsTotal(record, snapshot);
   const residualPaidAmount = record?.resto_pagato ? Math.abs(grossBalance) : 0;
   const paidAmount = basePaidAmount + residualPaidAmount;
 
   let status = 'non_pagato';
   let label = 'Non pagato';
   if (Math.abs(grossBalance) <= 0.009) {
-    status = record?.is_pagato ? 'pagato' : 'pareggio';
-    label = record?.is_pagato ? 'Pagato' : 'Pareggio';
+    status = 'pagato';
+    label = 'Pagato';
   } else if (record?.resto_pagato) {
-    status = 'saldato';
-    label = 'Saldato';
+    status = 'pagato';
+    label = 'Pagato';
   } else if (basePaidAmount > 0 || record?.is_pagato) {
     status = 'parziale';
     label = 'Parziale';
@@ -206,26 +219,53 @@ function getRecordPaymentSummary(record) {
       snapshot?.totalRegularHours ??
         Math.max(Number(record?.ore_totali || 0) - Number(snapshot?.totalOvertimeHours || 0), 0)
     ),
+    currentInstallmentsTotal: getCurrentInstallmentsTotal(record, snapshot),
+  };
+}
+
+function getSyntheticFinancialSummary(record) {
+  const payment = getRecordPaymentSummary(record);
+  const totalCredits =
+    Number(record?.retribuzione_calcolata || 0) +
+    Number(record?.resto_precedente || 0) +
+    Number(record?.totale_trasporto || 0) +
+    Number(record?.regalo_importo || 0);
+  const totalDeductions =
+    Number(record?.acconti || 0) +
+    Number(payment.currentInstallmentsTotal || 0);
+  const finalBalance = Number(payment.residual || 0);
+
+  return {
+    payment,
+    totalCredits,
+    totalDeductions,
+    payrollAmount: Number(record?.importo_busta_paga || 0),
+    finalBalance,
+    amountToGive: finalBalance > 0 ? finalBalance : 0,
+    amountToReceive: finalBalance < 0 ? Math.abs(finalBalance) : 0,
   };
 }
 
 export default function StoricoOperaioPage() {
-  const HISTORY_PAGE_SIZE = 40;
   const navigate = useNavigate();
-  const { selectedYear } = useYearContext();
+  const { selectedYear, yearOptions } = useYearContext();
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyRecordId, setBusyRecordId] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [loadNotice, setLoadNotice] = useState('');
   const [search, setSearch] = useState('');
+  const [historyYearFilter, setHistoryYearFilter] = useState(String(selectedYear));
+  const [monthFilter, setMonthFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [teamFilter, setTeamFilter] = useState('all');
+  const [employeeFilter, setEmployeeFilter] = useState('all');
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
+  const [showEmployeeFilterModal, setShowEmployeeFilterModal] = useState(false);
   const [roleFilter, setRoleFilter] = useState('all');
   const [employerFilter, setEmployerFilter] = useState('all');
-  const [periodFilter, setPeriodFilter] = useState('');
   const [previewRecord, setPreviewRecord] = useState(null);
   const [showArchivedSlots, setShowArchivedSlots] = useState(false);
-  const [historyOffset, setHistoryOffset] = useState(0);
   const [historyTotal, setHistoryTotal] = useState(0);
   const deferredSearch = useDeferredValue(search);
 
@@ -252,13 +292,21 @@ export default function StoricoOperaioPage() {
           },
         }))
       )
-      .filter((record) => String(record.month || '').startsWith(`${selectedYear}-`))
+      .filter((record) => String(record.month || '').startsWith(`${historyYearFilter}-`))
       .sort((a, b) => {
         const monthCompare = String(b.month || '').localeCompare(String(a.month || ''));
         if (monthCompare !== 0) return monthCompare;
-        const lastNameCompare = String(a.employee?.last_name || '').localeCompare(String(b.employee?.last_name || ''), 'it');
+        const lastNameCompare = String(a.employee?.last_name || '').localeCompare(
+          String(b.employee?.last_name || ''),
+          'it',
+          { sensitivity: 'base' }
+        );
         if (lastNameCompare !== 0) return lastNameCompare;
-        return String(a.employee?.first_name || '').localeCompare(String(b.employee?.first_name || ''), 'it');
+        return String(a.employee?.first_name || '').localeCompare(
+          String(b.employee?.first_name || ''),
+          'it',
+          { sensitivity: 'base' }
+        );
       });
   }
 
@@ -266,13 +314,14 @@ export default function StoricoOperaioPage() {
     setLoading(true);
     try {
       setLoadNotice('');
+      const startedAt = performance.now();
+      const normalizedMonth = monthFilter !== 'all'
+        ? `${historyYearFilter}-${String(monthFilter).padStart(2, '0')}`
+        : '';
       const data = typeof window.api.payroll.listHistory === 'function'
         ? await window.api.payroll.listHistory({
-            year: selectedYear,
-            month: periodFilter ? periodFilter.slice(0, 7) : '',
-            search: deferredSearch,
-            limit: HISTORY_PAGE_SIZE,
-            offset: historyOffset,
+            year: historyYearFilter,
+            month: normalizedMonth,
           })
         : await buildFallbackHistory();
       if (Array.isArray(data)) {
@@ -282,13 +331,19 @@ export default function StoricoOperaioPage() {
         setRecords(data?.items || []);
         setHistoryTotal(Number(data?.total || 0));
       }
+      console.info('[storico-perf] synthetic-summary-load', {
+        year: historyYearFilter,
+        month: normalizedMonth || 'all',
+        records_count: Array.isArray(data) ? (data || []).length : (data?.items || []).length,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
     } catch (err) {
       console.error('Storico operaio: endpoint principale non disponibile, uso fallback.', err);
       try {
         const fallbackData = await buildFallbackHistory();
         setRecords(fallbackData || []);
         setHistoryTotal((fallbackData || []).length);
-        setLoadNotice('Storico caricato in modalità compatibile.');
+        setLoadNotice('Storico caricato in modalitÃ  compatibile.');
       } catch (fallbackErr) {
         console.error(fallbackErr);
         setRecords([]);
@@ -302,57 +357,28 @@ export default function StoricoOperaioPage() {
 
   useEffect(() => {
     loadHistory();
-  }, [selectedYear, deferredSearch, periodFilter, historyOffset]);
-
-  // [report-debug] TEMPORANEO — rimuovere dopo diagnosi
-  useEffect(() => {
-    if (!previewRecord) return;
-    const snap = typeof previewRecord.report_snapshot_json === 'string'
-      ? (() => { try { return JSON.parse(previewRecord.report_snapshot_json); } catch { return null; } })()
-      : previewRecord.report_snapshot_json;
-
-    const rawLive = previewRecord.live_installments_total;
-    const liveFieldPresent = rawLive !== undefined && rawLive !== null;
-    const computedLive = Number(rawLive ?? snap?.current_installments_total ?? 0);
-    const computedSnapshot = Number(snap?.current_installments_total ?? 0);
-    const computedMismatch =
-      liveFieldPresent &&
-      (!!previewRecord.installments_snapshot_mismatch ||
-        Math.abs(computedSnapshot - Number(rawLive)) > 0.009);
-    const renderedValue = computedMismatch
-      ? `€ ${computedLive.toFixed(2)} · valore storico salvato: € ${computedSnapshot.toFixed(2)}`
-      : `€ ${computedLive.toFixed(2)}`;
-
-    console.log('[report-debug] Rate/trattenute renderer', {
-      employee: `${previewRecord.employee?.last_name || ''} ${previewRecord.employee?.first_name || ''}`.trim(),
-      month: previewRecord.month,
-      // campi dal backend
-      live_installments_total: rawLive,
-      live_field_present: liveFieldPresent,
-      snapshot_installments_total: previewRecord.snapshot_installments_total,
-      installments_snapshot_mismatch: previewRecord.installments_snapshot_mismatch,
-      // valore dentro lo snapshot JSON
-      snap_current_installments_total: snap?.current_installments_total,
-      report_snapshot_json_type: typeof previewRecord.report_snapshot_json,
-      // valori computati
-      computed_live: computedLive,
-      computed_snapshot: computedSnapshot,
-      computed_mismatch: computedMismatch,
-      // stringa renderizzata nella riga
-      rendered_value: renderedValue,
-    });
-  }, [previewRecord]);
+  }, [historyYearFilter, monthFilter]);
 
   useEffect(() => {
-    setHistoryOffset(0);
-  }, [selectedYear, deferredSearch, periodFilter]);
+    setHistoryYearFilter(String(selectedYear));
+  }, [selectedYear]);
 
   const teamOptions = useMemo(() => {
     const values = new Set();
     records.forEach((record) => {
       (record.employee?.team_names || []).forEach((name) => values.add(name));
     });
-    return [...values].sort((a, b) => a.localeCompare(b, 'it'));
+    return [...values].sort((a, b) => a.localeCompare(b, 'it', { sensitivity: 'base' }));
+  }, [records]);
+
+  const employeeOptions = useMemo(() => {
+    const map = new Map();
+    records.forEach((record) => {
+      if (record.employee?.id && !map.has(record.employee.id)) {
+        map.set(record.employee.id, record.employee);
+      }
+    });
+    return sortByEmployeeName([...map.values()]);
   }, [records]);
 
   const roleOptions = useMemo(() => {
@@ -362,7 +388,7 @@ export default function StoricoOperaioPage() {
         values.add(record.employee.role);
       }
     });
-    return [...values].sort((a, b) => a.localeCompare(b, 'it'));
+    return [...values].sort((a, b) => a.localeCompare(b, 'it', { sensitivity: 'base' }));
   }, [records]);
 
   const employerOptions = useMemo(() => {
@@ -372,11 +398,12 @@ export default function StoricoOperaioPage() {
         values.add(record.datore);
       }
     });
-    return [...values].sort((a, b) => a.localeCompare(b, 'it'));
+    return [...values].sort((a, b) => a.localeCompare(b, 'it', { sensitivity: 'base' }));
   }, [records]);
 
   const filteredRecords = useMemo(() => {
-    const query = search.trim().toLowerCase();
+    const query = deferredSearch.trim().toLowerCase();
+    const selectedEmployeeIdSet = new Set(selectedEmployeeIds.map((id) => Number(id)));
 
     return records.filter((record) => {
       const employee = record.employee || {};
@@ -387,6 +414,14 @@ export default function StoricoOperaioPage() {
       }
 
       if (teamFilter !== 'all' && !(employee.team_names || []).includes(teamFilter)) {
+        return false;
+      }
+
+      if (employeeFilter !== 'all' && Number(record.employee_id) !== Number(employeeFilter)) {
+        return false;
+      }
+
+      if (selectedEmployeeIdSet.size > 0 && !selectedEmployeeIdSet.has(Number(record.employee_id))) {
         return false;
       }
 
@@ -421,34 +456,60 @@ export default function StoricoOperaioPage() {
 
       return haystack.includes(query);
     });
-  }, [records, search, statusFilter, teamFilter, roleFilter, employerFilter, showArchivedSlots]);
+  }, [records, deferredSearch, statusFilter, teamFilter, employeeFilter, selectedEmployeeIds, roleFilter, employerFilter, showArchivedSlots]);
+
+  const syntheticRows = useMemo(() => {
+    const startedAt = performance.now();
+    const rows = filteredRecords.map((record) => ({
+      record,
+      employee: record.employee || {},
+      financials: getSyntheticFinancialSummary(record),
+    }));
+    console.info('[storico-perf] synthetic-summary-load', {
+      phase: 'derive',
+      filtered_count: rows.length,
+      duration_ms: Math.round(performance.now() - startedAt),
+    });
+    return rows;
+  }, [filteredRecords]);
 
   const groupedRecords = useMemo(() => {
     const map = new Map();
-    for (const record of filteredRecords) {
+    for (const row of syntheticRows) {
+      const { record } = row;
       const key = String(record.employee_id);
       const group = map.get(key) || {
         employee: record.employee || {},
         records: [],
       };
-      group.records.push(record);
+      group.records.push(row);
       map.set(key, group);
     }
     return [...map.values()];
-  }, [filteredRecords]);
+  }, [syntheticRows]);
 
-  const totalGiornate = filteredRecords.reduce((sum, record) => sum + Number(record.giornate_effettuate || 0), 0);
-  const uniqueEmployees = new Set(filteredRecords.map((record) => record.employee_id)).size;
-  const totalDaPagare = filteredRecords.reduce((sum, record) => {
-    const balance = getRecordPaymentSummary(record).residual;
-    return sum + (balance > 0 ? balance : 0);
-  }, 0);
-  const totalDaRicevere = filteredRecords.reduce((sum, record) => {
-    const balance = getRecordPaymentSummary(record).residual;
-    return sum + (balance < 0 ? Math.abs(balance) : 0);
-  }, 0);
-  const currentPage = Math.floor(historyOffset / HISTORY_PAGE_SIZE) + 1;
-  const totalPages = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
+  const historySummary = useMemo(() => {
+    return syntheticRows.reduce((summary, row) => {
+      summary.totalGiornate += Number(row.record.giornate_effettuate || 0);
+      summary.totalBonifici += Number(row.financials.payrollAmount || 0);
+      summary.totalDaDare += Number(row.financials.amountToGive || 0);
+      summary.totalDaRicevere += Number(row.financials.amountToReceive || 0);
+      summary.saldoNetto += Number(row.financials.finalBalance || 0);
+      summary.employeeIds.add(Number(row.record.employee_id));
+      summary.reportCount += 1;
+      return summary;
+    }, {
+      totalGiornate: 0,
+      totalBonifici: 0,
+      totalDaDare: 0,
+      totalDaRicevere: 0,
+      saldoNetto: 0,
+      employeeIds: new Set(),
+      reportCount: 0,
+    });
+  }, [syntheticRows]);
+
+  const uniqueEmployees = historySummary.employeeIds.size;
 
   async function handleUploadDocument(record) {
     setBusyRecordId(String(record.id));
@@ -493,20 +554,47 @@ export default function StoricoOperaioPage() {
     }
   }
 
+  function handleToggleEmployeeSelection(employeeId) {
+    setSelectedEmployeeIds((current) =>
+      current.includes(employeeId)
+        ? current.filter((id) => id !== employeeId)
+        : [...current, employeeId]
+    );
+  }
+
+  async function handleOpenPreview(record) {
+    setPreviewLoading(true);
+    setPreviewRecord(null);
+    try {
+      const fullRecord = await window.api.payroll.getRecordById(record.id);
+      setPreviewRecord(fullRecord || record);
+    } catch (err) {
+      console.error(err);
+      setPreviewRecord(record);
+      alert('Errore caricamento anteprima storica');
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
   function handleOpenLinkedReport(record) {
     navigate(`/report?employee=${record.employee_id}&month=${record.month}`);
   }
 
   async function handlePrintSnapshot(record) {
-    if (!record.report_html_snapshot) {
+    const targetRecord = record?.report_html_snapshot
+      ? record
+      : await window.api.payroll.getRecordById(record.id);
+
+    if (!targetRecord?.report_html_snapshot) {
       alert('Questo report storico non ha una stampa salvata.');
       return;
     }
 
     try {
       await window.api.reports.printHtml({
-        html: record.report_html_snapshot,
-        fileName: `${record.employee?.last_name || 'report'}-${record.month}.pdf`,
+        html: targetRecord.report_html_snapshot,
+        fileName: `${targetRecord.employee?.last_name || 'report'}-${targetRecord.month}.pdf`,
         landscape: false,
       });
     } catch (err) {
@@ -555,6 +643,96 @@ export default function StoricoOperaioPage() {
     }
   }
 
+  function buildFilterSummaryLabel() {
+    const filterParts = [];
+    filterParts.push(`Anno: ${historyYearFilter}`);
+    filterParts.push(monthFilter === 'all' ? 'Mese: tutti' : `Mese: ${MONTH_NAMES[Number(monthFilter) - 1]}`);
+    filterParts.push(teamFilter === 'all' ? 'Squadre: tutte' : `Squadra: ${teamFilter}`);
+    if (employeeFilter !== 'all') {
+      const employee = employeeOptions.find((item) => Number(item.id) === Number(employeeFilter));
+      if (employee) {
+        filterParts.push(`Dipendente: ${employee.last_name} ${employee.first_name}`);
+      }
+    }
+    if (selectedEmployeeIds.length) {
+      filterParts.push(`Multi dipendenti: ${selectedEmployeeIds.length}`);
+    }
+    return filterParts.join(' | ');
+  }
+
+  function buildSyntheticPrintHtml() {
+    const rowsHtml = syntheticRows.map(({ record, employee, financials }) => `
+      <tr>
+        <td>${escapeHtml(`${employee.last_name || ''} ${employee.first_name || ''}`.trim())}</td>
+        <td>${escapeHtml((employee.team_names || []).join(', ') || 'â€”')}</td>
+        <td>${escapeHtml(formatMonth(record.month))}</td>
+        <td>${escapeHtml(formatCurrency(financials.payrollAmount))}</td>
+        <td>${escapeHtml(formatCurrency(financials.totalCredits))}</td>
+        <td>${escapeHtml(formatCurrency(financials.totalDeductions))}</td>
+        <td>${escapeHtml(formatCurrency(financials.finalBalance))}</td>
+        <td>${escapeHtml(formatCurrency(financials.amountToGive))}</td>
+        <td>${escapeHtml(formatCurrency(financials.amountToReceive))}</td>
+        <td>${escapeHtml(financials.payment.label)}</td>
+        <td>${escapeHtml(financials.payment.paidDate ? formatDisplayDateTime(financials.payment.paidDate) : 'â€”')}</td>
+        <td>${escapeHtml(record.note || 'â€”')}</td>
+      </tr>
+    `).join('');
+
+    return `
+      <div class="history-synthetic-print">
+        <div class="history-synthetic-print__header">
+          <h1>Stampa sintetica storico</h1>
+          <div>${escapeHtml(buildFilterSummaryLabel())}</div>
+        </div>
+        <table class="history-synthetic-print__table">
+          <thead>
+            <tr>
+              <th>Dipendente</th>
+              <th>Squadra</th>
+              <th>Mese/Anno</th>
+              <th>Bonifico/Assegno</th>
+              <th>Totale crediti</th>
+              <th>Trattenute/rate</th>
+              <th>Saldo finale</th>
+              <th>Da dare all'operaio</th>
+              <th>Da ricevere dall'operaio</th>
+              <th>Stato pagamento</th>
+              <th>Data pagamento</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        <div class="history-synthetic-print__totals">
+          <div>Totale bonifici/assegni: ${escapeHtml(formatCurrency(historySummary.totalBonifici))}</div>
+          <div>Totale da dare: ${escapeHtml(formatCurrency(historySummary.totalDaDare))}</div>
+          <div>Totale da ricevere: ${escapeHtml(formatCurrency(historySummary.totalDaRicevere))}</div>
+          <div>Saldo netto: ${escapeHtml(formatCurrency(historySummary.saldoNetto))}</div>
+          <div>Numero dipendenti: ${escapeHtml(String(uniqueEmployees))}</div>
+          <div>Numero report: ${escapeHtml(String(historySummary.reportCount))}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function handleSyntheticPrint() {
+    const startedAt = performance.now();
+    try {
+      await window.api.reports.printHtml({
+        html: buildSyntheticPrintHtml(),
+        fileName: `storico-sintetico-${historyYearFilter}${monthFilter !== 'all' ? `-${monthFilter}` : ''}.pdf`,
+        landscape: false,
+      });
+      console.info('[storico-perf] synthetic-print-generate', {
+        rows_count: syntheticRows.length,
+        duration_ms: Math.round(performance.now() - startedAt),
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Errore stampa sintetica storico');
+    }
+  }
+
   const previewPaymentSummary = previewRecord ? getRecordPaymentSummary(previewRecord) : null;
   const previewSnapshot = previewPaymentSummary?.snapshot || null;
   const previewStandardHours = Number(
@@ -570,14 +748,14 @@ export default function StoricoOperaioPage() {
     previewPaymentSummary?.grossBalance > 0 ? previewPaymentSummary.originAmount : 0;
   const previewDebtAmount =
     previewPaymentSummary?.grossBalance < 0 ? previewPaymentSummary.originAmount : 0;
-  // Usa live_installments_total se presente (anche se 0 è un valore valido).
+  // Usa live_installments_total se presente (anche se 0 Ã¨ un valore valido).
   // Fallback allo snapshot SOLO per record storici non ancora arricchiti dal backend.
-  // NON usare || perché 0 verrebbe ignorato come falsy.
+  // NON usare || perchÃ© 0 verrebbe ignorato come falsy.
   const previewLiveInstallments = Number(
     previewRecord?.live_installments_total ?? previewSnapshot?.current_installments_total ?? 0
   );
   const previewSnapshotInstallments = Number(previewSnapshot?.current_installments_total ?? 0);
-  // Mostra l'annotazione solo quando il campo live è effettivamente presente
+  // Mostra l'annotazione solo quando il campo live Ã¨ effettivamente presente
   // (record arricchito dal backend) e il valore differisce dallo snapshot.
   const previewLiveFieldPresent =
     previewRecord != null &&
@@ -596,12 +774,15 @@ export default function StoricoOperaioPage() {
             <span className="page-kicker">Archivio consultabile</span>
             <h1 className="page-title">Storico Operaio</h1>
             <p className="page-subtitle">
-              Archivio storico filtrato per anno attivo, con ricerca veloce, filtri utili e collegamento diretto al report di origine.
+              Filtra mese, anno, dipendenti e squadre per controllare bonifici, dare/ricevere e stampare un riepilogo sintetico.
             </p>
           </div>
           <div className="page-actions">
+            <button type="button" className="button" onClick={handleSyntheticPrint} disabled={!syntheticRows.length}>
+              Stampa sintetica
+            </button>
             <span className="soft-chip" style={{ background: 'rgba(31, 41, 55, 0.1)', color: '#1F2937' }}>
-              Anno {selectedYear}
+              {buildFilterSummaryLabel()}
             </span>
           </div>
         </section>
@@ -617,12 +798,40 @@ export default function StoricoOperaioPage() {
           </div>
 
           <div className="toolbar-group history-toolbar-filters">
+            <select value={historyYearFilter} onChange={(e) => setHistoryYearFilter(e.target.value)} className="history-compact-input">
+              {yearOptions.map((year) => (
+                <option key={year} value={String(year)}>{year}</option>
+              ))}
+            </select>
+            <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="history-compact-input">
+              <option value="all">Tutti i mesi</option>
+              {MONTH_NAMES.map((monthName, index) => (
+                <option key={monthName} value={String(index + 1).padStart(2, '0')}>{monthName}</option>
+              ))}
+            </select>
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="history-compact-input">
               <option value="all">Tutti gli stati</option>
               <option value="attivo">Attivi</option>
               <option value="inattivo">Inattivi</option>
               <option value="archiviato">Archiviati</option>
             </select>
+            <select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)} className="history-compact-input">
+              <option value="all">Tutti i dipendenti</option>
+              {employeeOptions.map((employee) => (
+                <option key={employee.id} value={String(employee.id)}>
+                  {employee.last_name} {employee.first_name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="button-secondary"
+              style={{ minHeight: 32, padding: '0 12px', fontSize: 12 }}
+              onClick={() => setShowEmployeeFilterModal(true)}
+            >
+              Dipendenti multipli
+              {selectedEmployeeIds.length ? ` (${selectedEmployeeIds.length})` : ''}
+            </button>
             <select value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)} className="history-compact-input">
               <option value="all">Tutte le squadre</option>
               {teamOptions.map((team) => (
@@ -641,12 +850,6 @@ export default function StoricoOperaioPage() {
                 <option key={option} value={option}>{option}</option>
               ))}
             </select>
-            <input
-              type="month"
-              value={periodFilter ? periodFilter.slice(0, 7) : ''}
-              onChange={(e) => setPeriodFilter(e.target.value ? `${e.target.value}-01` : '')}
-              className="history-compact-input"
-            />
             <label className="history-toggle">
               <input
                 type="checkbox"
@@ -656,7 +859,7 @@ export default function StoricoOperaioPage() {
               Mostra slot archiviati
             </label>
             <span className="soft-chip" style={{ background: 'rgba(20, 33, 61, 0.06)', color: '#314762' }}>
-              Pagina {currentPage} / {totalPages}
+              {syntheticRows.length} record filtrati
             </span>
           </div>
         </div>
@@ -673,43 +876,30 @@ export default function StoricoOperaioPage() {
           ) : null}
 
           <div className="stats-grid">
-            <StatCard label="Voci storiche" value={historyTotal} />
+            <StatCard label="Numero report inclusi" value={historySummary.reportCount} />
             <StatCard label="Operai coinvolti" value={uniqueEmployees} />
-            <StatCard label="Giornate effettive" value={totalGiornate} />
-            <StatCard label="Totale da dare agli operai" value={formatCurrency(totalDaPagare)} color="#dc2626" />
-            <StatCard label="Totale da ricevere dagli operai" value={formatCurrency(totalDaRicevere)} color="#059669" />
+            <StatCard label="Giornate effettive" value={historySummary.totalGiornate} />
+            <StatCard label="Totale Bonifici/Assegni" value={formatCurrency(historySummary.totalBonifici)} />
+            <StatCard label="Totale da dare agli operai" value={formatCurrency(historySummary.totalDaDare)} color="#dc2626" />
+            <StatCard label="Totale da ricevere dagli operai" value={formatCurrency(historySummary.totalDaRicevere)} color="#059669" />
+            <StatCard label="Saldo netto finale" value={formatCurrency(historySummary.saldoNetto)} color={historySummary.saldoNetto >= 0 ? '#1d4ed8' : '#b91c1c'} />
           </div>
 
-          {!filteredRecords.length ? (
+          {!syntheticRows.length ? (
             <div className="panel empty-state">
               Nessun risultato con i filtri attuali.
             </div>
           ) : (
             <div className="panel panel-section" style={{ padding: 0 }}>
               <div style={{ padding: 16, borderBottom: '1px solid #f3f4f6', fontWeight: 700 }}>
-                Archivio storico — clic su una voce per aprire l'anteprima del report collegato
+                Archivio storico â€” clic su una voce per aprire l'anteprima del report collegato
               </div>
               <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderBottom: '1px solid #f3f4f6' }}>
                 <div style={{ color: '#64748b', fontSize: 13 }}>
-                  Caricati {records.length} record su {historyTotal} totali per i filtri server-side correnti.
+                  Caricati {records.length} record leggeri su {historyTotal} disponibili per il periodo selezionato.
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    type="button"
-                    className="button-secondary"
-                    disabled={historyOffset === 0 || loading}
-                    onClick={() => setHistoryOffset((current) => Math.max(0, current - HISTORY_PAGE_SIZE))}
-                  >
-                    Pagina precedente
-                  </button>
-                  <button
-                    type="button"
-                    className="button-secondary"
-                    disabled={historyOffset + HISTORY_PAGE_SIZE >= historyTotal || loading}
-                    onClick={() => setHistoryOffset((current) => current + HISTORY_PAGE_SIZE)}
-                  >
-                    Pagina successiva
-                  </button>
+                <div className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
+                  Da dare: {formatCurrency(historySummary.totalDaDare)} Â· Da ricevere: {formatCurrency(historySummary.totalDaRicevere)}
                 </div>
               </div>
 
@@ -724,8 +914,8 @@ export default function StoricoOperaioPage() {
                           </div>
                           <div style={{ color: '#667085', fontSize: 13 }}>
                             {group.employee.role || 'Nessuna mansione'}
-                            {group.employee.team_names?.length ? ` · Squadra: ${group.employee.team_names.join(', ')}` : ''}
-                            {group.employee.hired_by ? ` · Datore storico: ${group.employee.hired_by}` : ''}
+                            {group.employee.team_names?.length ? ` Â· Squadra: ${group.employee.team_names.join(', ')}` : ''}
+                            {group.employee.hired_by ? ` Â· Datore storico: ${group.employee.hired_by}` : ''}
                           </div>
                         </div>
                         <div className="soft-chip" style={{ background: '#eef2ff', color: '#4338ca' }}>
@@ -735,10 +925,10 @@ export default function StoricoOperaioPage() {
                     </div>
 
                     <div style={{ display: 'grid', gap: 0 }}>
-                      {group.records.map((record) => {
+                      {group.records.map(({ record, financials }) => {
                         const employee = record.employee || {};
-                        const paymentSummary = getRecordPaymentSummary(record);
-                        const diff = paymentSummary.residual;
+                        const paymentSummary = financials.payment;
+                        const diff = financials.finalBalance;
                         const currentStatus = employeeStatusLabel(employee);
                         const statusStyle =
                           currentStatus === 'attivo'
@@ -747,7 +937,7 @@ export default function StoricoOperaioPage() {
                             ? { background: '#fef3c7', color: '#92400e' }
                             : { background: '#e5e7eb', color: '#374151' };
                         const paymentStatusStyle =
-                          paymentSummary.status === 'saldato' || paymentSummary.status === 'pagato' || paymentSummary.status === 'pareggio'
+                          paymentSummary.status === 'pagato'
                             ? { background: '#e5e7eb', color: '#374151' }
                             : paymentSummary.status === 'parziale'
                             ? { background: '#fef3c7', color: '#92400e' }
@@ -756,7 +946,7 @@ export default function StoricoOperaioPage() {
                         return (
                           <div
                             key={record.id}
-                            onClick={() => setPreviewRecord(record)}
+                            onClick={() => handleOpenPreview(record)}
                             style={{
                               display: 'grid',
                               gap: 14,
@@ -800,9 +990,9 @@ export default function StoricoOperaioPage() {
 
                               <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                                 <MiniInfo label="Compenso" value={formatCurrency(record.retribuzione_calcolata)} />
-                                <MiniInfo label="Busta paga" value={formatCurrency(record.importo_busta_paga)} />
+                                <MiniInfo label="Bonifico/Assegno" value={formatCurrency(financials.payrollAmount)} />
                                 <MiniInfo
-                                  label={diff === 0 ? 'Residuo' : diff > 0 ? 'Da pagare' : 'Da ricevere'}
+                                  label={diff === 0 ? 'Saldo finale' : diff > 0 ? "Da dare all'operaio" : "Da ricevere dall'operaio"}
                                   value={formatCurrency(Math.abs(diff))}
                                   color={diff > 0 ? '#dc2626' : diff < 0 ? '#059669' : '#374151'}
                                 />
@@ -813,7 +1003,7 @@ export default function StoricoOperaioPage() {
                               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                                 <button type="button" className="button-secondary" onClick={(event) => {
                                   event.stopPropagation();
-                                  setPreviewRecord(record);
+                                  handleOpenPreview(record);
                                 }}>
                                   Anteprima
                                 </button>
@@ -866,6 +1056,25 @@ export default function StoricoOperaioPage() {
         </>
       )}
 
+      {showEmployeeFilterModal ? (
+        <EmployeeMultiSelectModal
+          employees={employeeOptions}
+          selectedIds={selectedEmployeeIds}
+          onClose={() => setShowEmployeeFilterModal(false)}
+          onToggle={handleToggleEmployeeSelection}
+        />
+      ) : null}
+
+      {previewLoading ? (
+        <div className="modal-overlay">
+          <div className="modal-dialog" style={{ width: 'min(420px, 100%)' }}>
+            <div className="empty-state" style={{ padding: 24 }}>
+              Caricamento anteprima storica...
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {previewRecord ? (
         <div className="modal-overlay" onClick={() => setPreviewRecord(null)}>
           <div className="modal-dialog" style={{ maxWidth: 1240 }} onClick={(event) => event.stopPropagation()}>
@@ -873,17 +1082,17 @@ export default function StoricoOperaioPage() {
               <div>
                 <span className="page-kicker">Report processato</span>
                 <h2 style={{ margin: '6px 0 0' }}>
-                  {previewRecord.employee?.first_name} {previewRecord.employee?.last_name} · {formatMonth(previewRecord.month)}
+                  {previewRecord.employee?.first_name} {previewRecord.employee?.last_name} Â· {formatMonth(previewRecord.month)}
                 </h2>
               </div>
-              <button type="button" className="modal-close" onClick={() => setPreviewRecord(null)}>✕</button>
+              <button type="button" className="modal-close" onClick={() => setPreviewRecord(null)}>âœ•</button>
             </div>
 
             {previewRecord.report_html_snapshot ? (
               <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.8fr) minmax(280px, 0.8fr)', gap: 18, alignItems: 'start' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <div style={{ fontSize: 11, color: '#92400e', padding: '5px 10px', background: '#fef3c7', borderRadius: 6, borderLeft: '3px solid #f59e0b', lineHeight: 1.4 }}>
-                    Anteprima storica — i valori mostrati qui riflettono il momento del salvataggio. Per i dati aggiornati (incluse rate/trattenute) usa la Sintesi nel pannello a destra.
+                    Anteprima storica â€” i valori mostrati qui riflettono il momento del salvataggio. Per i dati aggiornati (incluse rate/trattenute) usa la Sintesi nel pannello a destra.
                   </div>
                   <div style={{ maxHeight: '68vh', overflow: 'auto', padding: 8, background: '#f8fafc', borderRadius: 16 }}>
                     <div dangerouslySetInnerHTML={{ __html: previewRecord.report_html_snapshot }} />
@@ -896,7 +1105,7 @@ export default function StoricoOperaioPage() {
                       Sintesi report
                     </div>
                     <div style={{ display: 'grid', gap: 10 }}>
-                      <HistorySummaryRow label="Dipendente" value={`${previewRecord.employee?.first_name || ''} ${previewRecord.employee?.last_name || ''}`.trim() || '—'} />
+                      <HistorySummaryRow label="Dipendente" value={`${previewRecord.employee?.first_name || ''} ${previewRecord.employee?.last_name || ''}`.trim() || 'â€”'} />
                       <HistorySummaryRow label="Mese" value={formatMonth(previewRecord.month)} />
                       <HistorySummaryRow label="Giornate lavorate" value={String(Number(previewRecord.giornate_effettuate || 0))} />
                       <HistorySummaryRow label="Ore ordinarie" value={formatHours(previewPaymentSummary?.regularHours)} />
@@ -906,43 +1115,25 @@ export default function StoricoOperaioPage() {
                       <HistorySummaryRow label="Straordinario" value={formatHours(previewPaymentSummary?.overtimeHours)} />
                       <HistorySummaryRow label="Importo straordinario" value={formatCurrency(previewPaymentSummary?.overtimeAmount)} />
                       <HistorySummaryRow label="Acconti" value={formatCurrency(previewRecord.acconti)} />
-                      {/* [report-debug] TEMPORANEO — rimuovere dopo diagnosi */}
-                      {(() => {
-                        const _rawLive = previewRecord?.live_installments_total;
-                        const _snapVal = previewSnapshot?.current_installments_total;
-                        const _finalValue = Number(_rawLive ?? _snapVal ?? 0);
-                        const _source = (_rawLive !== undefined && _rawLive !== null) ? 'live' : (_snapVal !== undefined ? 'snapshot' : 'missing');
-                        console.log('[report-debug] Rate/trattenute JSX render', {
-                          employee: `${previewRecord?.employee?.last_name || ''} ${previewRecord?.employee?.first_name || ''}`.trim(),
-                          month: previewRecord?.month,
-                          record_id: previewRecord?.id,
-                          'record.live_installments_total': _rawLive,
-                          'record.snapshot_installments_total': previewRecord?.snapshot_installments_total,
-                          'snapshot.current_installments_total': _snapVal,
-                          finalValuePrinted: _finalValue,
-                          finalSource: _source,
-                        });
-                        return null;
-                      })()}
                       <HistorySummaryRow
                         label="Rate / trattenute"
                         value={
                           previewInstallmentsMismatch
-                            ? `${formatCurrency(previewLiveInstallments)} · valore storico salvato: ${formatCurrency(previewSnapshotInstallments)}`
+                            ? `${formatCurrency(previewLiveInstallments)} Â· valore storico salvato: ${formatCurrency(previewSnapshotInstallments)}`
                             : formatCurrency(previewLiveInstallments)
                         }
                       />
                       <HistorySummaryRow label="Recuperi" value={formatCurrency(previewSnapshot?.recoveries_total)} />
                       <HistorySummaryRow label="Resto precedente" value={formatCurrency(previewRecord.resto_precedente)} />
-                      <HistorySummaryRow label="Busta paga" value={formatCurrency(previewRecord.importo_busta_paga)} />
+                      <HistorySummaryRow label="Bonifico / assegno" value={formatCurrency(previewRecord.importo_busta_paga)} />
                       <HistorySummaryRow label="Credito da dare all'operaio" value={formatCurrency(previewCreditAmount)} />
                       <HistorySummaryRow label="Debito da ricevere dall'operaio" value={formatCurrency(previewDebtAmount)} />
                       <HistorySummaryRow label="Importo originario aperto" value={formatCurrency(previewPaymentSummary?.originAmount)} />
                       <HistorySummaryRow label="Importo pagato" value={formatCurrency(previewPaymentSummary?.paidAmount)} />
                       <HistorySummaryRow label="Importo residuo" value={formatCurrency(previewPaymentSummary?.residualAmount)} />
-                      <HistorySummaryRow label="Saldo finale" value={formatCurrency(previewPaymentSummary?.residualAmount)} />
-                      <HistorySummaryRow label="Stato finale" value={previewPaymentSummary?.label} />
-                      <HistorySummaryRow label="Data pagamento" value={previewPaymentSummary?.paidDate ? formatDisplayDateTime(previewPaymentSummary.paidDate) : '—'} />
+                      <HistorySummaryRow label="Saldo finale" value={formatCurrency(previewPaymentSummary?.residual)} />
+                      <HistorySummaryRow label="Stato pagamento" value={previewPaymentSummary?.label} />
+                      <HistorySummaryRow label="Data pagamento" value={previewPaymentSummary?.paidDate ? formatDisplayDateTime(previewPaymentSummary.paidDate) : 'â€”'} />
                     </div>
                   </div>
 
@@ -988,11 +1179,123 @@ function MiniInfo({ label, value, color = '#111827' }) {
   );
 }
 
+function EmployeeMultiSelectModal({
+  employees,
+  selectedIds,
+  onClose,
+  onToggle,
+}) {
+  const [search, setSearch] = useState('');
+  const [draftSelectedIds, setDraftSelectedIds] = useState(() => selectedIds.map((id) => Number(id)));
+
+  useEffect(() => {
+    setDraftSelectedIds(selectedIds.map((id) => Number(id)));
+  }, [selectedIds]);
+
+  const filteredEmployees = useMemo(() => {
+    if (!search.trim()) {
+      return employees;
+    }
+    const query = search.toLowerCase();
+    return employees.filter((employee) =>
+      `${employee.last_name || ''} ${employee.first_name || ''}`.toLowerCase().includes(query)
+    );
+  }, [employees, search]);
+  const selectedIdSet = useMemo(() => new Set(draftSelectedIds.map((id) => Number(id))), [draftSelectedIds]);
+
+  function handleToggle(employeeId) {
+    setDraftSelectedIds((current) =>
+      current.includes(employeeId)
+        ? current.filter((id) => id !== employeeId)
+        : [...current, employeeId]
+    );
+  }
+
+  function handleSelectAll() {
+    setDraftSelectedIds(employees.map((employee) => Number(employee.id)));
+  }
+
+  function handleClear() {
+    setDraftSelectedIds([]);
+  }
+
+  function handleConfirm() {
+    const liveSelected = new Set(selectedIds.map((id) => Number(id)));
+    const draftSelected = new Set(draftSelectedIds.map((id) => Number(id)));
+
+    selectedIds.forEach((id) => {
+      if (!draftSelected.has(Number(id))) {
+        onToggle(Number(id));
+      }
+    });
+
+    draftSelectedIds.forEach((id) => {
+      if (!liveSelected.has(Number(id))) {
+        onToggle(Number(id));
+      }
+    });
+
+    onClose();
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-dialog attendance-filter-modal" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header attendance-filter-modal__header">
+          <div>
+            <span className="page-kicker">Dipendenti multipli</span>
+            <h2 style={{ margin: '4px 0 0', fontSize: 20 }}>Seleziona i dipendenti da includere</h2>
+          </div>
+          <button type="button" className="modal-close" onClick={onClose}>x</button>
+        </div>
+
+        <div className="attendance-filter-modal__toolbar">
+          <input
+            type="text"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Cerca dipendente"
+            autoFocus
+          />
+          <button type="button" className="button-secondary" onClick={handleSelectAll}>Seleziona tutti</button>
+          <button type="button" className="button-secondary" onClick={handleClear}>Deseleziona tutti</button>
+        </div>
+
+        <div className="attendance-filter-modal__list">
+          {filteredEmployees.map((employee) => {
+            const isSelected = selectedIdSet.has(Number(employee.id));
+            return (
+              <label
+                key={employee.id}
+                className={`attendance-filter-modal__row ${isSelected ? 'attendance-filter-modal__row--selected' : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => handleToggle(Number(employee.id))}
+                />
+                <span className="attendance-filter-modal__name">
+                  {employee.last_name} {employee.first_name}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+
+        <div className="attendance-filter-modal__footer">
+          <button type="button" className="button-secondary" onClick={onClose}>Annulla</button>
+          <button type="button" className="button" onClick={handleConfirm}>Conferma</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HistorySummaryRow({ label, value }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
       <span style={{ fontSize: 12, color: '#667085', fontWeight: 700 }}>{label}</span>
-      <span style={{ fontSize: 14, color: '#111827', fontWeight: 800, textAlign: 'right' }}>{value || '—'}</span>
+      <span style={{ fontSize: 14, color: '#111827', fontWeight: 800, textAlign: 'right' }}>{value || 'â€”'}</span>
     </div>
   );
 }

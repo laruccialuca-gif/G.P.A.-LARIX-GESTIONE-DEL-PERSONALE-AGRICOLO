@@ -2486,7 +2486,13 @@ export default function AttendancePage() {
                     type="button"
                     className="attendance-actions-menu__item"
                     onClick={() => {
-                      setQuickEntryDate(getDefaultQuickDateForMonth(currentMonth));
+                      const nextQuickDate = getDefaultQuickDateForMonth(currentMonth);
+                      console.info('[attendance-debug] quick-entry-open', {
+                        source: 'quick-actions-menu',
+                        date: nextQuickDate,
+                        visible_rows: quickEntryRows.length,
+                      });
+                      setQuickEntryDate(nextQuickDate);
                       setShowQuickEntry(true);
                       setShowQuickActionsMenu(false);
                     }}

@@ -2491,6 +2491,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('payroll:getRecord', async (_, employeeId, month) =>
     payrollRepo.getPayrollRecord(employeeId, month)
   );
+  ipcMain.handle('payroll:getRecordById', async (_, id) =>
+    payrollRepo.getPayrollRecordById(id)
+  );
   ipcMain.handle('payroll:getPreviousBalance', async (_, employeeId, month) =>
     payrollRepo.getPreviousBalance(employeeId, month)
   );
