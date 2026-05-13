@@ -14,10 +14,11 @@ function AttendanceToolbar({
   visibleTeamCounts,
   monthString,
   parseDateValue,
+  filterSlot,
 }) {
   return (
     <div className="toolbar attendance-toolbar">
-      <div className="toolbar-group attendance-toolbar-group">
+      <div className="toolbar-group attendance-toolbar-group attendance-toolbar-group--month">
         <button
           className="attendance-month-nav"
           onClick={() => {
@@ -52,43 +53,51 @@ function AttendanceToolbar({
         </button>
       </div>
 
-      <input
-        className="attendance-month-input"
-        type="month"
-        value={monthString(currentMonth)}
-        onChange={(event) => {
-          const parsed = parseDateValue(`${event.target.value}-01`);
-          if (parsed) {
-            if (parsed.getFullYear() !== selectedYear) {
-              setSelectedYear(parsed.getFullYear());
+      <div className="toolbar-group attendance-toolbar-group attendance-toolbar-group--controls">
+        <input
+          className="attendance-month-input"
+          type="month"
+          value={monthString(currentMonth)}
+          onChange={(event) => {
+            const parsed = parseDateValue(`${event.target.value}-01`);
+            if (parsed) {
+              if (parsed.getFullYear() !== selectedYear) {
+                setSelectedYear(parsed.getFullYear());
+              }
+              setCurrentMonth(new Date(parsed.getFullYear(), parsed.getMonth(), 1));
             }
-            setCurrentMonth(new Date(parsed.getFullYear(), parsed.getMonth(), 1));
-          }
-        }}
-      />
+          }}
+        />
 
-      <select
-        className="attendance-entity-select"
-        value={selectedEntity}
-        onChange={(event) => setSelectedEntity(event.target.value)}
-      >
-        <option value="all">Tutti ({allEmployeesCount})</option>
-        <option value="no_team">Senza squadra ({ungroupedEmployeesCount})</option>
-        <optgroup label="Dipendenti">
-          {activeEmployees.map((employee) => (
-            <option key={`employee-${employee.id}`} value={`employee:${employee.id}`}>
-              {employee.first_name} {employee.last_name}
-            </option>
-          ))}
-        </optgroup>
-        <optgroup label="Squadre">
-          {visibleTeams.map((team) => (
-            <option key={`team-${team.id}`} value={`team:${team.id}`}>
-              Squadra • {team.name} ({visibleTeamCounts.get(Number(team.id)) || 0})
-            </option>
-          ))}
-        </optgroup>
-      </select>
+        <select
+          className="attendance-entity-select"
+          value={selectedEntity}
+          onChange={(event) => setSelectedEntity(event.target.value)}
+        >
+          <option value="all">Tutti ({allEmployeesCount})</option>
+          <option value="no_team">Senza squadra ({ungroupedEmployeesCount})</option>
+          <optgroup label="Dipendenti">
+            {activeEmployees.map((employee) => (
+              <option key={`employee-${employee.id}`} value={`employee:${employee.id}`}>
+                {employee.first_name} {employee.last_name}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="Squadre">
+            {visibleTeams.map((team) => (
+              <option key={`team-${team.id}`} value={`team:${team.id}`}>
+                Squadra - {team.name} ({visibleTeamCounts.get(Number(team.id)) || 0})
+              </option>
+            ))}
+          </optgroup>
+        </select>
+
+        {filterSlot ? (
+          <div className="attendance-toolbar-filter-slot">
+            {filterSlot}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

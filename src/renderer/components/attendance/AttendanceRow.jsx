@@ -1,7 +1,6 @@
 import React from 'react';
-import { selectAllInputText, getCalendarCellStyle } from '../../utils/attendanceTableUtils';
+import { getCalendarCellStyle } from '../../utils/attendanceTableUtils';
 import { countAttendanceDiag, recordAttendanceTiming } from '../../utils/attendanceDiagnostics';
-import { MarkerVisual } from './AttendancePrintAreaPaginated';
 
 function AttendanceRow({
   employee,
@@ -31,6 +30,7 @@ function AttendanceRow({
   handleMarkerChange,
   handleOvertimeValueChange,
   handleOvertimeValueBlur,
+  onCellClick,
 }) {
   const renderStartedAt = __eqNow();
   countAttendanceDiag('AttendanceRow render');
@@ -60,187 +60,34 @@ function AttendanceRow({
         </div>
       </td>
 
-      {cells.map((cell) => (
-        <td
-          key={cell.dateStr}
-          style={{
-            ...tdStyleCenterCurrent,
-            ...getCalendarCellStyle(cell.dayInfo),
-            ...(cell.dateStr === todayKey ? todayCellStyle : {}),
-          }}
-          title={cell.dayInfo?.holidayLabel || undefined}
-        >
-          <div className={`attendance-cell-stack ${isCompactLayout ? 'attendance-cell-stack--compact' : ''}`}>
-            <div className={`attendance-day-cell ${isCompactLayout ? 'attendance-day-cell--compact' : ''}`}>
-              <input
-                className={`attendance-hours-input ${isCompactLayout ? 'attendance-hours-input--compact' : ''} ${cell.mainInputTone ? `attendance-hours-input--${cell.mainInputTone}` : ''}`}
-                type="text"
-                inputMode="decimal"
-                value={cell.mainInputValue}
-                onChange={(event) => handleMainValueChange(employee.id, cell.dateStr, event.target.value)}
-                onBlur={() => handleMainValueBlur(employee.id, cell.dateStr)}
-                onFocus={(event) => {
-                  handleGridInputFocus(cell.dateStr, event);
-                  updateLiveHoursPreview(event.currentTarget.value);
-                }}
-                onClick={selectAllInputText}
-                onKeyDown={handleGridKeyDown}
-                data-attendance-focus="true"
-                placeholder=""
-                disabled={isWriteBlocked}
-                title={cell.isSpecial ? cell.specialOpt?.text : 'Inserisci ore decimali oppure F / P / M'}
-              />
+      {cells.map((cell) => {
+        const hasSecondaryDetails = Boolean(cell.overtimeHasValue || cell.markerMeta || cell.att?.notes);
 
-              {isCompactLayout ? (
-                <>
-                  {!cell.isMainType ? (
-                    cell.markerMeta && !cell.isEditingMarker ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleAttendanceCellFocus(cell.dateStr);
-                          setOpenMarkerMenuKey(cell.markerMenuKey);
-                        }}
-                        title={`Marcatore ${cell.markerMeta.text}. Clicca per modificare.`}
-                        className="attendance-compact-marker-badge"
-                        style={{ background: cell.markerMeta.background, color: cell.markerMeta.color }}
-                        disabled={isWriteBlocked}
-                      >
-                        <MarkerVisual marker={cell.markerMeta} size={11} />
-                      </button>
-                    ) : (
-                      <select
-                        className="attendance-compact-marker-select"
-                        value={cell.att?.marker_code || ''}
-                        onChange={(event) => {
-                          const nextValue = event.target.value || null;
-                          handleMarkerChange(employee.id, cell.dateStr, nextValue);
-                          setOpenMarkerMenuKey(nextValue ? null : cell.markerMenuKey);
-                        }}
-                        onFocus={() => handleAttendanceCellFocus(cell.dateStr)}
-                        onBlur={() => {
-                          if (cell.att?.marker_code) {
-                            setOpenMarkerMenuKey(null);
-                          }
-                        }}
-                        title="Seleziona un marcatore grafico"
-                        disabled={isWriteBlocked}
-                      >
-                        <option value="">+</option>
-                        {activeMarkers.map((item) => (
-                          <option key={item.value} value={item.value}>
-                            {item.image ? item.text : item.symbol}
-                          </option>
-                        ))}
-                      </select>
-                    )
-                  ) : null}
-
-                  {!cell.isSpecial ? (
-                    cell.isEditingCompactOvertime ? (
-                      <input
-                        className={`attendance-compact-overtime-input ${cell.overtimeHasValue ? 'attendance-hours-input--overtime-filled' : ''}`}
-                        type="text"
-                        inputMode="decimal"
-                        value={cell.overtimeInputValue}
-                        onChange={(event) => handleOvertimeValueChange(employee.id, cell.dateStr, event.target.value)}
-                        onBlur={() => {
-                          handleOvertimeValueBlur(employee.id, cell.dateStr);
-                          setCompactOvertimeEditorKey(null);
-                        }}
-                        onFocus={(event) => handleGridInputFocus(cell.dateStr, event)}
-                        onClick={selectAllInputText}
-                        onKeyDown={handleGridKeyDown}
-                        data-attendance-focus="true"
-                        placeholder="str"
-                        autoFocus
-                        disabled={isWriteBlocked}
-                        title="Straordinario decimale separato dalle ore normali"
-                      />
-                    ) : (
-                      <button
-                        type="button"
-                        className={`attendance-compact-overtime-badge ${cell.overtimeHasValue ? 'attendance-compact-overtime-badge--filled' : ''}`}
-                        onClick={() => {
-                          handleAttendanceCellFocus(cell.dateStr);
-                          setCompactOvertimeEditorKey(cell.overtimeEditorKey);
-                        }}
-                        disabled={isWriteBlocked}
-                        title={cell.overtimeHasValue ? `Straordinario ${cell.overtimeInputValue} h. Clicca per modificare.` : 'Aggiungi straordinario'}
-                      >
-                        {cell.overtimeHasValue ? `+${cell.overtimeInputValue}` : '+STR'}
-                      </button>
-                    )
-                  ) : null}
-                </>
-              ) : (
-                <>
-                  <input
-                    className={`attendance-hours-input attendance-hours-input--overtime ${cell.overtimeHasValue ? 'attendance-hours-input--overtime-filled' : ''}`}
-                    type="text"
-                    inputMode="decimal"
-                    value={cell.overtimeInputValue}
-                    onChange={(event) => handleOvertimeValueChange(employee.id, cell.dateStr, event.target.value)}
-                    onBlur={() => handleOvertimeValueBlur(employee.id, cell.dateStr)}
-                    onFocus={(event) => handleGridInputFocus(cell.dateStr, event)}
-                    onClick={selectAllInputText}
-                    onKeyDown={handleGridKeyDown}
-                    data-attendance-focus="true"
-                    placeholder="str"
-                    disabled={isWriteBlocked || cell.isSpecial}
-                    title="Straordinario decimale separato dalle ore normali"
-                  />
-
-                  {cell.isMainType ? (
-                    <span className="attendance-marker-placeholder" />
-                  ) : cell.markerMeta && !cell.isEditingMarker ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        handleAttendanceCellFocus(cell.dateStr);
-                        setOpenMarkerMenuKey(cell.markerMenuKey);
-                      }}
-                      title={`Marcatore ${cell.markerMeta.text}. Clicca per modificare.`}
-                      className="attendance-marker-button"
-                      style={{ background: cell.markerMeta.background, color: cell.markerMeta.color }}
-                      disabled={isWriteBlocked}
-                    >
-                      <MarkerVisual marker={cell.markerMeta} size={16} />
-                    </button>
-                  ) : (
-                    <select
-                      className="attendance-marker-select"
-                      value={cell.att?.marker_code || ''}
-                      onChange={(event) => {
-                        const nextValue = event.target.value || null;
-                        handleMarkerChange(employee.id, cell.dateStr, nextValue);
-                        setOpenMarkerMenuKey(nextValue ? null : cell.markerMenuKey);
-                      }}
-                      onFocus={() => handleAttendanceCellFocus(cell.dateStr)}
-                      onKeyDown={handleGridKeyDown}
-                      data-attendance-focus="true"
-                      onBlur={() => {
-                        if (cell.att?.marker_code) {
-                          setOpenMarkerMenuKey(null);
-                        }
-                      }}
-                      title="Seleziona un marcatore grafico"
-                      disabled={isWriteBlocked}
-                    >
-                      <option value="">+</option>
-                      {activeMarkers.map((item) => (
-                        <option key={item.value} value={item.value}>
-                          {item.image ? item.text : item.symbol}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        </td>
-      ))}
+        return (
+          <td
+            key={cell.dateStr}
+            style={{
+              ...tdStyleCenterCurrent,
+              ...getCalendarCellStyle(cell.dayInfo),
+              ...(cell.dateStr === todayKey ? todayCellStyle : {}),
+            }}
+            title={cell.dayInfo?.holidayLabel || undefined}
+          >
+            <button
+              type="button"
+              className={`attendance-compact-cell ${cell.mainInputValue ? 'attendance-compact-cell--filled' : ''} ${cell.isSpecial ? 'attendance-compact-cell--special' : ''} ${hasSecondaryDetails ? 'attendance-compact-cell--detailed' : ''}`}
+              onClick={() => !isWriteBlocked && onCellClick(Number(employee.id), cell.dateStr)}
+              title={cell.dateStr}
+              style={{ cursor: isWriteBlocked ? 'default' : 'pointer' }}
+              disabled={isWriteBlocked}
+              aria-label={`Modifica presenza del ${cell.dateStr} per ${employee.first_name} ${employee.last_name}`}
+            >
+              <span className="attendance-compact-cell__value">{cell.mainInputValue || ''}</span>
+              {hasSecondaryDetails ? <span className="attendance-compact-cell__dot" aria-hidden="true" /> : null}
+            </button>
+          </td>
+        );
+      })}
 
       <td style={tdStyleRightHoursCurrent}>{totalHoursLabel}</td>
       <td style={tdStyleRightSummaryCurrent}>{summaryLabel}</td>
@@ -316,6 +163,7 @@ function arePropsEqualImpl(prev, next) {
   if (prev.tdStyleCenterCurrent !== next.tdStyleCenterCurrent) return false;
   if (prev.tdStyleRightHoursCurrent !== next.tdStyleRightHoursCurrent) return false;
   if (prev.tdStyleRightSummaryCurrent !== next.tdStyleRightSummaryCurrent) return false;
+  if (prev.onCellClick !== next.onCellClick) return false;
   if (!areCellsEqual(prev.cells, next.cells)) return false;
   return true;
 }

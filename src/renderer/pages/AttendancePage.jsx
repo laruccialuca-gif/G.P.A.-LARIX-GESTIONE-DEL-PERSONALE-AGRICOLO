@@ -120,7 +120,7 @@ function logAttendancePerf(event, details = {}) {
 }
 
 function normalizeAttendanceLayoutMode(value) {
-  return value === 'compact' ? 'compact' : 'standard';
+  return value === 'standard' ? 'standard' : 'compact';
 }
 
 function getConfiguredDayMarkers(settings) {
@@ -574,9 +574,17 @@ export default function AttendancePage() {
   const [attendanceLoading, setAttendanceLoading] = useState(true);
   const [saveState, setSaveState] = useState('idle');
   const [showQuickEntry, setShowQuickEntry] = useState(false);
+  const [showQuickActionsMenu, setShowQuickActionsMenu] = useState(false);
   const [quickEntryDate, setQuickEntryDate] = useState(formatLocalDate(new Date()));
   const [showHoursLegend, setShowHoursLegend] = useState(false);
   const [liveHoursPreview, setLiveHoursPreview] = useState('');
+  const [selectedCellKey, setSelectedCellKey] = useState(null);
+  const [cellEditorValues, setCellEditorValues] = useState({
+    presence: '',
+    overtime: '',
+    marker: '',
+    notes: '',
+  });
   const [openMarkerMenuKey, setOpenMarkerMenuKey] = useState(null);
   const [compactOvertimeEditorKey, setCompactOvertimeEditorKey] = useState(null);
   const [showPrintPreview, setShowPrintPreview] = useState(false);
@@ -898,11 +906,19 @@ export default function AttendancePage() {
   }, []);
 
   const activeEmployees = useMemo(
-    () => employees.filter((employee) =>
-      employee.status === 'attivo' &&
-      !employee.is_deleted &&
-      employeeIsActiveInYear(employee, selectedYear)
-    ),
+    () => employees
+      .filter((employee) =>
+        employee.status === 'attivo' &&
+        !employee.is_deleted &&
+        employeeIsActiveInYear(employee, selectedYear)
+      )
+      .sort((a, b) =>
+        `${a.last_name} ${a.first_name}`.localeCompare(
+          `${b.last_name} ${b.first_name}`,
+          'it',
+          { sensitivity: 'base' }
+        )
+      ),
     [employees, selectedYear]
   );
   const attendanceSettings = useMemo(() => getAttendanceSettings(settings), [settings]);
@@ -995,6 +1011,17 @@ export default function AttendancePage() {
     () => displayRows.map(({ employee }) => Number(employee.id)).filter(Number.isFinite),
     [displayRows]
   );
+
+  useEffect(() => {
+    console.log('[attendance-debug] employee-filter-render', {
+      'availableEmployees.length': filterAvailableEmployees.length,
+      'selectedIds.length': employeeFilterIds.length,
+      'filteredRows.length': displayRows.length,
+      'totalRows.length': entityRows.length,
+      selectedIds: employeeFilterIds,
+      filterSetSize: employeeFilterSet.size,
+    });
+  }, [filterAvailableEmployees.length, employeeFilterIds.length, displayRows.length, entityRows.length, employeeFilterIds, employeeFilterSet.size]);
 
   useEffect(() => {
     if (selectedMeta.type === 'employee' && !activeEmployees.some((employee) => Number(employee.id) === selectedMeta.id)) {
@@ -1150,6 +1177,111 @@ export default function AttendancePage() {
     const key = `${employeeId}_${date}`;
     return pendingChanges[key] !== undefined ? pendingChanges[key] : attendanceMap[key];
   };
+
+  const handleCellClick = useStableCallback((employeeId, dateStr) => {
+    const att = getAtt(employeeId, dateStr);
+    console.log('[attendance-debug] open-cell-editor', { employeeId, date: dateStr });
+    setShowQuickActionsMenu(false);
+    setCellEditorValues({
+      presence: getMainInputValue(att),
+      overtime: att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : '',
+      marker: att?.marker_code || '',
+      notes: att?.notes || '',
+    });
+    setSelectedCellKey(`${employeeId}_${dateStr}`);
+  });
+
+  const handleCloseCellEditor = useStableCallback(() => {
+    setCellEditorValues({
+      presence: '',
+      overtime: '',
+      marker: '',
+      notes: '',
+    });
+    setSelectedCellKey(null);
+  });
+
+  const handleSaveCellEditor = useStableCallback(() => {
+    if (!selectedCellData) {
+      return;
+    }
+
+    const parsedMain = parseMainInputValue(cellEditorValues.presence, attendanceSettings);
+    const parsedOvertime = parseOvertimeInputValue(cellEditorValues.overtime, attendanceSettings);
+
+    if (parsedMain.kind === 'invalid') {
+      alert('Valore presenza non valido');
+      return;
+    }
+
+    if (parsedOvertime.kind === 'invalid') {
+      alert('Valore straordinario non valido');
+      return;
+    }
+
+    let mainPatch;
+    if (parsedMain.kind === 'type') {
+      mainPatch = {
+        status: parsedMain.status,
+        entry_code: null,
+        hours_worked: '',
+        marker_code: null,
+        overtime_hours: 0,
+      };
+    } else if (parsedMain.kind === 'symbol') {
+      mainPatch = {
+        status: 'presente',
+        entry_code: parsedMain.symbol,
+        hours_worked: parsedMain.hours,
+      };
+    } else if (parsedMain.kind === 'empty') {
+      mainPatch = {
+        status: 'presente',
+        entry_code: null,
+        hours_worked: '',
+      };
+    } else {
+      mainPatch = {
+        status: parsedMain.hours === 0 ? 'assente' : 'presente',
+        entry_code: null,
+        hours_worked: parsedMain.hours,
+      };
+    }
+
+    const patch = {
+      ...mainPatch,
+      overtime_hours: parsedOvertime.kind === 'empty' ? 0 : parsedOvertime.hours,
+      marker_code: cellEditorValues.marker || null,
+      notes: cellEditorValues.notes.trim() ? cellEditorValues.notes.trim() : null,
+    };
+
+    if (MAIN_DAY_TYPES.some((item) => item.value === patch.status) && patch.marker_code) {
+      alert('I marker non sono disponibili per questo tipo di presenza.');
+      return;
+    }
+
+    console.log('[attendance-debug] save-cell-editor', {
+      employeeId: selectedCellData.employeeId,
+      date: selectedCellData.dateStr,
+      patch,
+    });
+    applyEntryPatch(selectedCellData.employeeId, selectedCellData.dateStr, patch, {
+      field: 'all',
+      source: 'compact-cell-editor',
+    });
+    setSelectedCellKey(null);
+  });
+
+  const selectedCellData = useMemo(() => {
+    if (!selectedCellKey) return null;
+    const [empIdStr, ...dateArr] = selectedCellKey.split('_');
+    const dateStr = dateArr.join('_');
+    const employeeId = Number(empIdStr);
+    const employee = activeEmployees.find((e) => Number(e.id) === employeeId) || null;
+    const attKey = `${employeeId}_${dateStr}`;
+    const att = pendingChanges[attKey] || attendanceMap[attKey] || null;
+    return { employeeId, dateStr, employee, att };
+  }, [selectedCellKey, activeEmployees, pendingChanges, attendanceMap]);
 
   const attendanceRowsData = useMemo(
     () => {
@@ -2308,7 +2440,7 @@ export default function AttendancePage() {
             <span className="page-kicker">Gestione mensile</span>
             <h1 className="page-title">Foglio Presenze</h1>
             <p className="page-subtitle attendance-hero-subtitle">
-              Seleziona un dipendente o una squadra: la registrazione resta sempre sui singoli componenti.
+              Griglia compatta, dettagli su richiesta e strumenti rapidi per lavorare piu velocemente sul mese.
             </p>
           </div>
 
@@ -2340,31 +2472,93 @@ export default function AttendancePage() {
             >
               Annulla
             </button>
-            <button
-              className="button-secondary"
-              onClick={() => {
-                setQuickEntryDate(getDefaultQuickDateForMonth(currentMonth));
-                setShowQuickEntry(true);
-              }}
-            >
-              Inserimento rapido giornaliero
-            </button>
-            <button className="button-secondary" onClick={() => handlePreviewPdf('all')}>Anteprima PDF</button>
-            <button className="button" onClick={() => handleSavePdf('all')}>Genera PDF</button>
-            <button className="button-secondary" onClick={() => handlePrint('all')}>Stampa</button>
-            {hasSelectedPrintRows ? (
-              <>
-                <button className="button-secondary" onClick={() => handlePreviewPdf('selected')}>
-                  Anteprima selezionati ({selectedPrintRows.length})
-                </button>
-                <button className="button" onClick={() => handleSavePdf('selected')}>
-                  Genera PDF selezionati ({selectedPrintRows.length})
-                </button>
-                <button className="button-secondary" onClick={() => handlePrint('selected')}>
-                  Stampa selezionati
-                </button>
-              </>
-            ) : null}
+            <div className="attendance-actions-menu">
+              <button
+                className="button"
+                type="button"
+                onClick={() => setShowQuickActionsMenu((current) => !current)}
+              >
+                Azioni rapide
+              </button>
+              {showQuickActionsMenu ? (
+                <div className="attendance-actions-menu__panel">
+                  <button
+                    type="button"
+                    className="attendance-actions-menu__item"
+                    onClick={() => {
+                      setQuickEntryDate(getDefaultQuickDateForMonth(currentMonth));
+                      setShowQuickEntry(true);
+                      setShowQuickActionsMenu(false);
+                    }}
+                  >
+                    Inserimento rapido giornaliero
+                  </button>
+                  <button
+                    type="button"
+                    className="attendance-actions-menu__item"
+                    onClick={() => {
+                      handleSavePdf('all');
+                      setShowQuickActionsMenu(false);
+                    }}
+                  >
+                    Genera PDF
+                  </button>
+                  <button
+                    type="button"
+                    className="attendance-actions-menu__item"
+                    onClick={() => {
+                      handlePreviewPdf('all');
+                      setShowQuickActionsMenu(false);
+                    }}
+                  >
+                    Anteprima PDF
+                  </button>
+                  <button
+                    type="button"
+                    className="attendance-actions-menu__item"
+                    onClick={() => {
+                      handleSavePdf('selected');
+                      setShowQuickActionsMenu(false);
+                    }}
+                    disabled={!hasSelectedPrintRows}
+                  >
+                    Genera PDF selezionati
+                  </button>
+                  <button
+                    type="button"
+                    className="attendance-actions-menu__item"
+                    onClick={() => {
+                      handlePreviewPdf('selected');
+                      setShowQuickActionsMenu(false);
+                    }}
+                    disabled={!hasSelectedPrintRows}
+                  >
+                    Anteprima PDF selezionati
+                  </button>
+                  <button
+                    type="button"
+                    className="attendance-actions-menu__item"
+                    onClick={() => {
+                      handlePrint('all');
+                      setShowQuickActionsMenu(false);
+                    }}
+                  >
+                    Stampa
+                  </button>
+                  <button
+                    type="button"
+                    className="attendance-actions-menu__item"
+                    onClick={() => {
+                      handlePrint('selected');
+                      setShowQuickActionsMenu(false);
+                    }}
+                    disabled={!hasSelectedPrintRows}
+                  >
+                    Stampa selezionati
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </section>
 
@@ -2531,7 +2725,7 @@ export default function AttendancePage() {
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
               <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#115e59' }}>
-                Legenda principale
+                Legenda rapida
               </div>
               <button
                 type="button"
@@ -2539,32 +2733,21 @@ export default function AttendancePage() {
                 style={{ padding: '6px 12px', minHeight: 0 }}
                 onClick={() => setShowHoursLegend((current) => !current)}
               >
-                {showHoursLegend ? 'Nascondi legenda ore' : 'Legenda ore ?'}
+                {showHoursLegend ? 'Nascondi esempi ore' : 'Mostra esempi ore'}
               </button>
-              {liveHoursPreview ? (
-                <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
-                  Anteprima ore: {liveHoursPreview}
-                </span>
-              ) : null}
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <label className="attendance-layout-mode">
-                <span className="attendance-layout-mode__label">Layout</span>
-                <select
-                  value={layoutMode}
-                  onChange={(event) => setLayoutMode(normalizeAttendanceLayoutMode(event.target.value))}
-                  className="attendance-layout-mode__select"
-                >
-                  <option value="standard">Standard</option>
-                  <option value="compact">Compatta</option>
-                </select>
-              </label>
+              <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.1)', color: '#1d4ed8' }}>
+                Layout compatto attivo
+              </span>
               <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.1)', color: '#1d4ed8' }}>
                 {selectedEmployeeIds.length} selezionati
               </span>
-              <span className="soft-chip" style={{ background: 'rgba(20, 33, 61, 0.06)', color: '#314762' }}>
-                Selezione multipla pronta per azioni batch
-              </span>
+              {liveHoursPreview ? (
+                <span className="soft-chip" style={{ background: 'rgba(20, 33, 61, 0.06)', color: '#314762' }}>
+                  Anteprima ore: {liveHoursPreview}
+                </span>
+              ) : null}
             </div>
           </div>
           {showHoursLegend ? (
@@ -2589,9 +2772,6 @@ export default function AttendancePage() {
             ))}
           </div>
 
-          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#115e59' }}>
-            Marcatori grafici aggiuntivi
-          </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {activeMarkers.map((marker) => (
               <span
@@ -2675,6 +2855,7 @@ export default function AttendancePage() {
             handleOvertimeValueChange={handleOvertimeValueChange}
             handleOvertimeValueBlur={handleOvertimeValueBlur}
             inputDrafts={inputDrafts}
+            onCellClick={handleCellClick}
           />
         )
       )}
@@ -2682,34 +2863,91 @@ export default function AttendancePage() {
       <QuickAttendanceModal
         open={showQuickEntry}
         quickDate={quickEntryDate}
-        previousDate={shiftLocalDateString(quickEntryDate, -1)}
         onDateChange={handleQuickEntryDateChange}
         onClose={handleCloseQuickEntry}
         rows={quickEntryRows}
         saveState={saveState}
-        scopeType={selectedMeta.type}
-        scopeLabel={
-          selectedMeta.type === 'team'
-            ? selectedTeam?.name || 'Squadra'
-            : selectedMeta.type === 'no_team'
-            ? 'Dipendenti senza squadra'
-            : selectedMeta.type === 'employee'
-            ? displayRows[0]?.employee
-              ? `${displayRows[0].employee.first_name} ${displayRows[0].employee.last_name}`
-              : 'Dipendente'
-            : 'Tutti i dipendenti attivi'
-        }
         onApplyHours={applyQuickHours}
         onApplyOvertime={applyQuickOvertime}
         onApplyMarker={applyQuickMarker}
-        onCopyPreviousDay={applyCopyPreviousDay}
-        onClearHours={clearPendingChange}
-        onUseToday={() => handleQuickEntryDateChange(getDefaultQuickDateForMonth(currentMonth))}
-        onMovePreviousDay={() => handleQuickEntryDateChange(shiftLocalDateString(quickEntryDate, -1))}
-        onMoveNextDay={() => handleQuickEntryDateChange(shiftLocalDateString(quickEntryDate, 1))}
         attendanceSettings={attendanceSettings}
         markers={activeMarkers}
       />
+
+      {selectedCellData ? (
+        <div className="modal-overlay" onClick={handleCloseCellEditor}>
+          <div className="modal-dialog attendance-cell-editor" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header attendance-cell-editor__header">
+              <div>
+                <span className="page-kicker">Dettaglio cella</span>
+                <h2 style={{ margin: '4px 0 0', fontSize: 20 }}>
+                  {selectedCellData.employee?.first_name} {selectedCellData.employee?.last_name}
+                </h2>
+                <div style={{ color: '#667085', marginTop: 4 }}>
+                  {formatIsoDateLabel(selectedCellData.dateStr)}
+                </div>
+              </div>
+              <button type="button" className="modal-close" onClick={handleCloseCellEditor}>x</button>
+            </div>
+
+            <div className="attendance-cell-editor__grid">
+              <label className="field">
+                <span>Presenza</span>
+                <input
+                  type="text"
+                  value={cellEditorValues.presence}
+                  onChange={(event) => setCellEditorValues((current) => ({ ...current, presence: event.target.value }))}
+                  placeholder={attendanceSettings?.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : 'Ore'}
+                />
+              </label>
+
+              <label className="field">
+                <span>Straordinario</span>
+                <input
+                  type="text"
+                  value={cellEditorValues.overtime}
+                  onChange={(event) => setCellEditorValues((current) => ({ ...current, overtime: event.target.value }))}
+                  placeholder="Ore"
+                />
+              </label>
+
+              <label className="field">
+                <span>Marker</span>
+                <select
+                  value={cellEditorValues.marker}
+                  onChange={(event) => setCellEditorValues((current) => ({ ...current, marker: event.target.value }))}
+                >
+                  <option value="">Nessun marker</option>
+                  {activeMarkers.map((marker) => (
+                    <option key={marker.value} value={marker.value}>
+                      {marker.text}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="field attendance-cell-editor__notes">
+                <span>Note</span>
+                <textarea
+                  rows={4}
+                  value={cellEditorValues.notes}
+                  onChange={(event) => setCellEditorValues((current) => ({ ...current, notes: event.target.value }))}
+                  placeholder="Aggiungi note"
+                />
+              </label>
+            </div>
+
+            <div className="attendance-cell-editor__actions">
+              <button type="button" className="button" onClick={handleSaveCellEditor}>
+                Salva
+              </button>
+              <button type="button" className="button-secondary" onClick={handleCloseCellEditor}>
+                Annulla
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showPrintPreview ? (
         <div

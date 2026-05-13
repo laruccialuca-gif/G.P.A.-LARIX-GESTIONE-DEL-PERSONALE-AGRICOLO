@@ -87,6 +87,7 @@ function AttendanceTable(props) {
   handleMarkerChange,
   handleOvertimeValueChange,
   handleOvertimeValueBlur,
+  onCellClick,
   } = props;
   countAttendanceDiag('AttendanceTable render');
   console.count('[attendance-diag] AttendanceTable render');
@@ -247,6 +248,7 @@ function AttendanceTable(props) {
                 handleMarkerChange={handleMarkerChange}
                 handleOvertimeValueChange={handleOvertimeValueChange}
                 handleOvertimeValueBlur={handleOvertimeValueBlur}
+                onCellClick={onCellClick}
               />
             );
           })}
