@@ -1603,6 +1603,21 @@ textarea {
   background: #2563eb;
 }
 
+.attendance-section-header-row {
+  background: #f8fafc;
+}
+
+.attendance-section-header-cell {
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #64748b;
+  border-top: 2px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
 .attendance-actions-menu {
   position: relative;
 }

@@ -114,11 +114,12 @@ function bulkUpsertAttendance(entries) {
 function bulkUpsertTeamAttendance(entries) {
   const db = getDb();
   const upsert = db.prepare(`
-    INSERT INTO team_attendance (team_id, date, headcount, notes)
-    VALUES (@team_id, @date, @headcount, @notes)
+    INSERT INTO team_attendance (team_id, date, headcount, hours_per_person, notes)
+    VALUES (@team_id, @date, @headcount, @hours_per_person, @notes)
     ON CONFLICT(team_id, date)
     DO UPDATE SET
       headcount = excluded.headcount,
+      hours_per_person = excluded.hours_per_person,
       notes = excluded.notes,
       updated_at = CURRENT_TIMESTAMP
   `);
@@ -133,8 +134,12 @@ function bulkUpsertTeamAttendance(entries) {
         entry.headcount === '' || entry.headcount === null || entry.headcount === undefined
           ? null
           : Number(entry.headcount);
+      const hoursPerPerson =
+        entry.hours_per_person === '' || entry.hours_per_person === null || entry.hours_per_person === undefined
+          ? null
+          : Number(entry.hours_per_person);
       const notes = entry.notes ? String(entry.notes) : null;
-      const shouldDelete = (!Number.isFinite(headcount) || headcount <= 0) && !notes;
+      const shouldDelete = (!Number.isFinite(headcount) || headcount <= 0) && !notes && (!Number.isFinite(hoursPerPerson) || hoursPerPerson <= 0);
 
       if (shouldDelete) {
         remove.run(Number(entry.team_id), entry.date);
@@ -145,6 +150,7 @@ function bulkUpsertTeamAttendance(entries) {
         team_id: Number(entry.team_id),
         date: entry.date,
         headcount: Number.isFinite(headcount) ? headcount : 0,
+        hours_per_person: Number.isFinite(hoursPerPerson) && hoursPerPerson > 0 ? hoursPerPerson : null,
         notes,
       });
     }

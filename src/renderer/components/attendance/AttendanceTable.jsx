@@ -198,82 +198,103 @@ function AttendanceTable(props) {
           </tr>
         </thead>
         <tbody>
-          {attendanceRowsData.map((rowData) => {
-            const { employee, teamMember, effectiveAttendance, totals } = rowData;
-            const employeeId = employee.id;
+          {(() => {
+            let headcountSectionShown = false;
+            const items = [];
+            for (const rowData of attendanceRowsData) {
+              const { employee, teamMember, effectiveAttendance, totals, headcountMode } = rowData;
+              const employeeId = employee.id;
+              const isHCTeam = !!headcountMode;
 
-            // Per-cell precompute (timed for profiling)
-            const __cellsT0 = __nowMs();
-            const cells = daysInMonth.map((day, idx) => {
-              const dateStr = dayKeys[idx];
-              const att = effectiveAttendance[dateStr];
-              const isSpecial = !!(att?.status && att.status !== 'presente' && att.status !== 'assente');
-              const specialOpt = getMainTypeMeta(att?.status);
-              const markerMeta = getMarkerMeta(att?.marker_code, availableMarkers);
-              const dayInfo = dayInfoMap[dateStr];
-              const markerMenuKey = `${employeeId}_${dateStr}`;
-              const overtimeEditorKey = `${employeeId}_${dateStr}_overtime`;
-              const isMainType = MAIN_DAY_TYPES.some((item) => item.value === att?.status);
-              const isEditingMarker = openMarkerMenuKey === markerMenuKey || !markerMeta;
-              const isEditingCompactOvertime = compactOvertimeEditorKey === overtimeEditorKey;
-              const mainInputValue = getDisplayedInputValue(inputDrafts, employeeId, dateStr, 'main', getMainInputValue(att));
-              const overtimeInputValue = getDisplayedInputValue(inputDrafts, employeeId, dateStr, 'overtime', att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : '');
-              const mainInputTone = getAttendanceHoursTone(mainInputValue, attendanceSettings);
-              const overtimeHasValue = String(overtimeInputValue || '').trim() !== '';
-              return {
-                dateStr, att, dayInfo,
-                isSpecial, specialOpt, markerMeta, isMainType,
-                markerMenuKey, overtimeEditorKey,
-                isEditingMarker, isEditingCompactOvertime,
-                mainInputValue, overtimeInputValue, mainInputTone, overtimeHasValue,
-              };
-            });
-            __cellsTotalMs += __nowMs() - __cellsT0;
-            __cellsRowsCount += 1;
+              // Inserire sezione header prima del primo headcount team (solo in modo "Tutti")
+              if (isHCTeam && !headcountSectionShown && selectedMeta.type === 'all') {
+                headcountSectionShown = true;
+                items.push(
+                  <tr key="section-headcount-teams" className="attendance-section-header-row">
+                    <td
+                      colSpan={daysInMonth.length + 3}
+                      className="attendance-section-header-cell"
+                    >
+                      Squadre a numero presenti
+                    </td>
+                  </tr>
+                );
+              }
 
-            const totalHoursLabel = formatHoursValue(totals.totalHours, attendanceSettings.hoursFormat);
-            const summaryLabel = totals.isHeadcountMode
-              ? formatHeadcountSummary(totals.totalHeadcount)
-              : isCompactLayout
-              ? formatCompactWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)
-              : formatWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat);
-            const isSelected = selectedEmployeeIds.includes(employeeId);
+              // Per-cell precompute (timed for profiling)
+              const __cellsT0 = __nowMs();
+              const cells = daysInMonth.map((day, idx) => {
+                const dateStr = dayKeys[idx];
+                const att = effectiveAttendance[dateStr];
+                const isSpecial = !!(att?.status && att.status !== 'presente' && att.status !== 'assente');
+                const specialOpt = getMainTypeMeta(att?.status);
+                const markerMeta = getMarkerMeta(att?.marker_code, availableMarkers);
+                const dayInfo = dayInfoMap[dateStr];
+                const markerMenuKey = `${employeeId}_${dateStr}`;
+                const overtimeEditorKey = `${employeeId}_${dateStr}_overtime`;
+                const isMainType = MAIN_DAY_TYPES.some((item) => item.value === att?.status);
+                const isEditingMarker = openMarkerMenuKey === markerMenuKey || !markerMeta;
+                const isEditingCompactOvertime = compactOvertimeEditorKey === overtimeEditorKey;
+                const mainInputValue = getDisplayedInputValue(inputDrafts, employeeId, dateStr, 'main', getMainInputValue(att));
+                const overtimeInputValue = getDisplayedInputValue(inputDrafts, employeeId, dateStr, 'overtime', att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : '');
+                const mainInputTone = getAttendanceHoursTone(mainInputValue, attendanceSettings);
+                const overtimeHasValue = String(overtimeInputValue || '').trim() !== '';
+                return {
+                  dateStr, att, dayInfo,
+                  isSpecial, specialOpt, markerMeta, isMainType,
+                  markerMenuKey, overtimeEditorKey,
+                  isEditingMarker, isEditingCompactOvertime,
+                  mainInputValue, overtimeInputValue, mainInputTone, overtimeHasValue,
+                };
+              });
+              __cellsTotalMs += __nowMs() - __cellsT0;
+              __cellsRowsCount += 1;
 
-            return (
-              <AttendanceRow
-                key={employeeId}
-                employee={employee}
-                teamMember={teamMember}
-                isSelected={isSelected}
-                cells={cells}
-                totalHoursLabel={totalHoursLabel}
-                summaryLabel={summaryLabel}
-                isCompactLayout={isCompactLayout}
-                isWriteBlocked={isWriteBlocked}
-                activeMarkers={activeMarkers}
-                todayKey={todayKey}
-                todayCellStyle={todayCellStyle}
-                tdStyleLeftCurrent={tdStyleLeftCurrent}
-                tdStyleCenterCurrent={tdStyleCenterCurrent}
-                tdStyleRightHoursCurrent={tdStyleRightHoursCurrent}
-                tdStyleRightSummaryCurrent={tdStyleRightSummaryCurrent}
-                setOpenMarkerMenuKey={setOpenMarkerMenuKey}
-                setCompactOvertimeEditorKey={setCompactOvertimeEditorKey}
-                toggleEmployeeSelection={toggleEmployeeSelection}
-                handleMainValueChange={handleMainValueChange}
-                handleMainValueBlur={handleMainValueBlur}
-                handleGridInputFocus={handleGridInputFocus}
-                handleGridKeyDown={handleGridKeyDown}
-                updateLiveHoursPreview={updateLiveHoursPreview}
-                handleAttendanceCellFocus={handleAttendanceCellFocus}
-                handleMarkerChange={handleMarkerChange}
-                handleOvertimeValueChange={handleOvertimeValueChange}
-                handleOvertimeValueBlur={handleOvertimeValueBlur}
-                onCellSingleClick={onCellSingleClick}
-                onCellDoubleClick={onCellDoubleClick}
-              />
-            );
-          })}
+              const totalHoursLabel = formatHoursValue(totals.totalHours, attendanceSettings.hoursFormat);
+              const summaryLabel = totals.isHeadcountMode
+                ? formatHeadcountSummary(totals.totalHeadcount)
+                : isCompactLayout
+                ? formatCompactWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)
+                : formatWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat);
+              const isSelected = selectedEmployeeIds.includes(employeeId);
+
+              items.push(
+                <AttendanceRow
+                  key={employeeId}
+                  employee={employee}
+                  teamMember={teamMember}
+                  isSelected={isSelected}
+                  cells={cells}
+                  totalHoursLabel={totalHoursLabel}
+                  summaryLabel={summaryLabel}
+                  isCompactLayout={isCompactLayout}
+                  isWriteBlocked={isWriteBlocked}
+                  activeMarkers={activeMarkers}
+                  todayKey={todayKey}
+                  todayCellStyle={todayCellStyle}
+                  tdStyleLeftCurrent={tdStyleLeftCurrent}
+                  tdStyleCenterCurrent={tdStyleCenterCurrent}
+                  tdStyleRightHoursCurrent={tdStyleRightHoursCurrent}
+                  tdStyleRightSummaryCurrent={tdStyleRightSummaryCurrent}
+                  setOpenMarkerMenuKey={setOpenMarkerMenuKey}
+                  setCompactOvertimeEditorKey={setCompactOvertimeEditorKey}
+                  toggleEmployeeSelection={toggleEmployeeSelection}
+                  handleMainValueChange={handleMainValueChange}
+                  handleMainValueBlur={handleMainValueBlur}
+                  handleGridInputFocus={handleGridInputFocus}
+                  handleGridKeyDown={handleGridKeyDown}
+                  updateLiveHoursPreview={updateLiveHoursPreview}
+                  handleAttendanceCellFocus={handleAttendanceCellFocus}
+                  handleMarkerChange={handleMarkerChange}
+                  handleOvertimeValueChange={handleOvertimeValueChange}
+                  handleOvertimeValueBlur={handleOvertimeValueBlur}
+                  onCellSingleClick={onCellSingleClick}
+                  onCellDoubleClick={onCellDoubleClick}
+                />
+              );
+            }
+            return items;
+          })()}
         </tbody>
       </table>
 

@@ -158,6 +158,13 @@ export function getMainInputValue(att) {
     return '';
   }
 
+  if (att.is_headcount_mode && att.overtime_hours > 0) {
+    const hpp = Number.isInteger(Number(att.overtime_hours))
+      ? String(att.overtime_hours)
+      : Number(att.overtime_hours).toFixed(2).replace(/\.?0+$/, '');
+    return `${att.hours_worked}×${hpp}`;
+  }
+
   return att.entry_code ? String(att.entry_code) : String(att.hours_worked);
 }
 

@@ -718,6 +718,10 @@ function runTeamAttendanceModeMigration(database) {
   `);
 }
 
+function runTeamAttendanceHoursPerPersonMigration(database) {
+  ensureColumn(database, 'team_attendance', 'hours_per_person', 'REAL DEFAULT NULL');
+}
+
 const MIGRATIONS = [
   {
     id: '2026-04-20-core-schema',
@@ -766,6 +770,10 @@ const MIGRATIONS = [
   {
     id: '2026-05-14-team-attendance-mode',
     run: runTeamAttendanceModeMigration,
+  },
+  {
+    id: '2026-05-14-team-attendance-hours-per-person',
+    run: runTeamAttendanceHoursPerPersonMigration,
   },
 ];
 

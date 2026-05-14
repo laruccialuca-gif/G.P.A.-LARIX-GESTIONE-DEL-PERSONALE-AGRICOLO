@@ -249,9 +249,11 @@ function isHeadcountAttendanceEntry(item) {
   return !!item?.is_headcount_mode || isTeamHeadcountRowId(item?.employee_id);
 }
 
-function createHeadcountAttendanceEntry({ teamId, date, headcount, notes, teamName }) {
+function createHeadcountAttendanceEntry({ teamId, date, headcount, hours_per_person, notes, teamName }) {
   const normalizedHeadcount =
     headcount === '' || headcount === null || headcount === undefined ? '' : Number(headcount);
+  const normalizedHpp =
+    hours_per_person === '' || hours_per_person === null || hours_per_person === undefined ? 0 : Number(hours_per_person);
 
   return normalizeAttendanceEntry({
     employee_id: getTeamHeadcountRowId(teamId),
@@ -262,7 +264,7 @@ function createHeadcountAttendanceEntry({ teamId, date, headcount, notes, teamNa
     marker_code: null,
     entry_code: null,
     hours_worked: normalizedHeadcount,
-    overtime_hours: 0,
+    overtime_hours: normalizedHpp,
     notes: notes || null,
     is_headcount_mode: true,
   });
@@ -296,8 +298,17 @@ function formatHeadcountSummary(value) {
 
 function calculateHeadcountTotals(records = [], standardHours) {
   const safeStandardHours = getSafeStandardHours(standardHours);
-  const totalHeadcount = records.reduce((sum, item) => sum + Number(item?.hours_worked || 0), 0);
-  const totalHours = Number((totalHeadcount * safeStandardHours).toFixed(2));
+  let totalHeadcount = 0;
+  let totalHours = 0;
+
+  for (const item of records) {
+    const headcount = Number(item?.hours_worked || 0);
+    const hoursPerPerson = (item?.overtime_hours > 0) ? Number(item.overtime_hours) : safeStandardHours;
+    totalHeadcount += headcount;
+    totalHours += headcount * hoursPerPerson;
+  }
+
+  totalHours = Number(totalHours.toFixed(2));
 
   return {
     standardHours: safeStandardHours,
@@ -919,6 +930,7 @@ export default function AttendancePage() {
             teamId: item.team_id,
             date: item.date,
             headcount: item.headcount,
+            hours_per_person: item.hours_per_person,
             notes: item.notes,
             teamName: item.team_name,
           })
@@ -1171,24 +1183,77 @@ export default function AttendancePage() {
       rows = employee ? [{ employee, teamMember: null }] : [];
     } else if (selectedMeta.type === 'team') {
       rows = buildTeamRows(selectedTeam, selectedYear);
+      const headcountRow = rows.find(row => isTeamHeadcountRowId(Number(row.employee.id)));
+      if (headcountRow) {
+        console.log('[attendance-debug] headcount-row-created', {
+          teamId: selectedTeam?.id,
+          teamName: selectedTeam?.name,
+          headcountRowId: headcountRow.employee.id,
+          headcountRowName: headcountRow.employee.full_name,
+          totalRows: rows.length,
+        });
+      }
     } else if (selectedMeta.type === 'no_team') {
       rows = employeesWithoutTeam.map((employee) => ({
         employee,
         teamMember: null,
       }));
     } else {
-      rows = activeEmployees
-        .map((employee, originalIndex) => ({
-          employee,
-          teamMember: null,
-          originalIndex,
-        }))
+      // selectedMeta.type === 'all'
+      // Per le squadre in modalità headcount: mostrare solo la riga sintetica, non i singoli dipendenti
+      const headcountTeams = visibleTeams.filter((team) => isTeamHeadcountMode(team));
+
+      // Costruire Set degli ID di dipendenti appartenenti a squadre headcount
+      const employeesInHeadcountTeams = new Set();
+      for (const team of headcountTeams) {
+        for (const member of team.members || []) {
+          if (
+            member.employee &&
+            !member.employee.is_deleted &&
+            employeeIsActiveInYear(member.employee, selectedYear)
+          ) {
+            employeesInHeadcountTeams.add(Number(member.employee.id));
+          }
+        }
+      }
+
+      // Filtrare activeEmployees: escludere quelli in squadre headcount
+      const employeesForDisplay = activeEmployees.filter(
+        (emp) => !employeesInHeadcountTeams.has(Number(emp.id))
+      );
+
+      // Costruire righe per dipendenti filtrati
+      let rowsBeforeSorting = employeesForDisplay.map((employee, originalIndex) => ({
+        employee,
+        teamMember: null,
+        originalIndex,
+      }));
+
+      // Aggiungere righe sintetiche per squadre headcount
+      for (const team of headcountTeams) {
+        rowsBeforeSorting.push({
+          ...buildHeadcountTeamRow(team),
+          originalIndex: Infinity,
+        });
+      }
+
+      if (headcountTeams.length > 0) {
+        console.log('[attendance-debug] entityRows-all-mode-with-headcount', {
+          totalActiveEmployees: activeEmployees.length,
+          headcountTeamsCount: headcountTeams.length,
+          headcountTeamNames: headcountTeams.map((t) => t.name),
+          employeesInHeadcountTeams: employeesInHeadcountTeams.size,
+          displayedEmployeesCount: employeesForDisplay.length,
+          finalRowsCount: rowsBeforeSorting.length,
+        });
+      }
+
+      // Ordinare alfabeticamente
+      rows = rowsBeforeSorting
         .sort((a, b) => {
-          const compareResult = String(getAttendanceEmployeeDisplayName(a.employee) || '').localeCompare(
-            String(getAttendanceEmployeeDisplayName(b.employee) || ''),
-            'it',
-            { sensitivity: 'base' }
-          );
+          const nameA = getAttendanceEmployeeDisplayName(a.employee);
+          const nameB = getAttendanceEmployeeDisplayName(b.employee);
+          const compareResult = String(nameA || '').localeCompare(String(nameB || ''), 'it', { sensitivity: 'base' });
           return compareResult !== 0 ? compareResult : a.originalIndex - b.originalIndex;
         })
         .map(({ originalIndex, ...row }) => row);
@@ -1216,10 +1281,27 @@ export default function AttendancePage() {
   );
 
   const displayRows = useMemo(() => {
+    let rows;
     if (employeeFilterSet.size === 0) {
-      return entityRows;
+      rows = entityRows;
+    } else {
+      rows = entityRows.filter(({ employee }) => {
+        const employeeId = Number(employee.id);
+        if (isTeamHeadcountRowId(employeeId)) {
+          return true;
+        }
+        return employeeFilterSet.has(employeeId);
+      });
     }
-    return entityRows.filter(({ employee }) => employeeFilterSet.has(Number(employee.id)));
+    const headcountRows = rows.filter(row => isTeamHeadcountRowId(Number(row.employee.id)));
+    if (headcountRows.length > 0) {
+      console.log('[attendance-debug] displayRows-headcount', {
+        totalDisplayRows: rows.length,
+        headcountRowsCount: headcountRows.length,
+        headcountRowIds: headcountRows.map(row => row.employee.id),
+      });
+    }
+    return rows;
   }, [entityRows, employeeFilterSet]);
 
   const filterAvailableEmployees = useMemo(
@@ -1433,21 +1515,22 @@ export default function AttendancePage() {
   }
 
   const handleCellSingleClick = useStableCallback((employeeId, dateStr) => {
-    const att = getAtt(employeeId, dateStr);
-    const currentMainValue = String(getMainInputValue(att) || '').trim();
     const isHeadcountRow = isTeamHeadcountRowId(employeeId);
-    const hasSecondaryDetails = isHeadcountRow
-      ? Boolean(att?.notes)
-      : Boolean(att?.overtime_hours || att?.marker_code || att?.notes);
 
-    if (!currentMainValue) {
-      if (isHeadcountRow) {
+    if (isHeadcountRow) {
+      const att = getAtt(employeeId, dateStr);
+      const currentMainValue = String(getMainInputValue(att) || '').trim();
+      const hasSecondaryDetails = Boolean(att?.notes);
+
+      if (!currentMainValue) {
+        // Inserisci 1 persona (toggle: empty → 1)
         applyEntryPatch(employeeId, dateStr, {
           status: 'presente',
           entry_code: null,
           hours_worked: 1,
-          marker_code: null,
           overtime_hours: 0,
+          marker_code: null,
+          is_headcount_mode: true,
         }, {
           field: 'main',
           source: 'single-click-fill-headcount',
@@ -1455,6 +1538,33 @@ export default function AttendancePage() {
         return;
       }
 
+      // Cella ha valore: chiedi conferma se ci sono note, poi cancella
+      if (
+        hasSecondaryDetails &&
+        !window.confirm('La cella contiene anche note. Vuoi rimuovere il numero presenti?')
+      ) {
+        return;
+      }
+
+      applyEntryPatch(employeeId, dateStr, {
+        status: 'presente',
+        entry_code: null,
+        hours_worked: '',
+        overtime_hours: 0,
+        marker_code: null,
+        is_headcount_mode: true,
+      }, {
+        field: 'main',
+        source: 'single-click-clear-headcount',
+      });
+      return;
+    }
+
+    const att = getAtt(employeeId, dateStr);
+    const currentMainValue = String(getMainInputValue(att) || '').trim();
+    const hasSecondaryDetails = Boolean(att?.overtime_hours || att?.marker_code || att?.notes);
+
+    if (!currentMainValue) {
       const parsedMain = parseMainInputValue(resolvedQuickClickValue, attendanceSettings);
       if (parsedMain.kind === 'invalid') {
         return;
@@ -1470,9 +1580,7 @@ export default function AttendancePage() {
     if (
       hasSecondaryDetails &&
       !window.confirm(
-        isHeadcountRow
-          ? 'La cella contiene anche note. Vuoi rimuovere solo il numero presenti?'
-          : 'La cella contiene anche straordinario, marker o note. Vuoi rimuovere solo la presenza principale?'
+        'La cella contiene anche straordinario, marker o note. Vuoi rimuovere solo la presenza principale?'
       )
     ) {
       return;
@@ -1482,7 +1590,6 @@ export default function AttendancePage() {
       status: 'presente',
       entry_code: null,
       hours_worked: '',
-      ...(isHeadcountRow ? { overtime_hours: 0, marker_code: null } : {}),
     }, {
       field: 'main',
       source: 'single-click-clear-main',
@@ -1491,11 +1598,16 @@ export default function AttendancePage() {
 
   const handleCellDoubleClick = useStableCallback((employeeId, dateStr) => {
     const att = getAtt(employeeId, dateStr);
-    console.log('[attendance-debug] open-cell-editor', { employeeId, date: dateStr });
+    const isHC = isTeamHeadcountRowId(employeeId);
+    console.log('[attendance-debug] open-cell-editor', { employeeId, date: dateStr, isHeadcount: isHC });
     setShowQuickActionsMenu(false);
     setCellEditorValues({
-      presence: getMainInputValue(att),
-      overtime: att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : '',
+      presence: isHC
+        ? (att?.hours_worked != null && att?.hours_worked !== '' ? String(att.hours_worked) : '')
+        : getMainInputValue(att),
+      overtime: isHC
+        ? (att?.overtime_hours > 0 ? String(att.overtime_hours).replace('.', ',') : '')
+        : (att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : ''),
       marker: att?.marker_code || '',
       notes: att?.notes || '',
     });
@@ -1524,11 +1636,15 @@ export default function AttendancePage() {
         return;
       }
 
+      const rawHpp = String(cellEditorValues.overtime || '').trim().replace(',', '.');
+      const parsedHpp = rawHpp ? Number(rawHpp) : 0;
+      const hoursPerPerson = Number.isFinite(parsedHpp) && parsedHpp >= 0 ? parsedHpp : 0;
+
       const patch = {
         status: 'presente',
         entry_code: null,
         hours_worked: parsedHeadcount.kind === 'empty' ? '' : parsedHeadcount.headcount,
-        overtime_hours: 0,
+        overtime_hours: hoursPerPerson,
         marker_code: null,
         notes: cellEditorValues.notes.trim() ? cellEditorValues.notes.trim() : null,
         is_headcount_mode: true,
@@ -1656,6 +1772,13 @@ export default function AttendancePage() {
             originalIndex,
           }))
           .sort((a, b) => {
+            const aIsHeadcount = !!a.row.headcountMode;
+            const bIsHeadcount = !!b.row.headcountMode;
+            // Squadre headcount sempre dopo i dipendenti normali
+            if (aIsHeadcount !== bIsHeadcount) {
+              return aIsHeadcount ? 1 : -1;
+            }
+            // Stessa categoria: ordine alfabetico per nome
             const compareResult = String(getAttendanceEmployeeDisplayName(a.row.employee) || '').localeCompare(
               String(getAttendanceEmployeeDisplayName(b.row.employee) || ''),
               'it',
@@ -2232,6 +2355,7 @@ export default function AttendancePage() {
             normalized.hours_worked === undefined
               ? null
               : Number(normalized.hours_worked || 0),
+          hours_per_person: normalized.overtime_hours > 0 ? Number(normalized.overtime_hours) : null,
           notes: normalized.notes || null,
         });
         continue;
@@ -2305,6 +2429,7 @@ export default function AttendancePage() {
             teamId: item.team_id,
             date: item.date,
             headcount: item.headcount,
+            hours_per_person: item.hours_per_person,
             notes: item.notes,
             teamName: teams.find((team) => Number(team.id) === Number(item.team_id))?.name || null,
           });
@@ -3459,9 +3584,13 @@ export default function AttendancePage() {
           <div className="modal-dialog attendance-cell-editor" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header attendance-cell-editor__header">
               <div>
-                <span className="page-kicker">Dettaglio cella</span>
+                <span className="page-kicker">
+                  {selectedCellData.isHeadcountMode ? 'Squadra' : 'Dettaglio cella'}
+                </span>
                 <h2 style={{ margin: '4px 0 0', fontSize: 20 }}>
-                  {getAttendanceEmployeeDisplayName(selectedCellData.employee)}
+                  {selectedCellData.isHeadcountMode
+                    ? 'Presenze squadra'
+                    : getAttendanceEmployeeDisplayName(selectedCellData.employee)}
                 </h2>
                 <div style={{ color: '#667085', marginTop: 4 }}>
                   {formatIsoDateLabel(selectedCellData.dateStr)}
@@ -3485,7 +3614,17 @@ export default function AttendancePage() {
                 />
               </label>
 
-              {!selectedCellData.isHeadcountMode ? (
+              {selectedCellData.isHeadcountMode ? (
+                <label className="field">
+                  <span>Ore per persona</span>
+                  <input
+                    type="text"
+                    value={cellEditorValues.overtime}
+                    onChange={(event) => setCellEditorValues((current) => ({ ...current, overtime: event.target.value }))}
+                    placeholder="es. 7 o 1,5"
+                  />
+                </label>
+              ) : (
                 <label className="field">
                   <span>Straordinario</span>
                   <input
@@ -3495,7 +3634,7 @@ export default function AttendancePage() {
                     placeholder="Ore"
                   />
                 </label>
-              ) : null}
+              )}
 
               {!selectedCellData.isHeadcountMode ? (
                 <label className="field">
@@ -3513,6 +3652,25 @@ export default function AttendancePage() {
                   </select>
                 </label>
               ) : null}
+
+              {selectedCellData.isHeadcountMode ? (() => {
+                const hc = Number(String(cellEditorValues.presence || '').replace(',', '.'));
+                const hpp = Number(String(cellEditorValues.overtime || '').replace(',', '.'));
+                const total = Number.isFinite(hc) && Number.isFinite(hpp) ? hc * hpp : null;
+                return (
+                  <div style={{
+                    gridColumn: '1 / -1',
+                    padding: '8px 12px',
+                    background: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    borderRadius: '4px',
+                    fontSize: 14,
+                    color: '#166534',
+                  }}>
+                    Totale ore: <strong>{total != null ? total.toFixed(2).replace(/\.?0+$/, '') : '—'}</strong>
+                  </div>
+                );
+              })() : null}
 
               <label className="field attendance-cell-editor__notes">
                 <span>Note</span>
