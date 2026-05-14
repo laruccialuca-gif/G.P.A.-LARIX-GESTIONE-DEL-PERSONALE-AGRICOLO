@@ -45,6 +45,9 @@ function useStableCallback(fn) {
 
 const ATTENDANCE_LAYOUT_STORAGE_KEY = 'attendance_layout_mode_v1';
 const ATTENDANCE_EMPLOYEE_FILTER_STORAGE_KEY = 'attendance_employee_filter_v1';
+const TEAM_ATTENDANCE_MODE_DETAILS = 'details';
+const TEAM_ATTENDANCE_MODE_HEADCOUNT = 'headcount';
+const TEAM_HEADCOUNT_ROW_ID_OFFSET = 1000000000;
 
 function readStoredEmployeeFilter() {
   if (typeof window === 'undefined') return [];
@@ -216,7 +219,148 @@ function parseSelection(value) {
   return { type, id: Number(id) };
 }
 
+function normalizeTeamAttendanceMode(value) {
+  return value === TEAM_ATTENDANCE_MODE_HEADCOUNT
+    ? TEAM_ATTENDANCE_MODE_HEADCOUNT
+    : TEAM_ATTENDANCE_MODE_DETAILS;
+}
+
+function isTeamHeadcountMode(team) {
+  return normalizeTeamAttendanceMode(team?.attendance_mode) === TEAM_ATTENDANCE_MODE_HEADCOUNT;
+}
+
+function getTeamHeadcountRowId(teamId) {
+  return -(TEAM_HEADCOUNT_ROW_ID_OFFSET + Number(teamId || 0));
+}
+
+function isTeamHeadcountRowId(employeeId) {
+  const safeId = Number(employeeId);
+  return Number.isFinite(safeId) && safeId <= -TEAM_HEADCOUNT_ROW_ID_OFFSET;
+}
+
+function getTeamIdFromHeadcountRowId(employeeId) {
+  if (!isTeamHeadcountRowId(employeeId)) {
+    return null;
+  }
+  return Math.abs(Number(employeeId)) - TEAM_HEADCOUNT_ROW_ID_OFFSET;
+}
+
+function isHeadcountAttendanceEntry(item) {
+  return !!item?.is_headcount_mode || isTeamHeadcountRowId(item?.employee_id);
+}
+
+function createHeadcountAttendanceEntry({ teamId, date, headcount, notes, teamName }) {
+  const normalizedHeadcount =
+    headcount === '' || headcount === null || headcount === undefined ? '' : Number(headcount);
+
+  return normalizeAttendanceEntry({
+    employee_id: getTeamHeadcountRowId(teamId),
+    team_id: Number(teamId),
+    team_name: teamName || null,
+    date,
+    status: 'presente',
+    marker_code: null,
+    entry_code: null,
+    hours_worked: normalizedHeadcount,
+    overtime_hours: 0,
+    notes: notes || null,
+    is_headcount_mode: true,
+  });
+}
+
+function parseHeadcountInputValue(rawValue) {
+  const normalized = String(rawValue ?? '').trim().replace(',', '.');
+  if (!normalized) {
+    return { kind: 'empty' };
+  }
+
+  const headcount = Number(normalized);
+  if (!Number.isFinite(headcount) || headcount < 0) {
+    return { kind: 'invalid' };
+  }
+
+  return { kind: 'headcount', headcount };
+}
+
+function formatHeadcountSummary(value) {
+  const safeValue = Number(value || 0);
+  if (safeValue <= 0) {
+    return '0 gg';
+  }
+
+  const normalized = Number.isInteger(safeValue)
+    ? String(safeValue)
+    : safeValue.toFixed(2).replace(/\.?0+$/, '');
+  return `${normalized} gg`;
+}
+
+function calculateHeadcountTotals(records = [], standardHours) {
+  const safeStandardHours = getSafeStandardHours(standardHours);
+  const totalHeadcount = records.reduce((sum, item) => sum + Number(item?.hours_worked || 0), 0);
+  const totalHours = Number((totalHeadcount * safeStandardHours).toFixed(2));
+
+  return {
+    standardHours: safeStandardHours,
+    totalRegularHours: totalHours,
+    totalOvertimeHours: 0,
+    totalHours,
+    totalHeadcount,
+    isHeadcountMode: true,
+    completeDaysRegular: Math.floor(totalHeadcount),
+    completeDaysOvertime: 0,
+    completeDaysTotal: Math.floor(totalHeadcount),
+    remainingRegularHours: 0,
+    remainingOvertimeHours: 0,
+    remainingTotalHours: 0,
+    workedSummary: formatHeadcountSummary(totalHeadcount),
+  };
+}
+
+function getAttendanceEmployeeDisplayName(employee) {
+  if (!employee) return '';
+  if (employee.full_name) {
+    return String(employee.full_name).trim();
+  }
+  return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
+}
+
+function countActiveTeamMembers(team, year) {
+  return (team?.members || []).filter((member) =>
+    member.employee &&
+    !member.employee.is_deleted &&
+    employeeIsActiveInYear(member.employee, year)
+  ).length;
+}
+
+function buildHeadcountTeamRow(team) {
+  return {
+    employee: {
+      id: getTeamHeadcountRowId(team.id),
+      first_name: `Squadra ${team.name || ''}`.trim(),
+      last_name: '',
+      full_name: `Squadra ${team.name || ''}`.trim(),
+      role: 'Numero presenti',
+      status: 'attivo',
+      is_deleted: false,
+      team_id: Number(team.id),
+      is_headcount_team_row: true,
+    },
+    teamMember: null,
+    team,
+    headcountMode: true,
+    activeMemberCount: countActiveTeamMembers(team, new Date().getFullYear()),
+  };
+}
+
 function buildTeamRows(team, year) {
+  if (!team) return [];
+  if (isTeamHeadcountMode(team)) {
+    return [{
+      ...buildHeadcountTeamRow(team),
+      activeMemberCount: countActiveTeamMembers(team, year),
+    }];
+  }
+
   return (team?.members || [])
     .filter((member) =>
       member.employee &&
@@ -232,8 +376,14 @@ function buildTeamRows(team, year) {
 function buildTeamMemberEmployeeIdsSet(teams = [], year) {
   const employeeIds = new Set();
   for (const team of teams || []) {
-    for (const row of buildTeamRows(team, year)) {
-      employeeIds.add(Number(row.employee.id));
+    for (const member of team?.members || []) {
+      if (
+        member.employee &&
+        !member.employee.is_deleted &&
+        employeeIsActiveInYear(member.employee, year)
+      ) {
+        employeeIds.add(Number(member.employee.id));
+      }
     }
   }
   return employeeIds;
@@ -313,9 +463,39 @@ function getAttendanceSettings(settings) {
     inputMode: settings?.general?.attendance_entry_mode === 'hours_only' ? 'hours_only' : 'hours_and_symbol',
     hoursFormat: 'decimal',
     quickSymbol: String(settings?.general?.attendance_quick_symbol || 'X').trim().toUpperCase().slice(0, 3) || 'X',
+    quickClickValue: String(
+      settings?.general?.attendance_quick_click_value || settings?.general?.standard_day_hours || 7
+    ).trim() || String(settings?.general?.standard_day_hours || 7),
+    quickClickUseSymbolForStandard:
+      settings?.general?.attendance_quick_click_use_symbol_for_standard !== false,
     baseHours: getSafeStandardHours(settings?.general?.standard_day_hours),
     autoSymbolizeBaseHours: !!settings?.general?.attendance_auto_symbolize_base_hours,
   };
+}
+
+function resolveAttendanceQuickClickValue(attendanceSettings) {
+  const configuredValue = String(attendanceSettings?.quickClickValue || '').trim();
+  if (!configuredValue) {
+    return attendanceSettings?.inputMode === 'hours_and_symbol'
+      ? attendanceSettings.quickSymbol
+      : String(attendanceSettings?.baseHours || '');
+  }
+
+  if (configuredValue.toUpperCase() === String(attendanceSettings?.quickSymbol || '').toUpperCase()) {
+    return attendanceSettings.quickSymbol;
+  }
+
+  const normalizedNumber = Number(configuredValue.replace(',', '.'));
+  if (
+    Number.isFinite(normalizedNumber) &&
+    attendanceSettings?.quickClickUseSymbolForStandard &&
+    attendanceSettings?.inputMode === 'hours_and_symbol' &&
+    Math.abs(normalizedNumber - Number(attendanceSettings?.baseHours || 0)) < 0.0001
+  ) {
+    return attendanceSettings.quickSymbol;
+  }
+
+  return configuredValue;
 }
 
 function parseOvertimeInputValue(rawValue, attendanceSettings) {
@@ -575,6 +755,8 @@ export default function AttendancePage() {
   const [saveState, setSaveState] = useState('idle');
   const [showQuickEntry, setShowQuickEntry] = useState(false);
   const [showQuickActionsMenu, setShowQuickActionsMenu] = useState(false);
+  const [savingQuickClickPreference, setSavingQuickClickPreference] = useState(false);
+  const [quickClickCustomDraft, setQuickClickCustomDraft] = useState('');
   const [quickEntryDate, setQuickEntryDate] = useState(formatLocalDate(new Date()));
   const [showHoursLegend, setShowHoursLegend] = useState(false);
   const [liveHoursPreview, setLiveHoursPreview] = useState('');
@@ -720,14 +902,33 @@ export default function AttendancePage() {
 
     try {
       const attendanceStartedAt = getPerfNow();
-      const data = await window.api.attendance.listByMonth(
-        currentMonth.getFullYear(),
-        currentMonth.getMonth() + 1
-      );
-      const normalizedAttendance = (data || []).map(normalizeAttendanceEntry);
+      const [employeeAttendanceData, teamAttendanceData] = await Promise.all([
+        window.api.attendance.listByMonth(
+          currentMonth.getFullYear(),
+          currentMonth.getMonth() + 1
+        ),
+        window.api.attendance.listTeamByMonth(
+          currentMonth.getFullYear(),
+          currentMonth.getMonth() + 1
+        ),
+      ]);
+      const normalizedAttendance = [
+        ...((employeeAttendanceData || []).map(normalizeAttendanceEntry)),
+        ...((teamAttendanceData || []).map((item) =>
+          createHeadcountAttendanceEntry({
+            teamId: item.team_id,
+            date: item.date,
+            headcount: item.headcount,
+            notes: item.notes,
+            teamName: item.team_name,
+          })
+        )),
+      ];
       logAttendancePerf('page:load-attendance-month:end', {
         month: currentMonthKey,
         records_count: normalizedAttendance.length,
+        employee_records_count: Array.isArray(employeeAttendanceData) ? employeeAttendanceData.length : 0,
+        team_records_count: Array.isArray(teamAttendanceData) ? teamAttendanceData.length : 0,
         days_count: daysCount,
         duration_ms: Math.round(getPerfNow() - attendanceStartedAt),
       });
@@ -911,17 +1112,25 @@ export default function AttendancePage() {
         employee.status === 'attivo' &&
         !employee.is_deleted &&
         employeeIsActiveInYear(employee, selectedYear)
-      )
-      .sort((a, b) =>
-        `${a.last_name} ${a.first_name}`.localeCompare(
-          `${b.last_name} ${b.first_name}`,
-          'it',
-          { sensitivity: 'base' }
-        )
       ),
     [employees, selectedYear]
   );
   const attendanceSettings = useMemo(() => getAttendanceSettings(settings), [settings]);
+  const resolvedQuickClickValue = useMemo(
+    () => resolveAttendanceQuickClickValue(attendanceSettings),
+    [attendanceSettings]
+  );
+  const quickClickConfiguredValue = String(
+    settings?.general?.attendance_quick_click_value || attendanceSettings.baseHours || 7
+  ).trim();
+  const quickClickPresetValue = useMemo(() => {
+    const normalized = quickClickConfiguredValue.replace(',', '.').toUpperCase();
+    if (normalized === 'X') return 'X';
+    if (normalized === '7') return '7';
+    if (normalized === '6.5') return '6.5';
+    if (normalized === '8') return '8';
+    return 'custom';
+  }, [quickClickConfiguredValue]);
   const availableMarkers = useMemo(() => getConfiguredDayMarkers(settings), [settings]);
   const activeMarkers = useMemo(
     () => availableMarkers.filter((marker) => marker.active !== false),
@@ -968,10 +1177,21 @@ export default function AttendancePage() {
         teamMember: null,
       }));
     } else {
-      rows = activeEmployees.map((employee) => ({
-        employee,
-        teamMember: null,
-      }));
+      rows = activeEmployees
+        .map((employee, originalIndex) => ({
+          employee,
+          teamMember: null,
+          originalIndex,
+        }))
+        .sort((a, b) => {
+          const compareResult = String(getAttendanceEmployeeDisplayName(a.employee) || '').localeCompare(
+            String(getAttendanceEmployeeDisplayName(b.employee) || ''),
+            'it',
+            { sensitivity: 'base' }
+          );
+          return compareResult !== 0 ? compareResult : a.originalIndex - b.originalIndex;
+        })
+        .map(({ originalIndex, ...row }) => row);
     }
 
     logAttendancePerf('page:build-entityRows:end', {
@@ -1178,7 +1398,98 @@ export default function AttendancePage() {
     return pendingChanges[key] !== undefined ? pendingChanges[key] : attendanceMap[key];
   };
 
-  const handleCellClick = useStableCallback((employeeId, dateStr) => {
+  function buildMainPatchFromParsedValue(parsedMain) {
+    if (parsedMain.kind === 'type') {
+      return {
+        status: parsedMain.status,
+        entry_code: null,
+        hours_worked: '',
+        marker_code: null,
+        overtime_hours: 0,
+      };
+    }
+
+    if (parsedMain.kind === 'symbol') {
+      return {
+        status: 'presente',
+        entry_code: parsedMain.symbol,
+        hours_worked: parsedMain.hours,
+      };
+    }
+
+    if (parsedMain.kind === 'empty') {
+      return {
+        status: 'presente',
+        entry_code: null,
+        hours_worked: '',
+      };
+    }
+
+    return {
+      status: parsedMain.hours === 0 ? 'assente' : 'presente',
+      entry_code: null,
+      hours_worked: parsedMain.hours,
+    };
+  }
+
+  const handleCellSingleClick = useStableCallback((employeeId, dateStr) => {
+    const att = getAtt(employeeId, dateStr);
+    const currentMainValue = String(getMainInputValue(att) || '').trim();
+    const isHeadcountRow = isTeamHeadcountRowId(employeeId);
+    const hasSecondaryDetails = isHeadcountRow
+      ? Boolean(att?.notes)
+      : Boolean(att?.overtime_hours || att?.marker_code || att?.notes);
+
+    if (!currentMainValue) {
+      if (isHeadcountRow) {
+        applyEntryPatch(employeeId, dateStr, {
+          status: 'presente',
+          entry_code: null,
+          hours_worked: 1,
+          marker_code: null,
+          overtime_hours: 0,
+        }, {
+          field: 'main',
+          source: 'single-click-fill-headcount',
+        });
+        return;
+      }
+
+      const parsedMain = parseMainInputValue(resolvedQuickClickValue, attendanceSettings);
+      if (parsedMain.kind === 'invalid') {
+        return;
+      }
+
+      applyEntryPatch(employeeId, dateStr, buildMainPatchFromParsedValue(parsedMain), {
+        field: 'main',
+        source: 'single-click-fill-standard',
+      });
+      return;
+    }
+
+    if (
+      hasSecondaryDetails &&
+      !window.confirm(
+        isHeadcountRow
+          ? 'La cella contiene anche note. Vuoi rimuovere solo il numero presenti?'
+          : 'La cella contiene anche straordinario, marker o note. Vuoi rimuovere solo la presenza principale?'
+      )
+    ) {
+      return;
+    }
+
+    applyEntryPatch(employeeId, dateStr, {
+      status: 'presente',
+      entry_code: null,
+      hours_worked: '',
+      ...(isHeadcountRow ? { overtime_hours: 0, marker_code: null } : {}),
+    }, {
+      field: 'main',
+      source: 'single-click-clear-main',
+    });
+  });
+
+  const handleCellDoubleClick = useStableCallback((employeeId, dateStr) => {
     const att = getAtt(employeeId, dateStr);
     console.log('[attendance-debug] open-cell-editor', { employeeId, date: dateStr });
     setShowQuickActionsMenu(false);
@@ -1206,6 +1517,31 @@ export default function AttendancePage() {
       return;
     }
 
+    if (selectedCellData.isHeadcountMode) {
+      const parsedHeadcount = parseHeadcountInputValue(cellEditorValues.presence);
+      if (parsedHeadcount.kind === 'invalid') {
+        alert('Numero presenti non valido');
+        return;
+      }
+
+      const patch = {
+        status: 'presente',
+        entry_code: null,
+        hours_worked: parsedHeadcount.kind === 'empty' ? '' : parsedHeadcount.headcount,
+        overtime_hours: 0,
+        marker_code: null,
+        notes: cellEditorValues.notes.trim() ? cellEditorValues.notes.trim() : null,
+        is_headcount_mode: true,
+      };
+
+      applyEntryPatch(selectedCellData.employeeId, selectedCellData.dateStr, patch, {
+        field: 'all',
+        source: 'compact-cell-editor-headcount',
+      });
+      setSelectedCellKey(null);
+      return;
+    }
+
     const parsedMain = parseMainInputValue(cellEditorValues.presence, attendanceSettings);
     const parsedOvertime = parseOvertimeInputValue(cellEditorValues.overtime, attendanceSettings);
 
@@ -1219,34 +1555,7 @@ export default function AttendancePage() {
       return;
     }
 
-    let mainPatch;
-    if (parsedMain.kind === 'type') {
-      mainPatch = {
-        status: parsedMain.status,
-        entry_code: null,
-        hours_worked: '',
-        marker_code: null,
-        overtime_hours: 0,
-      };
-    } else if (parsedMain.kind === 'symbol') {
-      mainPatch = {
-        status: 'presente',
-        entry_code: parsedMain.symbol,
-        hours_worked: parsedMain.hours,
-      };
-    } else if (parsedMain.kind === 'empty') {
-      mainPatch = {
-        status: 'presente',
-        entry_code: null,
-        hours_worked: '',
-      };
-    } else {
-      mainPatch = {
-        status: parsedMain.hours === 0 ? 'assente' : 'presente',
-        entry_code: null,
-        hours_worked: parsedMain.hours,
-      };
-    }
+    const mainPatch = buildMainPatchFromParsedValue(parsedMain);
 
     const patch = {
       ...mainPatch,
@@ -1277,11 +1586,20 @@ export default function AttendancePage() {
     const [empIdStr, ...dateArr] = selectedCellKey.split('_');
     const dateStr = dateArr.join('_');
     const employeeId = Number(empIdStr);
-    const employee = activeEmployees.find((e) => Number(e.id) === employeeId) || null;
+    const employee =
+      displayRows.find((row) => Number(row.employee.id) === employeeId)?.employee ||
+      activeEmployees.find((e) => Number(e.id) === employeeId) ||
+      null;
     const attKey = `${employeeId}_${dateStr}`;
     const att = pendingChanges[attKey] || attendanceMap[attKey] || null;
-    return { employeeId, dateStr, employee, att };
-  }, [selectedCellKey, activeEmployees, pendingChanges, attendanceMap]);
+    return {
+      employeeId,
+      dateStr,
+      employee,
+      att,
+      isHeadcountMode: isTeamHeadcountRowId(employeeId) || !!employee?.is_headcount_team_row,
+    };
+  }, [selectedCellKey, activeEmployees, attendanceMap, displayRows, pendingChanges]);
 
   const attendanceRowsData = useMemo(
     () => {
@@ -1289,7 +1607,7 @@ export default function AttendancePage() {
       const startedAt = getPerfNow();
       const previousCache = attendanceRowsCacheRef.current;
       const nextCache = new Map();
-      const rows = displayRows.map(({ employee, teamMember }) => {
+      let rows = displayRows.map(({ employee, teamMember, headcountMode, team, activeMemberCount }) => {
         const employeeId = Number(employee.id);
         const baseAttendance = attendanceByEmployeeId.get(employeeId) || EMPTY_ROW_ATTENDANCE;
         const pendingAttendance = pendingChangesByEmployeeId.get(employeeId) || EMPTY_ROW_ATTENDANCE;
@@ -1299,16 +1617,20 @@ export default function AttendancePage() {
         const effectiveAttendance = pendingAttendance === EMPTY_ROW_ATTENDANCE
           ? baseAttendance
           : { ...baseAttendance, ...pendingAttendance };
-        const totals = calculateAttendanceTotals(memberRecords, attendanceSettings.baseHours);
+        const totals = headcountMode
+          ? calculateHeadcountTotals(memberRecords, attendanceSettings.baseHours)
+          : calculateAttendanceTotals(memberRecords, attendanceSettings.baseHours);
         const previousRow = previousCache.get(employeeId);
 
         if (
           previousRow &&
           previousRow.employee === employee &&
           previousRow.teamMember === teamMember &&
+          previousRow.headcountMode === !!headcountMode &&
           previousRow.effectiveAttendance === effectiveAttendance &&
           previousRow.totals?.totalHours === totals.totalHours &&
-          previousRow.totals?.standardHours === totals.standardHours
+          previousRow.totals?.standardHours === totals.standardHours &&
+          previousRow.totals?.totalHeadcount === totals.totalHeadcount
         ) {
           nextCache.set(employeeId, previousRow);
           return previousRow;
@@ -1317,12 +1639,32 @@ export default function AttendancePage() {
         const nextRow = {
           employee,
           teamMember,
+          headcountMode: !!headcountMode,
+          team,
+          activeMemberCount,
           effectiveAttendance,
           totals,
         };
         nextCache.set(employeeId, nextRow);
         return nextRow;
       });
+
+      if (selectedMeta.type === 'all') {
+        rows = rows
+          .map((row, originalIndex) => ({
+            row,
+            originalIndex,
+          }))
+          .sort((a, b) => {
+            const compareResult = String(getAttendanceEmployeeDisplayName(a.row.employee) || '').localeCompare(
+              String(getAttendanceEmployeeDisplayName(b.row.employee) || ''),
+              'it',
+              { sensitivity: 'base' }
+            );
+            return compareResult !== 0 ? compareResult : a.originalIndex - b.originalIndex;
+          })
+          .map(({ row }) => row);
+      }
 
       attendanceRowsCacheRef.current = nextCache;
       logAttendancePerf('page:calculate-totals:end', {
@@ -1340,7 +1682,7 @@ export default function AttendancePage() {
 
       return rows;
     },
-    [attendanceByEmployeeId, attendanceSettings.baseHours, dayKeys, displayRows, pendingChangesByEmployeeId]
+    [attendanceByEmployeeId, attendanceSettings.baseHours, dayKeys, displayRows, pendingChangesByEmployeeId, selectedMeta.type]
   );
 
   function getInputDraftKey(employeeId, date, field = 'main') {
@@ -1623,7 +1965,15 @@ export default function AttendancePage() {
       return;
     }
 
-    if ((parsedMain?.kind === 'hours' || parsedMain?.kind === 'symbol') && Number(parsedMain.hours || 0) > 24) {
+    const allSelectedHeadcountRows =
+      selectedEmployeeIds.length > 0 &&
+      selectedEmployeeIds.every((employeeId) => isTeamHeadcountRowId(employeeId));
+
+    if (
+      !allSelectedHeadcountRows &&
+      (parsedMain?.kind === 'hours' || parsedMain?.kind === 'symbol') &&
+      Number(parsedMain.hours || 0) > 24
+    ) {
       alert('Le ore ordinarie devono essere comprese tra 0 e 24.');
       return;
     }
@@ -1664,6 +2014,7 @@ export default function AttendancePage() {
       const next = { ...current };
 
       for (const employeeId of selectedEmployeeIds) {
+        const isHeadcountRow = isTeamHeadcountRowId(employeeId);
         const key = `${employeeId}_${bulkTargetDate}`;
         const existing = getAttendanceForSnapshot(current, employeeId, bulkTargetDate);
         const baseEntry = normalizeAttendanceEntry({
@@ -1683,7 +2034,20 @@ export default function AttendancePage() {
         if (parsedMain) {
           const canApplyMain = bulkOverwrite || !hasMainValue(baseEntry);
           if (canApplyMain) {
-            if (parsedMain.kind === 'type') {
+            if (isHeadcountRow) {
+              if (parsedMain.kind === 'type') {
+                continue;
+              }
+              nextEntry = {
+                ...nextEntry,
+                status: 'presente',
+                entry_code: null,
+                hours_worked: parsedMain.kind === 'empty' ? '' : parsedMain.hours,
+                overtime_hours: 0,
+                marker_code: null,
+                is_headcount_mode: true,
+              };
+            } else if (parsedMain.kind === 'type') {
               nextEntry = {
                 ...nextEntry,
                 status: parsedMain.status,
@@ -1711,7 +2075,7 @@ export default function AttendancePage() {
           }
         }
 
-        if (normalizedMarker) {
+        if (normalizedMarker && !isHeadcountRow) {
           const markerTargetEntry = entryChanged ? nextEntry : baseEntry;
           const canApplyMarker =
             (bulkOverwrite || !hasMarkerValue(baseEntry)) &&
@@ -1725,7 +2089,7 @@ export default function AttendancePage() {
           }
         }
 
-        if (parsedOvertime) {
+        if (parsedOvertime && !isHeadcountRow) {
           const overtimeTargetEntry = entryChanged ? nextEntry : baseEntry;
           const canApplyOvertime = bulkOverwrite || !hasOvertimeValue(baseEntry);
           if (canApplyOvertime) {
@@ -1848,9 +2212,32 @@ export default function AttendancePage() {
     }
 
     const __payloadT0 = getPerfNow();
-    const payload = entries.map(([, item]) => {
+    const employeePayload = [];
+    const teamPayload = [];
+
+    for (const [, item] of entries) {
       const normalized = normalizeAttendanceEntry(item);
-      return {
+
+      if (isHeadcountAttendanceEntry(normalized)) {
+        const teamId = normalized.team_id || getTeamIdFromHeadcountRowId(normalized.employee_id);
+        if (!teamId) {
+          continue;
+        }
+        teamPayload.push({
+          team_id: Number(teamId),
+          date: normalized.date,
+          headcount:
+            normalized.hours_worked === '' ||
+            normalized.hours_worked === null ||
+            normalized.hours_worked === undefined
+              ? null
+              : Number(normalized.hours_worked || 0),
+          notes: normalized.notes || null,
+        });
+        continue;
+      }
+
+      employeePayload.push({
         employee_id: normalized.employee_id,
         date: normalized.date,
         status: normalized.status,
@@ -1864,23 +2251,34 @@ export default function AttendancePage() {
             : Number(normalized.hours_worked || 0),
         overtime_hours: Number(normalized.overtime_hours || 0),
         notes: normalized.notes || null,
-      };
-    });
+      });
+    }
 
     __buildPayloadMs = getPerfNow() - __payloadT0;
-    console.info('[attendance-perf] flushPendingChanges:payload-built', { entries: entries.length, ms: Math.round(__buildPayloadMs * 100) / 100 });
+    console.info('[attendance-perf] flushPendingChanges:payload-built', {
+      entries: entries.length,
+      employeeEntries: employeePayload.length,
+      teamEntries: teamPayload.length,
+      ms: Math.round(__buildPayloadMs * 100) / 100,
+    });
 
     try {
       const ipcDiagToken = diagStart('save attendance IPC');
       const __ipcT0 = getPerfNow();
-      const __ipcResult = await window.api.attendance.bulkUpsert(payload);
+      const [employeeResult, teamResult] = await Promise.all([
+        employeePayload.length ? window.api.attendance.bulkUpsert(employeePayload) : Promise.resolve(null),
+        teamPayload.length ? window.api.attendance.teamBulkUpsert(teamPayload) : Promise.resolve(null),
+      ]);
       __ipcCallMs = getPerfNow() - __ipcT0;
       console.info('[attendance-perf] flushPendingChanges:ipc-bulkUpsert', {
-        entries: payload.length,
+        entries: entries.length,
+        employeeEntries: employeePayload.length,
+        teamEntries: teamPayload.length,
         ms: Math.round(__ipcCallMs),
-        mainPerf: __ipcResult?.__perf || null,
+        mainPerf: employeeResult?.__perf || null,
+        teamPerf: teamResult?.__perf || null,
       });
-      diagEnd(ipcDiagToken, { entries: payload.length });
+      diagEnd(ipcDiagToken, { entries: entries.length });
 
       if (!mountedRef.current) {
         console.info('[route-lifecycle] async cancelled', {
@@ -1897,8 +2295,29 @@ export default function AttendancePage() {
         for (const item of current) {
           nextMap[`${item.employee_id}_${item.date}`] = item;
         }
-        for (const item of payload) {
+
+        for (const item of employeePayload) {
           nextMap[`${item.employee_id}_${item.date}`] = normalizeAttendanceEntry(item);
+        }
+
+        for (const item of teamPayload) {
+          const syntheticEntry = createHeadcountAttendanceEntry({
+            teamId: item.team_id,
+            date: item.date,
+            headcount: item.headcount,
+            notes: item.notes,
+            teamName: teams.find((team) => Number(team.id) === Number(item.team_id))?.name || null,
+          });
+          const key = `${syntheticEntry.employee_id}_${syntheticEntry.date}`;
+          const shouldDelete =
+            (syntheticEntry.hours_worked === '' || Number(syntheticEntry.hours_worked || 0) <= 0) &&
+            !syntheticEntry.notes;
+
+          if (shouldDelete) {
+            delete nextMap[key];
+          } else {
+            nextMap[key] = syntheticEntry;
+          }
         }
         return Object.values(nextMap);
       });
@@ -1989,6 +2408,25 @@ export default function AttendancePage() {
     const __t0 = getPerfNow();
     setInputDraft(employeeId, date, 'main', value);
     updateLiveHoursPreview(value);
+
+    if (isTeamHeadcountRowId(employeeId)) {
+      const parsedHeadcount = parseHeadcountInputValue(value);
+      if (parsedHeadcount.kind === 'invalid') {
+        return;
+      }
+
+      applyEntryPatch(employeeId, date, {
+        status: 'presente',
+        entry_code: null,
+        hours_worked: parsedHeadcount.kind === 'empty' ? '' : parsedHeadcount.headcount,
+        overtime_hours: 0,
+        marker_code: null,
+        is_headcount_mode: true,
+      }, { field: 'main', source: 'handleMainValueChange:headcount' });
+      diagEnd(diagToken, { employeeId, date, value, mode: 'headcount' });
+      return;
+    }
+
     const parsed = parseMainInputValue(value, attendanceSettings);
 
     if (parsed.kind === 'invalid') {
@@ -2038,6 +2476,20 @@ export default function AttendancePage() {
       return;
     }
 
+     if (isTeamHeadcountRowId(employeeId)) {
+      const parsedHeadcount = parseHeadcountInputValue(draftValue);
+      if (parsedHeadcount.kind === 'invalid') {
+        setInputDraft(employeeId, date, 'main', '');
+        diagEnd(diagToken, { employeeId, date, invalid: true, mode: 'headcount' });
+        return;
+      }
+
+      setInputDraft(employeeId, date, 'main', getMainInputValue(att));
+      updateLiveHoursPreview(getMainInputValue(att));
+      diagEnd(diagToken, { employeeId, date, mode: 'headcount' });
+      return;
+    }
+
     const parsed = parseMainInputValue(draftValue, attendanceSettings);
     if (parsed.kind === 'invalid') {
       setInputDraft(employeeId, date, 'main', '');
@@ -2051,6 +2503,9 @@ export default function AttendancePage() {
   });
 
   const handleOvertimeValueChange = useStableCallback((employeeId, date, value) => {
+    if (isTeamHeadcountRowId(employeeId)) {
+      return;
+    }
     setInputDraft(employeeId, date, 'overtime', value);
     const parsed = parseOvertimeInputValue(value, attendanceSettings);
 
@@ -2067,6 +2522,9 @@ export default function AttendancePage() {
   });
 
   const handleOvertimeValueBlur = useStableCallback((employeeId, date) => {
+    if (isTeamHeadcountRowId(employeeId)) {
+      return;
+    }
     const att = getAtt(employeeId, date);
     const draftValue = inputDrafts[getInputDraftKey(employeeId, date, 'overtime')];
     if (draftValue === undefined) {
@@ -2084,6 +2542,9 @@ export default function AttendancePage() {
   });
 
   const handleMarkerChange = useStableCallback((employeeId, date, markerCode) => {
+    if (isTeamHeadcountRowId(employeeId)) {
+      return;
+    }
     const existing = getAtt(employeeId, date);
     const isMainType = MAIN_DAY_TYPES.some((item) => item.value === existing?.status);
 
@@ -2293,6 +2754,55 @@ export default function AttendancePage() {
     return mode === 'selected' && selectedEmployeeIds.length > 0 ? 'Selezionati' : 'Tutti';
   }
 
+  const saveQuickClickPreference = useStableCallback(async (patch) => {
+    if (!settings) {
+      return;
+    }
+
+    const previousSettings = settings;
+    const nextSettings = {
+      ...settings,
+      general: {
+        ...settings.general,
+        ...patch,
+      },
+    };
+
+    setSettings(nextSettings);
+    setSavingQuickClickPreference(true);
+    try {
+      const saved = await window.api.settings.save(nextSettings);
+      setSettings(saved || nextSettings);
+    } catch (err) {
+      console.error(err);
+      setSettings(previousSettings);
+      alert('Errore salvataggio preferenza click rapido');
+    } finally {
+      setSavingQuickClickPreference(false);
+    }
+  });
+
+  const handleQuickClickPresetChange = useStableCallback(async (nextValue) => {
+    if (nextValue === 'custom') {
+      setQuickClickCustomDraft((current) => current || String(attendanceSettings.baseHours || 7));
+      return;
+    }
+    setQuickClickCustomDraft(nextValue);
+    await saveQuickClickPreference({ attendance_quick_click_value: nextValue });
+  });
+
+  const handleQuickClickCustomValueCommit = useStableCallback(async () => {
+    const normalized = String(quickClickCustomDraft || '').trim().replace(',', '.');
+    if (!normalized) {
+      return;
+    }
+    await saveQuickClickPreference({ attendance_quick_click_value: normalized });
+  });
+
+  const handleQuickClickUseSymbolToggle = useStableCallback(async (checked) => {
+    await saveQuickClickPreference({ attendance_quick_click_use_symbol_for_standard: !!checked });
+  });
+
   function buildAttendancePdfFileName(mode = 'all') {
     const monthLabel = fileMonthLabel(currentMonth);
     const monthKey = sanitizeFileName(monthLabel);
@@ -2415,6 +2925,10 @@ export default function AttendancePage() {
     });
   }, [activePrintRows.length, currentMonthKey, printSelectionMode, showPrintPreview]);
 
+  useEffect(() => {
+    setQuickClickCustomDraft(quickClickConfiguredValue || String(attendanceSettings.baseHours || 7));
+  }, [quickClickConfiguredValue, attendanceSettings.baseHours]);
+
   const todayKey = formatLocalDate(new Date());
   const isCompactLayout = layoutMode === 'compact';
   const thStyleLeftCurrent = isCompactLayout ? thStyleLeftCompact : thStyleLeft;
@@ -2431,6 +2945,8 @@ export default function AttendancePage() {
     !String(bulkOvertimeValue || '').trim();
   const allEmployeesCount = activeEmployees.length;
   const ungroupedEmployeesCount = employeesWithoutTeam.length;
+  const selectedTeamUsesHeadcountMode = selectedMeta.type === 'team' && isTeamHeadcountMode(selectedTeam);
+  const selectedTeamActiveMemberCount = selectedTeam ? countActiveTeamMembers(selectedTeam, selectedYear) : 0;
 
   return (
     <div className="attendance-page">
@@ -2482,6 +2998,59 @@ export default function AttendancePage() {
               </button>
               {showQuickActionsMenu ? (
                 <div className="attendance-actions-menu__panel">
+                  <div className="attendance-actions-menu__section">
+                    <div className="attendance-actions-menu__section-title">Click rapido presenza</div>
+
+                    <label className="attendance-actions-menu__field">
+                      <span>Valore da inserire al click</span>
+                      <select
+                        value={quickClickPresetValue}
+                        onChange={(event) => handleQuickClickPresetChange(event.target.value)}
+                        disabled={savingQuickClickPreference}
+                      >
+                        <option value="X">X</option>
+                        <option value="7">7</option>
+                        <option value="6.5">6.5</option>
+                        <option value="8">8</option>
+                        <option value="custom">Valore personalizzato</option>
+                      </select>
+                    </label>
+
+                    {quickClickPresetValue === 'custom' ? (
+                      <label className="attendance-actions-menu__field">
+                        <span>Valore personalizzato</span>
+                        <input
+                          type="text"
+                          value={quickClickCustomDraft}
+                          onChange={(event) => setQuickClickCustomDraft(event.target.value)}
+                          onBlur={handleQuickClickCustomValueCommit}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault();
+                              handleQuickClickCustomValueCommit();
+                            }
+                          }}
+                          placeholder={attendanceSettings.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : String(attendanceSettings.baseHours || 7)}
+                          disabled={savingQuickClickPreference}
+                        />
+                      </label>
+                    ) : null}
+
+                    <label className="attendance-actions-menu__check">
+                      <input
+                        type="checkbox"
+                        checked={attendanceSettings.quickClickUseSymbolForStandard}
+                        onChange={(event) => handleQuickClickUseSymbolToggle(event.target.checked)}
+                        disabled={savingQuickClickPreference}
+                      />
+                      <span>Usa X se la giornata standard e configurata come X</span>
+                    </label>
+
+                    <div className="attendance-actions-menu__hint">
+                      Questo valore viene inserito con un click singolo sulle celle vuote.
+                    </div>
+                  </div>
+
                   <button
                     type="button"
                     className="attendance-actions-menu__item"
@@ -2601,16 +3170,20 @@ export default function AttendancePage() {
               <div className="page-kicker" style={{ marginBottom: 6 }}>Contesto squadra</div>
               <div style={{ fontSize: 24, fontWeight: 800 }}>{selectedTeam.name}</div>
               <div style={{ color: '#667085', marginTop: 6 }}>
-                Compili le presenze dei membri uno per uno mantenendo la stessa logica del singolo dipendente.
+                {selectedTeamUsesHeadcountMode
+                  ? 'La squadra usa la modalita numero presenti: nel foglio compare una sola riga rappresentativa con i presenti giornalieri.'
+                  : 'Compili le presenze dei membri uno per uno mantenendo la stessa logica del singolo dipendente.'}
               </div>
             </div>
 
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
-                {displayRows.length} membri visibili
+                {selectedTeamUsesHeadcountMode
+                  ? `${selectedTeamActiveMemberCount} membri attivi`
+                  : `${displayRows.length} membri visibili`}
               </span>
               <span className="soft-chip" style={{ background: 'rgba(15, 118, 110, 0.1)', color: '#115e59' }}>
-                Selezione squadra
+                {selectedTeamUsesHeadcountMode ? 'Numero presenti' : 'Selezione squadra'}
               </span>
             </div>
           </div>
@@ -2861,7 +3434,8 @@ export default function AttendancePage() {
             handleOvertimeValueChange={handleOvertimeValueChange}
             handleOvertimeValueBlur={handleOvertimeValueBlur}
             inputDrafts={inputDrafts}
-            onCellClick={handleCellClick}
+            onCellSingleClick={handleCellSingleClick}
+            onCellDoubleClick={handleCellDoubleClick}
           />
         )
       )}
@@ -2887,7 +3461,7 @@ export default function AttendancePage() {
               <div>
                 <span className="page-kicker">Dettaglio cella</span>
                 <h2 style={{ margin: '4px 0 0', fontSize: 20 }}>
-                  {selectedCellData.employee?.first_name} {selectedCellData.employee?.last_name}
+                  {getAttendanceEmployeeDisplayName(selectedCellData.employee)}
                 </h2>
                 <div style={{ color: '#667085', marginTop: 4 }}>
                   {formatIsoDateLabel(selectedCellData.dateStr)}
@@ -2898,39 +3472,47 @@ export default function AttendancePage() {
 
             <div className="attendance-cell-editor__grid">
               <label className="field">
-                <span>Presenza</span>
+                <span>{selectedCellData.isHeadcountMode ? 'Numero presenti' : 'Presenza'}</span>
                 <input
                   type="text"
                   value={cellEditorValues.presence}
                   onChange={(event) => setCellEditorValues((current) => ({ ...current, presence: event.target.value }))}
-                  placeholder={attendanceSettings?.inputMode === 'hours_and_symbol' ? attendanceSettings.quickSymbol : 'Ore'}
+                  placeholder={selectedCellData.isHeadcountMode
+                    ? 'es. 22 o 22,5'
+                    : attendanceSettings?.inputMode === 'hours_and_symbol'
+                    ? attendanceSettings.quickSymbol
+                    : 'Ore'}
                 />
               </label>
 
-              <label className="field">
-                <span>Straordinario</span>
-                <input
-                  type="text"
-                  value={cellEditorValues.overtime}
-                  onChange={(event) => setCellEditorValues((current) => ({ ...current, overtime: event.target.value }))}
-                  placeholder="Ore"
-                />
-              </label>
+              {!selectedCellData.isHeadcountMode ? (
+                <label className="field">
+                  <span>Straordinario</span>
+                  <input
+                    type="text"
+                    value={cellEditorValues.overtime}
+                    onChange={(event) => setCellEditorValues((current) => ({ ...current, overtime: event.target.value }))}
+                    placeholder="Ore"
+                  />
+                </label>
+              ) : null}
 
-              <label className="field">
-                <span>Marker</span>
-                <select
-                  value={cellEditorValues.marker}
-                  onChange={(event) => setCellEditorValues((current) => ({ ...current, marker: event.target.value }))}
-                >
-                  <option value="">Nessun marker</option>
-                  {activeMarkers.map((marker) => (
-                    <option key={marker.value} value={marker.value}>
-                      {marker.text}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {!selectedCellData.isHeadcountMode ? (
+                <label className="field">
+                  <span>Marker</span>
+                  <select
+                    value={cellEditorValues.marker}
+                    onChange={(event) => setCellEditorValues((current) => ({ ...current, marker: event.target.value }))}
+                  >
+                    <option value="">Nessun marker</option>
+                    {activeMarkers.map((marker) => (
+                      <option key={marker.value} value={marker.value}>
+                        {marker.text}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
 
               <label className="field attendance-cell-editor__notes">
                 <span>Note</span>

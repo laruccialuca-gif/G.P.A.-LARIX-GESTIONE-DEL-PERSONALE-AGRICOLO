@@ -26,6 +26,23 @@ function listAttendanceByMonth(monthOrYear, maybeMonth) {
   `).all(from, to);
 }
 
+function listTeamAttendanceByMonth(monthOrYear, maybeMonth) {
+  const db = getDb();
+  const { year, month } = parseMonthInput(monthOrYear, maybeMonth);
+
+  const from = `${year}-${String(month).padStart(2, '0')}-01`;
+  const to = `${year}-${String(month).padStart(2, '0')}-31`;
+
+  return db.prepare(`
+    SELECT ta.*, t.name AS team_name, t.attendance_mode
+    FROM team_attendance ta
+    JOIN teams t ON t.id = ta.team_id
+    WHERE ta.date BETWEEN ? AND ?
+      AND COALESCE(t.is_archived, 0) = 0
+    ORDER BY ta.date ASC, t.name COLLATE NOCASE ASC
+  `).all(from, to);
+}
+
 function saveAttendance(entry) {
   const db = getDb();
 
@@ -86,6 +103,49 @@ function bulkUpsertAttendance(entries) {
         hours_worked: entry.hours_worked === '' || entry.hours_worked === undefined ? null : entry.hours_worked,
         overtime_hours: entry.overtime_hours ?? 0,
         notes: entry.notes || null,
+      });
+    }
+  });
+
+  tx(entries);
+  return { success: true, count: entries.length };
+}
+
+function bulkUpsertTeamAttendance(entries) {
+  const db = getDb();
+  const upsert = db.prepare(`
+    INSERT INTO team_attendance (team_id, date, headcount, notes)
+    VALUES (@team_id, @date, @headcount, @notes)
+    ON CONFLICT(team_id, date)
+    DO UPDATE SET
+      headcount = excluded.headcount,
+      notes = excluded.notes,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+  const remove = db.prepare(`
+    DELETE FROM team_attendance
+    WHERE team_id = ? AND date = ?
+  `);
+
+  const tx = db.transaction((rows) => {
+    for (const entry of rows) {
+      const headcount =
+        entry.headcount === '' || entry.headcount === null || entry.headcount === undefined
+          ? null
+          : Number(entry.headcount);
+      const notes = entry.notes ? String(entry.notes) : null;
+      const shouldDelete = (!Number.isFinite(headcount) || headcount <= 0) && !notes;
+
+      if (shouldDelete) {
+        remove.run(Number(entry.team_id), entry.date);
+        continue;
+      }
+
+      upsert.run({
+        team_id: Number(entry.team_id),
+        date: entry.date,
+        headcount: Number.isFinite(headcount) ? headcount : 0,
+        notes,
       });
     }
   });
@@ -168,8 +228,10 @@ function listAttendanceYears() {
 
 module.exports = {
   listAttendanceByMonth,
+  listTeamAttendanceByMonth,
   saveAttendance,
   bulkUpsertAttendance,
+  bulkUpsertTeamAttendance,
   getMonthlySummary,
   getAttendanceMatrix,
   listAttendanceYears,

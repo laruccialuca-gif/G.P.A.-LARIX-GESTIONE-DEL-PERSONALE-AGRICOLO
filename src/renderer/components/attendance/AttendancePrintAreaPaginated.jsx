@@ -12,6 +12,25 @@ import {
   resolveMarkerImageSrc,
 } from '../../utils/attendancePrintUtils';
 
+function getAttendanceEmployeeDisplayName(employee) {
+  if (!employee) return '';
+  if (employee.full_name) {
+    return String(employee.full_name).trim();
+  }
+  return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
+}
+
+function formatHeadcountSummary(value) {
+  const safeValue = Number(value || 0);
+  if (safeValue <= 0) {
+    return '0 gg';
+  }
+  const normalized = Number.isInteger(safeValue)
+    ? String(safeValue)
+    : safeValue.toFixed(2).replace(/\.?0+$/, '');
+  return `${normalized} gg`;
+}
+
 const attendancePrintCardStyle = {
   background: '#fff',
   border: '1px solid #dbe4f0',
@@ -353,11 +372,13 @@ const AttendancePrintAreaPaginated = React.forwardRef(function AttendancePrintAr
               <tbody>
                 {page.rows.map(({ employee, teamMember }) => {
                   let totalHours = 0;
+                  let totalHeadcount = 0;
+                  const isHeadcountRow = !!employee?.is_headcount_team_row;
 
                   return (
                     <tr key={`print-row-${pageIndex}-${employee.id}`}>
                       <td style={{ ...attendancePrintBodyCellStyle, ...attendancePrintNameCellStyle, textAlign: 'left' }}>
-                        <strong>{employee.last_name} {employee.first_name}</strong>
+                        <strong>{getAttendanceEmployeeDisplayName(employee)}</strong>
                         {employee.role ? <div style={attendancePrintEmployeeMetaStyle}>{employee.role}</div> : null}
                         {teamMember?.manage_by_days ? (
                           <div style={attendancePrintEmployeeMetaStyle}>Gestione a giornate</div>
@@ -367,9 +388,14 @@ const AttendancePrintAreaPaginated = React.forwardRef(function AttendancePrintAr
                         const dateStr = formatDate(day);
                         const att = getAtt(employee.id, dateStr);
                         const dayInfo = dayInfoMap[dateStr];
-                        const hours = Number(att?.hours_worked || 0) + Number(att?.overtime_hours || 0);
+                        const hours = isHeadcountRow
+                          ? Number(att?.hours_worked || 0) * Number(baseHours || 0)
+                          : Number(att?.hours_worked || 0) + Number(att?.overtime_hours || 0);
                         if (hours > 0) {
                           totalHours += hours;
+                        }
+                        if (isHeadcountRow) {
+                          totalHeadcount += Number(att?.hours_worked || 0);
                         }
 
                         return (
@@ -381,9 +407,13 @@ const AttendancePrintAreaPaginated = React.forwardRef(function AttendancePrintAr
                             }}
                           >
                             <AttendancePrintCell
-                              mainValue={getAttendancePrintMainValue(att, hoursFormat)}
-                              overtimeValue={getAttendancePrintOvertimeValue(att, hoursFormat)}
-                              markerValue={getAttendancePrintMarkerValue(att, markers)}
+                              mainValue={isHeadcountRow
+                                ? (att?.hours_worked === '' || att?.hours_worked === null || att?.hours_worked === undefined
+                                  ? ''
+                                  : String(Number(att.hours_worked)).replace(/\.0+$/, ''))
+                                : getAttendancePrintMainValue(att, hoursFormat)}
+                              overtimeValue={isHeadcountRow ? '' : getAttendancePrintOvertimeValue(att, hoursFormat)}
+                              markerValue={isHeadcountRow ? '' : getAttendancePrintMarkerValue(att, markers)}
                             />
                           </td>
                         );
@@ -392,7 +422,7 @@ const AttendancePrintAreaPaginated = React.forwardRef(function AttendancePrintAr
                         <strong>{formatHoursValue(totalHours, hoursFormat)}</strong>
                       </td>
                       <td style={attendancePrintBodyCellStyle}>
-                        <strong>{formatCompactWorkedSummary(totalHours, baseHours, hoursFormat)}</strong>
+                        <strong>{isHeadcountRow ? formatHeadcountSummary(totalHeadcount) : formatCompactWorkedSummary(totalHours, baseHours, hoursFormat)}</strong>
                       </td>
                     </tr>
                   );

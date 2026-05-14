@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import DocumentActions from '../components/DocumentActions';
 import { calculateAttendanceTotals, formatHoursValue, formatWorkedSummary, getSafeStandardHours } from '../utils/attendanceSummary';
+import { formatCurrency as sharedFormatCurrency, formatSignedCurrency as sharedFormatSignedCurrency } from '../utils/currencyFormat';
 import { formatDisplayDate, formatDisplayDateTime } from '../utils/dateFormat';
 import { useYearContext } from '../context/YearContext';
 import { employeeIsActiveInYear } from '../utils/yearScope';
@@ -130,6 +131,33 @@ function parseSelection(value) {
 
   const [type, id] = String(value).split(':');
   return { type, id: Number(id) };
+}
+
+function getReportEmployeeDisplayName(employee) {
+  if (!employee) return '';
+  if (employee.full_name) {
+    return String(employee.full_name).trim();
+  }
+  if (employee.employee_name) {
+    return String(employee.employee_name).trim();
+  }
+  return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
+}
+
+function matchesReportEmployeeSearch(employee, normalizedSearch) {
+  const haystack = [
+    employee?.full_name,
+    employee?.employee_name,
+    employee?.name,
+    employee?.first_name,
+    employee?.last_name,
+    `${employee?.first_name || ''} ${employee?.last_name || ''}`,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return !normalizedSearch || haystack.includes(normalizedSearch);
 }
 
 function getTeamRows(team, year) {
@@ -298,12 +326,7 @@ function normalizeCurrency(value) {
 }
 
 function formatCurrency(value) {
-  const amount = Number(value || 0);
-  const formatted = new Intl.NumberFormat('it-IT', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount);
-  return `\u20ac ${formatted}`;
+  return sharedFormatCurrency(value);
 }
 
 function getBalanceOutcomeLabel(value) {
@@ -314,11 +337,7 @@ function getBalanceOutcomeLabel(value) {
 }
 
 function formatSignedCurrency(value) {
-  const amount = Number(value || 0);
-  return new Intl.NumberFormat('it-IT', {
-    style: 'currency',
-    currency: 'EUR',
-  }).format(amount);
+  return sharedFormatSignedCurrency(value);
 }
 
 function formatNegativeCurrency(value) {
@@ -464,6 +483,8 @@ export default function ReportPage() {
   const [attendance, setAttendance] = useState([]);
   const [settings, setSettings] = useState(null);
   const [selectedEntity, setSelectedEntity] = useState('');
+  const [reportSearchTerm, setReportSearchTerm] = useState('');
+  const [isEmployeeAutocompleteOpen, setIsEmployeeAutocompleteOpen] = useState(false);
   const [directoryLoading, setDirectoryLoading] = useState(true);
   const [attendanceLoading, setAttendanceLoading] = useState(true);
 
@@ -513,6 +534,7 @@ export default function ReportPage() {
   const [importedFinancialMovementIds, setImportedFinancialMovementIds] = useState([]);
   const autosaveTimeoutRef = useRef(null);
   const mountedRef = useRef(false);
+  const employeeAutocompleteRef = useRef(null);
 
   const [teamPeriodStart, setTeamPeriodStart] = useState(formatLocalDate(startOfMonth(currentMonth)));
   const [teamPeriodEnd, setTeamPeriodEnd] = useState(formatLocalDate(endOfMonth(currentMonth)));
@@ -522,6 +544,7 @@ export default function ReportPage() {
   const [teamAdvances, setTeamAdvances] = useState([createEmptyTeamAdvance()]);
   const [teamNotes, setTeamNotes] = useState('');
   const [teamPayrollMap, setTeamPayrollMap] = useState({});
+  const [processedEmployeeIdsForMonth, setProcessedEmployeeIdsForMonth] = useState(() => new Set());
 
   const selectedMeta = parseSelection(selectedEntity);
   const isEmployeeMode = selectedMeta.type === 'employee';
@@ -539,9 +562,52 @@ export default function ReportPage() {
     ),
     [employees, selectedYear]
   );
+  const sortedActiveEmployees = useMemo(
+    () =>
+      activeEmployees
+        .map((item, originalIndex) => ({
+          item,
+          originalIndex,
+        }))
+        .sort((a, b) => {
+          const compareResult = String(getReportEmployeeDisplayName(a.item) || '').localeCompare(
+            String(getReportEmployeeDisplayName(b.item) || ''),
+            'it',
+            { sensitivity: 'base' }
+          );
+          return compareResult !== 0 ? compareResult : a.originalIndex - b.originalIndex;
+        })
+        .map(({ item }) => item),
+    [activeEmployees]
+  );
+  const normalizedSearch = useMemo(
+    () => reportSearchTerm.trim().toLowerCase(),
+    [reportSearchTerm]
+  );
   const employee = isEmployeeMode
     ? activeEmployees.find((item) => String(item.id) === String(selectedMeta.id))
     : null;
+  const filteredEmployeesForSelect = useMemo(() => {
+    if (!normalizedSearch) {
+      return sortedActiveEmployees;
+    }
+
+    const filtered = sortedActiveEmployees.filter((item) =>
+      matchesReportEmployeeSearch(item, normalizedSearch)
+    );
+
+    if (
+      isEmployeeMode &&
+      employee &&
+      !filtered.some((item) => String(item.id) === String(employee.id))
+    ) {
+      return [employee, ...filtered];
+    }
+
+    return filtered;
+  }, [normalizedSearch, sortedActiveEmployees, isEmployeeMode, employee]);
+  const hasEmployeeSearchResults = filteredEmployeesForSelect.length > 0;
+  const showEmployeeAutocomplete = isEmployeeAutocompleteOpen && normalizedSearch.length > 0;
   const selectedTeam = isTeamMode
     ? visibleTeams.find((team) => String(team.id) === String(selectedMeta.id))
     : null;
@@ -577,6 +643,30 @@ export default function ReportPage() {
 
   const queryMonthsKey = queryMonths.map((item) => item.key).join('|');
   const loading = directoryLoading || attendanceLoading;
+  const selectedReportMonthKey = monthString(currentMonth);
+
+  const employeeProcessedStatusMap = useMemo(() => {
+    const map = new Map();
+    sortedActiveEmployees.forEach((item) => {
+      map.set(Number(item.id), processedEmployeeIdsForMonth.has(Number(item.id)));
+    });
+    return map;
+  }, [sortedActiveEmployees, processedEmployeeIdsForMonth]);
+
+  function getEmployeeSelectLabel(item) {
+    const baseLabel = getReportEmployeeDisplayName(item);
+    return employeeProcessedStatusMap.get(Number(item.id))
+      ? `${baseLabel} — già elaborato`
+      : baseLabel;
+  }
+
+  function handleEmployeeAutocompleteSelect(item) {
+    guardUnsavedChanges(() => {
+      setSelectedEntity(`employee:${item.id}`);
+      setReportSearchTerm(getReportEmployeeDisplayName(item));
+      setIsEmployeeAutocompleteOpen(false);
+    });
+  }
 
   function logReportPerf(stage, details = {}) {
     console.info('[report-perf]', stage, {
@@ -637,6 +727,19 @@ export default function ReportPage() {
   }, []);
 
   useEffect(() => {
+    function handlePointerDown(event) {
+      if (!employeeAutocompleteRef.current?.contains(event.target)) {
+        setIsEmployeeAutocompleteOpen(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!employee) {
       setDailyPayInput('');
       return;
@@ -692,6 +795,49 @@ export default function ReportPage() {
       setSelectedEntity('');
     }
   }, [isEmployeeMode, isTeamMode, employee, selectedTeam]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadProcessedReportsForCurrentMonth() {
+      if (typeof window.api?.payroll?.listHistory !== 'function') {
+        if (!cancelled && mountedRef.current) {
+          setProcessedEmployeeIdsForMonth(new Set());
+        }
+        return;
+      }
+
+      try {
+        const result = await window.api.payroll.listHistory({
+          year: String(currentMonth.getFullYear()),
+          month: selectedReportMonthKey,
+        });
+        if (cancelled || !mountedRef.current) {
+          return;
+        }
+
+        const items = Array.isArray(result) ? result : result?.items || [];
+        const processedIds = new Set(
+          items
+            .filter((record) => String(record.month || '') === selectedReportMonthKey)
+            .map((record) => Number(record.employee_id))
+            .filter((id) => Number.isFinite(id))
+        );
+        setProcessedEmployeeIdsForMonth(processedIds);
+      } catch (err) {
+        console.error('Errore caricamento stato report elaborati', err);
+        if (!cancelled && mountedRef.current) {
+          setProcessedEmployeeIdsForMonth(new Set());
+        }
+      }
+    }
+
+    loadProcessedReportsForCurrentMonth();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentMonth, selectedReportMonthKey]);
 
   async function refreshFinancialImportCounts(targetEmployeeId = employee?.id) {
     if (!targetEmployeeId || !window.api.financialMovements) {
@@ -2284,6 +2430,106 @@ export default function ReportPage() {
             </button>
           </div>
 
+          <div
+            ref={employeeAutocompleteRef}
+            style={{
+              position: 'relative',
+              width: 'min(340px, 100%)',
+              minWidth: 260,
+              flex: '0 1 340px',
+            }}
+          >
+            <input
+              type="search"
+              className="report-entity-select"
+              value={reportSearchTerm}
+              onFocus={() => {
+                if (reportSearchTerm.trim()) {
+                  setIsEmployeeAutocompleteOpen(true);
+                }
+              }}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setReportSearchTerm(nextValue);
+                setIsEmployeeAutocompleteOpen(nextValue.trim().length > 0);
+              }}
+              placeholder="Cerca dipendente..."
+              aria-label="Cerca dipendente..."
+              style={{ width: '100%' }}
+            />
+
+            {showEmployeeAutocomplete ? (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 8px)',
+                  left: 0,
+                  right: 0,
+                  zIndex: 30,
+                  display: 'grid',
+                  gap: 0,
+                  maxHeight: 320,
+                  overflowY: 'auto',
+                  borderRadius: 18,
+                  border: '1px solid rgba(15, 23, 42, 0.08)',
+                  background: 'rgba(255, 255, 255, 0.98)',
+                  boxShadow: '0 18px 40px rgba(15, 23, 42, 0.14)',
+                  backdropFilter: 'blur(14px)',
+                }}
+              >
+                {filteredEmployeesForSelect.length ? (
+                  filteredEmployeesForSelect.map((item) => {
+                    const isProcessed = employeeProcessedStatusMap.get(Number(item.id));
+                    return (
+                      <button
+                        key={`employee-autocomplete-${item.id}`}
+                        type="button"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => handleEmployeeAutocompleteSelect(item)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 12,
+                          width: '100%',
+                          padding: '12px 14px',
+                          border: 'none',
+                          borderBottom: '1px solid rgba(15, 23, 42, 0.06)',
+                          background: 'transparent',
+                          textAlign: 'left',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <span style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>
+                          {getReportEmployeeDisplayName(item)}
+                        </span>
+                        {isProcessed ? (
+                          <span
+                            style={{
+                              flexShrink: 0,
+                              padding: '4px 10px',
+                              borderRadius: 999,
+                              background: 'rgba(22, 163, 74, 0.12)',
+                              color: '#166534',
+                              fontSize: 11,
+                              fontWeight: 800,
+                            }}
+                          >
+                            già elaborato
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div style={{ padding: '12px 14px', fontSize: 13, color: '#6b7280' }}>
+                    Nessun dipendente trovato
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+
           <select
             className="report-entity-select"
             value={selectedEntity}
@@ -2291,11 +2537,16 @@ export default function ReportPage() {
           >
             <option value="">Seleziona dipendente o squadra...</option>
             <optgroup label="Dipendenti">
-              {activeEmployees.map((item) => (
+              {filteredEmployeesForSelect.map((item) => (
                 <option key={`employee-${item.id}`} value={`employee:${item.id}`}>
-                  {item.first_name} {item.last_name}
+                  {getEmployeeSelectLabel(item)}
                 </option>
               ))}
+              {!hasEmployeeSearchResults ? (
+                <option value="" disabled>
+                  Nessun dipendente trovato
+                </option>
+              ) : null}
             </optgroup>
             <optgroup label="Squadre">
               {visibleTeams.map((team) => (
@@ -2305,6 +2556,10 @@ export default function ReportPage() {
               ))}
             </optgroup>
           </select>
+
+          {normalizedSearch && !showEmployeeAutocomplete && !hasEmployeeSearchResults ? (
+            <div style={{ fontSize: 13, color: '#6b7280' }}>Nessun dipendente trovato</div>
+          ) : null}
         </div>
       </div>
 

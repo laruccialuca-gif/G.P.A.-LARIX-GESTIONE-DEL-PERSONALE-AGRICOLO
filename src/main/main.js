@@ -2446,6 +2446,10 @@ app.whenReady().then(async () => {
     console.info('[attendance-perf][main] attendance:bulkUpsert', __perf);
     return { ...(result || {}), __perf };
   });
+  ipcMain.handle('attendance:teamBulkUpsert', async (_, payload) => {
+    requireWritableLicense("L'inserimento di nuove presenze");
+    return attendanceRepo.bulkUpsertTeamAttendance(payload);
+  });
   ipcMain.handle('attendance:listByMonth', async (_, year, month) => {
     const startedAt = Date.now();
     logMainProcessEvent('attendance:listByMonth:start', {
@@ -2454,6 +2458,21 @@ app.whenReady().then(async () => {
     });
     const result = attendanceRepo.listAttendanceByMonth(year, month);
     logMainProcessEvent('attendance:listByMonth:end', {
+      year: Number(year),
+      month: Number(month),
+      count: Array.isArray(result) ? result.length : 0,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  });
+  ipcMain.handle('attendance:listTeamByMonth', async (_, year, month) => {
+    const startedAt = Date.now();
+    logMainProcessEvent('attendance:listTeamByMonth:start', {
+      year: Number(year),
+      month: Number(month),
+    });
+    const result = attendanceRepo.listTeamAttendanceByMonth(year, month);
+    logMainProcessEvent('attendance:listTeamByMonth:end', {
       year: Number(year),
       month: Number(month),
       count: Array.isArray(result) ? result.length : 0,

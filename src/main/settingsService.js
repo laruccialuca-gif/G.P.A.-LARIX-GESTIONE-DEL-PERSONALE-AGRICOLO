@@ -124,6 +124,8 @@ function defaultSettings() {
       overtime_display_mode: 'included',
       overtime_show_hourly_rate: true,
       attendance_quick_symbol: 'X',
+      attendance_quick_click_value: '7',
+      attendance_quick_click_use_symbol_for_standard: true,
       attendance_auto_symbolize_base_hours: false,
       legend_colors: {
         ferie: '#3b82f6',
@@ -334,6 +336,11 @@ function normalizeSettings(input = {}) {
         .trim()
         .toUpperCase()
         .slice(0, 3) || 'X',
+      attendance_quick_click_value: String(
+        merged.general?.attendance_quick_click_value || merged.general?.standard_day_hours || 7
+      ).trim() || String(merged.general?.standard_day_hours || 7),
+      attendance_quick_click_use_symbol_for_standard:
+        merged.general?.attendance_quick_click_use_symbol_for_standard !== false,
       attendance_auto_symbolize_base_hours: !!merged.general?.attendance_auto_symbolize_base_hours,
       attendance_markers: normalizeAttendanceMarkers(merged.general?.attendance_markers),
       legend_colors: {
@@ -806,6 +813,11 @@ function buildSettingsSummary(settings = readSettings()) {
         : 'included',
       overtime_show_hourly_rate: normalizedSettings.general?.overtime_show_hourly_rate !== false,
       attendance_quick_symbol: normalizedSettings.general?.attendance_quick_symbol || 'X',
+      attendance_quick_click_value:
+        String(normalizedSettings.general?.attendance_quick_click_value || normalizedSettings.general?.standard_day_hours || 7).trim() ||
+        String(normalizedSettings.general?.standard_day_hours || 7),
+      attendance_quick_click_use_symbol_for_standard:
+        normalizedSettings.general?.attendance_quick_click_use_symbol_for_standard !== false,
       attendance_auto_symbolize_base_hours: !!normalizedSettings.general?.attendance_auto_symbolize_base_hours,
       attendance_markers: normalizeAttendanceMarkers(normalizedSettings.general?.attendance_markers),
     },

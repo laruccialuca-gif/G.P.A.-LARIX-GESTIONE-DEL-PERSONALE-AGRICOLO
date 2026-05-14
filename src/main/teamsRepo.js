@@ -1,5 +1,9 @@
 const { getDb } = require('./db');
 
+function normalizeAttendanceMode(value) {
+  return value === 'headcount' ? 'headcount' : 'details';
+}
+
 function normalizeMemberInput(member, index) {
   return {
     employee_id: Number(member.employee_id),
@@ -80,6 +84,7 @@ function attachTeamMembers(teamRows) {
 
   return teamRows.map((team) => ({
     ...team,
+    attendance_mode: normalizeAttendanceMode(team.attendance_mode),
     is_archived: !!team.is_archived,
     members: membersByTeam.get(team.id) || [],
   }));
@@ -120,9 +125,13 @@ function createTeam(payload) {
 
   const tx = db.transaction(() => {
     const result = db.prepare(`
-      INSERT INTO teams (name, notes, is_archived, archived_at)
-      VALUES (?, ?, 0, NULL)
-    `).run(payload.name?.trim() || '', payload.notes || null);
+      INSERT INTO teams (name, notes, attendance_mode, is_archived, archived_at)
+      VALUES (?, ?, ?, 0, NULL)
+    `).run(
+      payload.name?.trim() || '',
+      payload.notes || null,
+      normalizeAttendanceMode(payload.attendance_mode)
+    );
 
     const teamId = result.lastInsertRowid;
     const insertMember = db.prepare(`
@@ -158,9 +167,14 @@ function updateTeam(id, payload) {
   const tx = db.transaction(() => {
     db.prepare(`
       UPDATE teams
-      SET name = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+      SET name = ?, notes = ?, attendance_mode = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(payload.name?.trim() || '', payload.notes || null, teamId);
+    `).run(
+      payload.name?.trim() || '',
+      payload.notes || null,
+      normalizeAttendanceMode(payload.attendance_mode),
+      teamId
+    );
 
     db.prepare(`
       DELETE FROM team_members

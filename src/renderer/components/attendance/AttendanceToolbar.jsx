@@ -1,5 +1,13 @@
 import React from 'react';
 
+function getAttendanceEmployeeDisplayName(employee) {
+  if (!employee) return '';
+  if (employee.full_name) {
+    return String(employee.full_name).trim();
+  }
+  return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
+}
+
 function AttendanceToolbar({
   currentMonth,
   selectedYear,
@@ -16,6 +24,24 @@ function AttendanceToolbar({
   parseDateValue,
   filterSlot,
 }) {
+  const sortedEmployeeOptions = React.useMemo(
+    () =>
+      activeEmployees
+        .map((employee, originalIndex) => ({ employee, originalIndex }))
+        .sort((a, b) => {
+          const nameA = getAttendanceEmployeeDisplayName(a.employee);
+          const nameB = getAttendanceEmployeeDisplayName(b.employee);
+          const byName = String(nameA || '').localeCompare(
+            String(nameB || ''),
+            'it',
+            { sensitivity: 'base' }
+          );
+          return byName || a.originalIndex - b.originalIndex;
+        })
+        .map(({ employee }) => employee),
+    [activeEmployees]
+  );
+
   return (
     <div className="toolbar attendance-toolbar">
       <div className="toolbar-group attendance-toolbar-group attendance-toolbar-group--month">
@@ -77,16 +103,18 @@ function AttendanceToolbar({
           <option value="all">Tutti ({allEmployeesCount})</option>
           <option value="no_team">Senza squadra ({ungroupedEmployeesCount})</option>
           <optgroup label="Dipendenti">
-            {activeEmployees.map((employee) => (
+            {sortedEmployeeOptions.map((employee) => (
               <option key={`employee-${employee.id}`} value={`employee:${employee.id}`}>
-                {employee.first_name} {employee.last_name}
+                {getAttendanceEmployeeDisplayName(employee)}
               </option>
             ))}
           </optgroup>
           <optgroup label="Squadre">
             {visibleTeams.map((team) => (
               <option key={`team-${team.id}`} value={`team:${team.id}`}>
-                Squadra - {team.name} ({visibleTeamCounts.get(Number(team.id)) || 0})
+                Squadra - {team.name}
+                {team.attendance_mode === 'headcount' ? ' - numero presenti' : ''}
+                {' '}({visibleTeamCounts.get(Number(team.id)) || 0})
               </option>
             ))}
           </optgroup>

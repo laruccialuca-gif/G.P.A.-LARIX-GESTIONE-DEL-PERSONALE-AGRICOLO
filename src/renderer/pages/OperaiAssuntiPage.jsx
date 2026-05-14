@@ -36,6 +36,7 @@ const NO_DOC_MESSAGE =
 const INITIAL_FILTERS = {
   datore: 'TUTTI',
   team: 'TUTTI',
+  status: 'TUTTI',
   search: '',
   // bonus: extension points for future filters (period, status, ...)
 };
@@ -48,6 +49,9 @@ function matchEmployeeFilter(employee, filters) {
     const wanted = String(filters.team);
     const list = employee.team_history || [];
     if (!list.some((t) => String(t.team_id) === wanted)) return false;
+  }
+  if (filters.status !== 'TUTTI' && (employee.status || '') !== filters.status) {
+    return false;
   }
   if (filters.search) {
     const q = filters.search.trim().toLowerCase();
@@ -178,6 +182,13 @@ export default function OperaiAssuntiPage() {
       String(a.name || '').localeCompare(String(b.name || ''), 'it', { sensitivity: 'base' }),
     );
   }, [teams]);
+  const statusOptions = useMemo(() => {
+    return [...new Set(
+      employees
+        .map((employee) => String(employee.status || '').trim())
+        .filter(Boolean)
+    )].sort((a, b) => a.localeCompare(b, 'it', { sensitivity: 'base' }));
+  }, [employees]);
 
   const filteredIds = useMemo(() => filtered.map((e) => e.id), [filtered]);
   const selectedFilteredCount = useMemo(
@@ -229,6 +240,9 @@ export default function OperaiAssuntiPage() {
       parts.push(`Squadra: ${t ? t.name : filters.team}`);
     } else {
       parts.push('Squadra: TUTTE');
+    }
+    if (filters.status && filters.status !== 'TUTTI') {
+      parts.push(`Stato: ${filters.status}`);
     }
     if (filters.search) parts.push(`Ricerca: "${filters.search}"`);
     return parts.join(' · ');
@@ -540,19 +554,31 @@ export default function OperaiAssuntiPage() {
           </div>
         </section>
 
-        <div className="toolbar">
-          <div className="toolbar-group">
+        <div
+          className="toolbar hired-workers-toolbar"
+          style={{
+            padding: '12px 14px',
+            borderRadius: 20,
+            border: '1px solid rgba(15, 23, 42, 0.08)',
+            background: 'rgba(255,255,255,0.96)',
+            boxShadow: '0 14px 34px rgba(15, 23, 42, 0.06)',
+            gap: 14,
+          }}
+        >
+          <div className="toolbar-group hired-workers-toolbar__filters" style={{ gap: 12, flex: '1 1 auto', minWidth: 0 }}>
             <input
               type="search"
+              className="hired-workers-toolbar__search"
               placeholder="Cerca nominativo o mansione..."
               value={filters.search}
               onChange={(e) => updateFilter('search', e.target.value)}
-              style={{ minWidth: 240 }}
+              style={{ minWidth: 280, width: 320, minHeight: 42 }}
             />
             <select
+              className="hired-workers-toolbar__select"
               value={filters.datore}
               onChange={(e) => updateFilter('datore', e.target.value)}
-              style={{ minWidth: 200 }}
+              style={{ minWidth: 190, minHeight: 42 }}
             >
               <option value="TUTTI">Tutti i datori</option>
               {employerOptions.map((option) => (
@@ -563,9 +589,10 @@ export default function OperaiAssuntiPage() {
               <option value="ENTRAMBE">ENTRAMBE</option>
             </select>
             <select
+              className="hired-workers-toolbar__select"
               value={filters.team}
               onChange={(e) => updateFilter('team', e.target.value)}
-              style={{ minWidth: 200 }}
+              style={{ minWidth: 190, minHeight: 42 }}
             >
               <option value="TUTTI">Tutte le squadre</option>
               {teamOptions.map((team) => (
@@ -574,40 +601,51 @@ export default function OperaiAssuntiPage() {
                 </option>
               ))}
             </select>
+            <select
+              className="hired-workers-toolbar__select"
+              value={filters.status}
+              onChange={(e) => updateFilter('status', e.target.value)}
+              style={{ minWidth: 190, minHeight: 42 }}
+            >
+              <option value="TUTTI">Tutti gli stati</option>
+              {statusOptions.map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
-              className="button-secondary"
+              className="button-secondary hired-workers-toolbar__reset"
               onClick={resetFilters}
+              style={{ minHeight: 42, padding: '0 14px', fontSize: 13 }}
               disabled={
                 filters.datore === INITIAL_FILTERS.datore &&
                 filters.team === INITIAL_FILTERS.team &&
+                filters.status === INITIAL_FILTERS.status &&
                 !filters.search
               }
             >
-              Reset filtri
+              Reset
             </button>
           </div>
 
-          <div className="toolbar-group" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <div className="toolbar-group hired-workers-toolbar__meta" style={{ gap: 8, flexWrap: 'nowrap', marginLeft: 'auto' }}>
             <span
-              className="soft-chip"
+              className="soft-chip hired-workers-toolbar__badge"
               style={{
                 background: 'rgba(22, 163, 74, 0.12)',
                 color: '#14532d',
                 borderColor: 'rgba(22, 101, 52, 0.14)',
+                minHeight: 34,
+                padding: '0 12px',
+                fontSize: 12,
+                fontWeight: 800,
               }}
             >
               {selectedCount} selezionati su {filteredCount}
               {filteredCount !== totalCount ? ` (totale ${totalCount})` : ''}
             </span>
-            <button
-              type="button"
-              className="button-secondary"
-              onClick={clearSelection}
-              disabled={!hasSelection}
-            >
-              Cancella selezione
-            </button>
           </div>
         </div>
       </div>

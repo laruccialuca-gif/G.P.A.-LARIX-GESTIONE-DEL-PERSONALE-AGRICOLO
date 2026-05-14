@@ -5,6 +5,17 @@ import { getMainTypeMeta, getAttendanceHoursTone, getMainInputValue, getCalendar
 import { countAttendanceDiag, recordAttendanceTiming, setAttendanceDiagValue } from '../../utils/attendanceDiagnostics';
 import AttendanceRow, { readEqStats, resetEqStats } from './AttendanceRow';
 
+function formatHeadcountSummary(value) {
+  const safeValue = Number(value || 0);
+  if (safeValue <= 0) {
+    return '0 gg';
+  }
+  const normalized = Number.isInteger(safeValue)
+    ? String(safeValue)
+    : safeValue.toFixed(2).replace(/\.?0+$/, '');
+  return `${normalized} gg`;
+}
+
 function __nowMs() {
   return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 }
@@ -87,8 +98,10 @@ function AttendanceTable(props) {
   handleMarkerChange,
   handleOvertimeValueChange,
   handleOvertimeValueBlur,
-  onCellClick,
+  onCellSingleClick,
+  onCellDoubleClick,
   } = props;
+  const isTeamHeadcountView = selectedMeta.type === 'team' && attendanceRowsData.some((row) => row.headcountMode);
   countAttendanceDiag('AttendanceTable render');
   console.count('[attendance-diag] AttendanceTable render');
   resetEqStats();
@@ -148,7 +161,13 @@ function AttendanceTable(props) {
                   onChange={(event) => toggleSelectAllVisible(event.target.checked)}
                   aria-label="Seleziona tutti i dipendenti visibili"
                 />
-                <span>{selectedMeta.type === 'team' ? 'Componente squadra' : 'Dipendente'}</span>
+                <span>
+                  {isTeamHeadcountView
+                    ? 'Squadra'
+                    : selectedMeta.type === 'team'
+                    ? 'Componente squadra'
+                    : 'Dipendente'}
+                </span>
               </div>
             </th>
             {daysInMonth.map((day) => (
@@ -213,7 +232,9 @@ function AttendanceTable(props) {
             __cellsRowsCount += 1;
 
             const totalHoursLabel = formatHoursValue(totals.totalHours, attendanceSettings.hoursFormat);
-            const summaryLabel = isCompactLayout
+            const summaryLabel = totals.isHeadcountMode
+              ? formatHeadcountSummary(totals.totalHeadcount)
+              : isCompactLayout
               ? formatCompactWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)
               : formatWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat);
             const isSelected = selectedEmployeeIds.includes(employeeId);
@@ -248,7 +269,8 @@ function AttendanceTable(props) {
                 handleMarkerChange={handleMarkerChange}
                 handleOvertimeValueChange={handleOvertimeValueChange}
                 handleOvertimeValueBlur={handleOvertimeValueBlur}
-                onCellClick={onCellClick}
+                onCellSingleClick={onCellSingleClick}
+                onCellDoubleClick={onCellDoubleClick}
               />
             );
           })}

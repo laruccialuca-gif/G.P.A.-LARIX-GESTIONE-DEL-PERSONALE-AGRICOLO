@@ -2,9 +2,20 @@ import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatDisplayDateTime } from '../utils/dateFormat';
 import { formatWorkedSummary } from '../utils/attendanceSummary';
+import { formatCurrency } from '../utils/currencyFormat';
 import { useYearContext } from '../context/YearContext';
 
 const MONTH_NAMES = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
+
+function getHistoryEmployeeName(employee = {}) {
+  return (
+    employee.full_name ||
+    employee.employee_name ||
+    [employee.last_name, employee.first_name].filter(Boolean).join(' ').trim() ||
+    [employee.first_name, employee.last_name].filter(Boolean).join(' ').trim() ||
+    'Dipendente'
+  );
+}
 
 function sortByEmployeeName(items = []) {
   return [...items].sort((left, right) =>
@@ -31,8 +42,8 @@ function formatMonth(monthStr) {
   return `${MONTH_NAMES[parseInt(month, 10) - 1]} ${year}`;
 }
 
-function formatCurrency(value) {
-  return `â‚¬ ${Number(value || 0).toFixed(2)}`;
+function formatCurrencyLegacy(value) {
+  return formatCurrency(value);
 }
 
 function formatHours(value) {
@@ -473,19 +484,18 @@ export default function StoricoOperaioPage() {
     return rows;
   }, [filteredRecords]);
 
-  const groupedRecords = useMemo(() => {
-    const map = new Map();
-    for (const row of syntheticRows) {
-      const { record } = row;
-      const key = String(record.employee_id);
-      const group = map.get(key) || {
-        employee: record.employee || {},
-        records: [],
-      };
-      group.records.push(row);
-      map.set(key, group);
-    }
-    return [...map.values()];
+  const sortedSyntheticRows = useMemo(() => {
+    return syntheticRows
+      .map((row, originalIndex) => ({ ...row, originalIndex }))
+      .sort((left, right) => {
+        const nameCompare = getHistoryEmployeeName(left.employee).localeCompare(
+          getHistoryEmployeeName(right.employee),
+          'it',
+          { sensitivity: 'base' }
+        );
+        if (nameCompare !== 0) return nameCompare;
+        return left.originalIndex - right.originalIndex;
+      });
   }, [syntheticRows]);
 
   const historySummary = useMemo(() => {
@@ -510,6 +520,19 @@ export default function StoricoOperaioPage() {
   }, [syntheticRows]);
 
   const uniqueEmployees = historySummary.employeeIds.size;
+
+  function handleResetFilters() {
+    setSearch('');
+    setHistoryYearFilter(String(selectedYear));
+    setMonthFilter('all');
+    setStatusFilter('all');
+    setTeamFilter('all');
+    setEmployeeFilter('all');
+    setSelectedEmployeeIds([]);
+    setRoleFilter('all');
+    setEmployerFilter('all');
+    setShowArchivedSlots(false);
+  }
 
   async function handleUploadDocument(record) {
     setBusyRecordId(String(record.id));
@@ -661,7 +684,7 @@ export default function StoricoOperaioPage() {
   }
 
   function buildSyntheticPrintHtml() {
-    const rowsHtml = syntheticRows.map(({ record, employee, financials }) => `
+    const rowsHtml = sortedSyntheticRows.map(({ record, employee, financials }) => `
       <tr>
         <td>${escapeHtml(`${employee.last_name || ''} ${employee.first_name || ''}`.trim())}</td>
         <td>${escapeHtml((employee.team_names || []).join(', ') || 'â€”')}</td>
@@ -771,18 +794,18 @@ export default function StoricoOperaioPage() {
       <div className="page-sticky-stack">
         <section className="page-hero">
           <div>
-            <span className="page-kicker">Archivio consultabile</span>
+            <span className="page-kicker">Archivio contabile</span>
             <h1 className="page-title">Storico Operaio</h1>
             <p className="page-subtitle">
-              Filtra mese, anno, dipendenti e squadre per controllare bonifici, dare/ricevere e stampare un riepilogo sintetico.
+              Archivio contabile dei report elaborati, dare/ricevere e stampe filtrate.
             </p>
           </div>
           <div className="page-actions">
             <button type="button" className="button" onClick={handleSyntheticPrint} disabled={!syntheticRows.length}>
               Stampa sintetica
             </button>
-            <span className="soft-chip" style={{ background: 'rgba(31, 41, 55, 0.1)', color: '#1F2937' }}>
-              {buildFilterSummaryLabel()}
+            <span className="soft-chip" style={{ background: 'rgba(22, 101, 52, 0.12)', color: '#166534' }}>
+              {sortedSyntheticRows.length} record filtrati
             </span>
           </div>
         </section>
@@ -791,9 +814,10 @@ export default function StoricoOperaioPage() {
           <div className="toolbar-group history-toolbar-main">
             <input
               className="search-input history-search-input"
-              placeholder="Cerca per nome, squadra, mansione, datore..."
+              placeholder="Cerca dipendente..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              style={{ width: 320 }}
             />
           </div>
 
@@ -819,35 +843,14 @@ export default function StoricoOperaioPage() {
               <option value="all">Tutti i dipendenti</option>
               {employeeOptions.map((employee) => (
                 <option key={employee.id} value={String(employee.id)}>
-                  {employee.last_name} {employee.first_name}
+                  {getHistoryEmployeeName(employee)}
                 </option>
               ))}
             </select>
-            <button
-              type="button"
-              className="button-secondary"
-              style={{ minHeight: 32, padding: '0 12px', fontSize: 12 }}
-              onClick={() => setShowEmployeeFilterModal(true)}
-            >
-              Dipendenti multipli
-              {selectedEmployeeIds.length ? ` (${selectedEmployeeIds.length})` : ''}
-            </button>
             <select value={teamFilter} onChange={(e) => setTeamFilter(e.target.value)} className="history-compact-input">
               <option value="all">Tutte le squadre</option>
               {teamOptions.map((team) => (
                 <option key={team} value={team}>{team}</option>
-              ))}
-            </select>
-            <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} className="history-compact-input">
-              <option value="all">Tutte le mansioni</option>
-              {roleOptions.map((role) => (
-                <option key={role} value={role}>{role}</option>
-              ))}
-            </select>
-            <select value={employerFilter} onChange={(e) => setEmployerFilter(e.target.value)} className="history-compact-input">
-              <option value="all">Tutti i datori</option>
-              {employerOptions.map((option) => (
-                <option key={option} value={option}>{option}</option>
               ))}
             </select>
             <label className="history-toggle">
@@ -858,8 +861,25 @@ export default function StoricoOperaioPage() {
               />
               Mostra slot archiviati
             </label>
+            <button
+              type="button"
+              className="button-secondary"
+              style={{ minHeight: 32, padding: '0 12px', fontSize: 12 }}
+              onClick={() => setShowEmployeeFilterModal(true)}
+            >
+              Multi dipendenti
+              {selectedEmployeeIds.length ? ` (${selectedEmployeeIds.length})` : ''}
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              style={{ minHeight: 32, padding: '0 12px', fontSize: 12 }}
+              onClick={handleResetFilters}
+            >
+              Reset
+            </button>
             <span className="soft-chip" style={{ background: 'rgba(20, 33, 61, 0.06)', color: '#314762' }}>
-              {syntheticRows.length} record filtrati
+              {sortedSyntheticRows.length} record filtrati
             </span>
           </div>
         </div>
@@ -890,21 +910,137 @@ export default function StoricoOperaioPage() {
               Nessun risultato con i filtri attuali.
             </div>
           ) : (
-            <div className="panel panel-section" style={{ padding: 0 }}>
-              <div style={{ padding: 16, borderBottom: '1px solid #f3f4f6', fontWeight: 700 }}>
+            <div className="panel panel-section" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ display: 'none', padding: 16, borderBottom: '1px solid #f3f4f6', fontWeight: 700 }}>
                 Archivio storico â€” clic su una voce per aprire l'anteprima del report collegato
               </div>
               <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderBottom: '1px solid #f3f4f6' }}>
                 <div style={{ color: '#64748b', fontSize: 13 }}>
-                  Caricati {records.length} record leggeri su {historyTotal} disponibili per il periodo selezionato.
+                  Caricati {records.length} record su {historyTotal} disponibili per il periodo selezionato.
                 </div>
                 <div className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
                   Da dare: {formatCurrency(historySummary.totalDaDare)} Â· Da ricevere: {formatCurrency(historySummary.totalDaRicevere)}
                 </div>
               </div>
 
+              <div className="table-shell">
+                <div className="table-scroll">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Dipendente</th>
+                        <th>Squadra</th>
+                        <th>Giornate</th>
+                        <th>Compenso</th>
+                        <th>Bonifici/Assegni</th>
+                        <th>Da ricevere</th>
+                        <th>Da dare</th>
+                        <th>Saldo netto</th>
+                        <th>Azioni</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedSyntheticRows.map(({ record, employee, financials }) => {
+                        const paymentSummary = financials.payment;
+                        const currentStatus = employeeStatusLabel(employee);
+                        const statusStyle =
+                          currentStatus === 'attivo'
+                            ? { background: '#dcfce7', color: '#166534' }
+                            : currentStatus === 'inattivo'
+                            ? { background: '#fef3c7', color: '#92400e' }
+                            : { background: '#e5e7eb', color: '#374151' };
+                        const paymentStyle =
+                          paymentSummary.status === 'pagato'
+                            ? { background: '#ecfdf3', color: '#166534' }
+                            : paymentSummary.status === 'parziale'
+                            ? { background: '#fef3c7', color: '#92400e' }
+                            : { background: '#fee2e2', color: '#b91c1c' };
+                        const saldoColor =
+                          financials.finalBalance > 0 ? '#dc2626' : financials.finalBalance < 0 ? '#059669' : '#111827';
+
+                        return (
+                          <tr key={record.id}>
+                            <td>
+                              <div style={{ display: 'grid', gap: 6, minWidth: 220 }}>
+                                <div style={{ fontSize: 15, fontWeight: 800, color: '#111827' }}>
+                                  {getHistoryEmployeeName(employee)}
+                                </div>
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                                  <span className="soft-chip" style={statusStyle}>{currentStatus}</span>
+                                  <span className="soft-chip" style={{ background: '#eef2ff', color: '#4338ca' }}>
+                                    {formatMonth(record.month)}
+                                  </span>
+                                  <span className="soft-chip" style={paymentStyle}>{paymentSummary.label}</span>
+                                  {record.archived_at ? (
+                                    <span className="soft-chip" style={{ background: 'rgba(107, 114, 128, 0.14)', color: '#374151' }}>
+                                      slot archiviato
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div style={{ fontSize: 12, color: '#667085', lineHeight: 1.45 }}>
+                                  {record.datore || 'Datore non indicato'}
+                                  {employee.role ? ` · ${employee.role}` : ''}
+                                  <div style={{ color: '#94a3b8', marginTop: 2 }}>
+                                    Processato il {formatDisplayDateTime(record.processed_at || record.updated_at || record.created_at)}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td style={{ fontWeight: 700, color: '#1f2937' }}>
+                              {(employee.team_names || []).join(', ') || '—'}
+                            </td>
+                            <td>{Number(record.giornate_effettuate || 0)}</td>
+                            <td>{formatCurrency(record.retribuzione_calcolata)}</td>
+                            <td>{formatCurrency(financials.payrollAmount)}</td>
+                            <td style={{ color: '#059669', fontWeight: 700 }}>
+                              {formatCurrency(financials.amountToReceive)}
+                            </td>
+                            <td style={{ color: '#dc2626', fontWeight: 700 }}>
+                              {formatCurrency(financials.amountToGive)}
+                            </td>
+                            <td style={{ color: saldoColor, fontWeight: 800 }}>
+                              {formatCurrency(financials.finalBalance)}
+                            </td>
+                            <td>
+                              <div style={{ display: 'grid', gap: 8, minWidth: 188 }}>
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                  <button type="button" className="button-secondary" onClick={() => handleOpenPreview(record)}>
+                                    Apri
+                                  </button>
+                                  <button type="button" className="button-secondary" onClick={() => handleOpenLinkedReport(record)}>
+                                    Modifica
+                                  </button>
+                                  <button type="button" className="button-secondary" onClick={() => handlePrintSnapshot(record)}>
+                                    Stampa
+                                  </button>
+                                </div>
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                  <button
+                                    type="button"
+                                    className={record.payroll_document ? 'button-secondary' : 'button'}
+                                    style={{ minHeight: 32, padding: '0 10px', fontSize: 12 }}
+                                    onClick={() => (record.payroll_document ? handleOpenDocument(record) : handleUploadDocument(record))}
+                                    disabled={busyRecordId === String(record.id)}
+                                  >
+                                    {busyRecordId === String(record.id)
+                                      ? 'Caricamento...'
+                                      : record.payroll_document
+                                      ? 'PDF'
+                                      : 'Carica PDF'}
+                                  </button>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
               <div style={{ display: 'grid', gap: 0 }}>
-                {groupedRecords.map((group) => (
+                {[].map((group) => (
                   <div key={`history-group-${group.employee.id}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
                     <div style={{ padding: 16, background: '#f8fafc', borderBottom: '1px solid #eef2f7' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1137,6 +1273,35 @@ export default function StoricoOperaioPage() {
                     </div>
                   </div>
 
+                  <div className="panel panel-section" style={{ padding: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#667085', marginBottom: 12 }}>
+                      Azioni e allegati
+                    </div>
+                    <div style={{ display: 'grid', gap: 12 }}>
+                      <HistoryPayrollActions
+                        document={previewRecord.payroll_document}
+                        busy={busyRecordId === String(previewRecord.id)}
+                        onUpload={() => handleUploadDocument(previewRecord)}
+                        onOpen={() => handleOpenDocument(previewRecord)}
+                        onDelete={() => handleDeleteDocument(previewRecord)}
+                      />
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {!previewRecord.archived_at ? (
+                          <button type="button" className="button-secondary" onClick={() => handleArchiveRecord(previewRecord)}>
+                            Archivia slot
+                          </button>
+                        ) : (
+                          <button type="button" className="button-secondary" onClick={() => handleRestoreRecord(previewRecord)}>
+                            Ripristina slot
+                          </button>
+                        )}
+                        <button type="button" className="button-danger" onClick={() => handleDeleteRecord(previewRecord)}>
+                          Elimina slot
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     <button type="button" className="button" onClick={() => handleOpenLinkedReport(previewRecord)}>
                       Modifica report
@@ -1153,6 +1318,15 @@ export default function StoricoOperaioPage() {
             ) : (
               <div style={{ display: 'grid', gap: 18 }}>
                 <div className="panel empty-state">Nessuna anteprima salvata per questo report.</div>
+                <div className="panel panel-section" style={{ padding: 16 }}>
+                  <HistoryPayrollActions
+                    document={previewRecord.payroll_document}
+                    busy={busyRecordId === String(previewRecord.id)}
+                    onUpload={() => handleUploadDocument(previewRecord)}
+                    onOpen={() => handleOpenDocument(previewRecord)}
+                    onDelete={() => handleDeleteDocument(previewRecord)}
+                  />
+                </div>
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   <button type="button" className="button" onClick={() => handleOpenLinkedReport(previewRecord)}>
                     Modifica report

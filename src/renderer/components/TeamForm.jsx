@@ -23,6 +23,7 @@ function InfoCell({ label, value }) {
 const emptyForm = {
   name: '',
   notes: '',
+  attendance_mode: 'details',
   members: [],
 };
 
@@ -30,6 +31,7 @@ function normalizeTeamFormForDirtyCheck(form) {
   return JSON.stringify({
     name: form.name || '',
     notes: form.notes || '',
+    attendance_mode: form.attendance_mode === 'headcount' ? 'headcount' : 'details',
     members: (form.members || []).map((member) => ({
       employee_id: Number(member.employee_id),
       compensation: member.compensation === '' || member.compensation === null || member.compensation === undefined
@@ -58,6 +60,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
         ? {
             name: team.name || '',
             notes: team.notes || '',
+            attendance_mode: team.attendance_mode === 'headcount' ? 'headcount' : 'details',
             members: (team.members || []).map((member) => ({
               employee_id: member.employee_id,
               compensation: member.compensation ?? '',
@@ -79,6 +82,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
         ? {
             name: team.name || '',
             notes: team.notes || '',
+            attendance_mode: team.attendance_mode === 'headcount' ? 'headcount' : 'details',
             members: (team.members || []).map((member) => ({
               employee_id: member.employee_id,
               compensation: member.compensation ?? '',
@@ -144,6 +148,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
       await onSubmit({
         name: form.name.trim(),
         notes: form.notes.trim(),
+        attendance_mode: form.attendance_mode === 'headcount' ? 'headcount' : 'details',
         members: form.members.map((member) => ({
           employee_id: Number(member.employee_id),
           compensation: member.compensation === '' ? null : Number(member.compensation),
@@ -199,6 +204,40 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
                   placeholder="Responsabile, commessa, appunti..."
                 />
               </Field>
+            </div>
+
+            <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'minmax(260px, 320px) minmax(0, 1fr)' }}>
+              <Field label="Modalita gestione presenze">
+                <select
+                  value={form.attendance_mode}
+                  disabled={saving}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      attendance_mode: event.target.value === 'headcount' ? 'headcount' : 'details',
+                    }))
+                  }
+                >
+                  <option value="details">Dettaglio dipendenti</option>
+                  <option value="headcount">Numero presenti</option>
+                </select>
+              </Field>
+
+              <div
+                style={{
+                  alignSelf: 'end',
+                  padding: '11px 14px',
+                  borderRadius: 14,
+                  border: '1px solid rgba(20, 33, 61, 0.08)',
+                  background: 'rgba(244, 248, 248, 0.72)',
+                  color: '#526071',
+                  fontSize: 13,
+                }}
+              >
+                {form.attendance_mode === 'headcount'
+                  ? 'Nel Foglio Presenze verra mostrata una sola riga squadra e in ogni giorno inserirai il numero dei presenti.'
+                  : 'Nel Foglio Presenze continueranno a comparire i singoli dipendenti della squadra.'}
+              </div>
             </div>
 
             <div

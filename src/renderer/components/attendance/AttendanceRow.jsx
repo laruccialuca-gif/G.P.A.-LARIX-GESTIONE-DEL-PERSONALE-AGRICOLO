@@ -2,6 +2,14 @@ import React from 'react';
 import { getCalendarCellStyle } from '../../utils/attendanceTableUtils';
 import { countAttendanceDiag, recordAttendanceTiming } from '../../utils/attendanceDiagnostics';
 
+function getAttendanceEmployeeDisplayName(employee) {
+  if (!employee) return '';
+  if (employee.full_name) {
+    return String(employee.full_name).trim();
+  }
+  return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
+}
+
 function AttendanceRow({
   employee,
   teamMember,
@@ -30,8 +38,10 @@ function AttendanceRow({
   handleMarkerChange,
   handleOvertimeValueChange,
   handleOvertimeValueBlur,
-  onCellClick,
+  onCellSingleClick,
+  onCellDoubleClick,
 }) {
+  const clickTimeoutRef = React.useRef(null);
   const renderStartedAt = __eqNow();
   countAttendanceDiag('AttendanceRow render');
   console.count('[attendance-diag] AttendanceRow render');
@@ -40,6 +50,11 @@ function AttendanceRow({
       employeeId: employee.id,
     });
   });
+  React.useEffect(() => () => {
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+    }
+  }, []);
   return (
     <tr>
       <td style={tdStyleLeftCurrent}>
@@ -48,10 +63,10 @@ function AttendanceRow({
             type="checkbox"
             checked={isSelected}
             onChange={(event) => toggleEmployeeSelection(employee.id, event.target.checked)}
-            aria-label={`Seleziona ${employee.first_name} ${employee.last_name}`}
+            aria-label={`Seleziona ${getAttendanceEmployeeDisplayName(employee)}`}
           />
           <div>
-            <div className="attendance-employee-name">{employee.first_name} {employee.last_name}</div>
+            <div className="attendance-employee-name">{getAttendanceEmployeeDisplayName(employee)}</div>
             <div style={{ fontSize: isCompactLayout ? 9 : 10, color: '#6b7280' }}>
               {employee.role || ''}
               {teamMember?.manage_by_days ? ' - gestione a giornate' : ''}
@@ -76,11 +91,28 @@ function AttendanceRow({
             <button
               type="button"
               className={`attendance-compact-cell ${cell.mainInputValue ? 'attendance-compact-cell--filled' : ''} ${cell.isSpecial ? 'attendance-compact-cell--special' : ''} ${hasSecondaryDetails ? 'attendance-compact-cell--detailed' : ''}`}
-              onClick={() => !isWriteBlocked && onCellClick(Number(employee.id), cell.dateStr)}
-              title={cell.dateStr}
+              onClick={() => {
+                if (isWriteBlocked) return;
+                if (clickTimeoutRef.current) {
+                  clearTimeout(clickTimeoutRef.current);
+                }
+                clickTimeoutRef.current = setTimeout(() => {
+                  onCellSingleClick(Number(employee.id), cell.dateStr);
+                  clickTimeoutRef.current = null;
+                }, 220);
+              }}
+              onDoubleClick={() => {
+                if (isWriteBlocked) return;
+                if (clickTimeoutRef.current) {
+                  clearTimeout(clickTimeoutRef.current);
+                  clickTimeoutRef.current = null;
+                }
+                onCellDoubleClick(Number(employee.id), cell.dateStr);
+              }}
+              title={`${cell.dateStr} • Click: inserisci/rimuovi giornata • Doppio click: dettagli`}
               style={{ cursor: isWriteBlocked ? 'default' : 'pointer' }}
               disabled={isWriteBlocked}
-              aria-label={`Modifica presenza del ${cell.dateStr} per ${employee.first_name} ${employee.last_name}`}
+              aria-label={`Modifica presenza del ${cell.dateStr} per ${getAttendanceEmployeeDisplayName(employee)}`}
             >
               <span className="attendance-compact-cell__value">{cell.mainInputValue || ''}</span>
               {hasSecondaryDetails ? <span className="attendance-compact-cell__dot" aria-hidden="true" /> : null}
@@ -163,7 +195,8 @@ function arePropsEqualImpl(prev, next) {
   if (prev.tdStyleCenterCurrent !== next.tdStyleCenterCurrent) return false;
   if (prev.tdStyleRightHoursCurrent !== next.tdStyleRightHoursCurrent) return false;
   if (prev.tdStyleRightSummaryCurrent !== next.tdStyleRightSummaryCurrent) return false;
-  if (prev.onCellClick !== next.onCellClick) return false;
+  if (prev.onCellSingleClick !== next.onCellSingleClick) return false;
+  if (prev.onCellDoubleClick !== next.onCellDoubleClick) return false;
   if (!areCellsEqual(prev.cells, next.cells)) return false;
   return true;
 }

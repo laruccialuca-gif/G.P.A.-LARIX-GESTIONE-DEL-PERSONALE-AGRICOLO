@@ -153,7 +153,9 @@ contextBridge.exposeInMainWorld('api', {
   attendance: {
     save: (payload) => ipcRenderer.invoke('attendance:save', payload),
     bulkUpsert: (payload) => ipcRenderer.invoke('attendance:bulkUpsert', payload),
+    teamBulkUpsert: (payload) => ipcRenderer.invoke('attendance:teamBulkUpsert', payload),
     listByMonth: (year, month) => ipcRenderer.invoke('attendance:listByMonth', year, month),
+    listTeamByMonth: (year, month) => ipcRenderer.invoke('attendance:listTeamByMonth', year, month),
     monthlySummary: (month) => ipcRenderer.invoke('attendance:monthlySummary', month),
     getMatrix: (month) => ipcRenderer.invoke('attendance:getMatrix', month),
   },

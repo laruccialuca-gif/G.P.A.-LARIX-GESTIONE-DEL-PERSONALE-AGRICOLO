@@ -176,6 +176,18 @@ function runCoreSchemaMigration(database) {
       UNIQUE(employee_id, date)
     );
 
+    CREATE TABLE IF NOT EXISTS team_attendance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      headcount REAL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      UNIQUE(team_id, date)
+    );
+
     CREATE TABLE IF NOT EXISTS payroll_records (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       employee_id INTEGER NOT NULL,
@@ -277,6 +289,7 @@ function runCoreSchemaMigration(database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       notes TEXT,
+      attendance_mode TEXT NOT NULL DEFAULT 'details',
       is_archived INTEGER DEFAULT 0,
       archived_at TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -468,6 +481,7 @@ function runCoreSchemaMigration(database) {
     CREATE INDEX IF NOT EXISTS idx_payroll_debt_installments_employee_month ON payroll_debt_installments(employee_id, target_month, is_paid, sort_order, id);
     CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id, sort_order, id);
     CREATE INDEX IF NOT EXISTS idx_team_members_employee ON team_members(employee_id);
+    CREATE INDEX IF NOT EXISTS idx_team_attendance_lookup ON team_attendance(team_id, date, id);
     CREATE INDEX IF NOT EXISTS idx_teams_archived ON teams(is_archived, name);
     CREATE INDEX IF NOT EXISTS idx_employee_periods_employee ON employee_employment_periods(employee_id, is_current, id);
     CREATE INDEX IF NOT EXISTS idx_employee_periods_range ON employee_employment_periods(employee_id, hire_date_from, hire_date_to);
@@ -684,6 +698,26 @@ function runEmployeeFinancialMovementsMigration(database) {
   });
 }
 
+function runTeamAttendanceModeMigration(database) {
+  ensureColumn(database, 'teams', 'attendance_mode', "TEXT NOT NULL DEFAULT 'details'");
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS team_attendance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      headcount REAL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      UNIQUE(team_id, date)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_team_attendance_lookup ON team_attendance(team_id, date, id);
+  `);
+}
+
 const MIGRATIONS = [
   {
     id: '2026-04-20-core-schema',
@@ -728,6 +762,10 @@ const MIGRATIONS = [
   {
     id: '2026-05-06-employee-financial-movements',
     run: runEmployeeFinancialMovementsMigration,
+  },
+  {
+    id: '2026-05-14-team-attendance-mode',
+    run: runTeamAttendanceModeMigration,
   },
 ];
 

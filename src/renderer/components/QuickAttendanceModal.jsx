@@ -1,28 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 
-function formatDateForDisplay(value) {
-  const [year, month, day] = String(value || '').split('-');
-  if (!year || !month || !day) return '';
-  return `${day.padStart(2, '0')}/${month.padStart(2, '0')}/${year}`;
-}
-
-function parseDisplayDate(value) {
-  const match = String(value || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (!match) return '';
-
-  const [, rawDay, rawMonth, rawYear] = match;
-  const day = Number(rawDay);
-  const month = Number(rawMonth);
-  const year = Number(rawYear);
-  const parsed = new Date(year, month - 1, day);
-
-  if (parsed.getFullYear() !== year || parsed.getMonth() !== month - 1 || parsed.getDate() !== day) {
-    return '';
-  }
-
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-}
-
 function formatMarkerOptionLabel(marker) {
   return [marker?.symbol, marker?.text || marker?.value].filter(Boolean).join(' ');
 }
@@ -44,39 +21,83 @@ function formatDefaultPresenceValue(attendanceSettings) {
 
 function sortRows(rows = []) {
   return [...rows].sort((left, right) =>
-    `${left.employee.last_name} ${left.employee.first_name}`.localeCompare(
-      `${right.employee.last_name} ${right.employee.first_name}`,
+    `${left.employee.last_name || ''} ${left.employee.first_name || ''}`.localeCompare(
+      `${right.employee.last_name || ''} ${right.employee.first_name || ''}`,
       'it',
       { sensitivity: 'base' }
     )
   );
 }
 
-const QuickAttendanceListRow = memo(function QuickAttendanceListRow({
-  employeeId,
-  label,
-  selected,
+function getRowDisplayName(row) {
+  return `${row.employee.last_name || ''} ${row.employee.first_name || ''}`.trim();
+}
+
+function getRowTeamLabel(row) {
+  if (row.teamName) {
+    return row.teamName;
+  }
+
+  if (Array.isArray(row.employee?.team_names) && row.employee.team_names.length) {
+    return row.employee.team_names.join(', ');
+  }
+
+  if (Array.isArray(row.employee?.team_history) && row.employee.team_history.length) {
+    return row.employee.team_history.map((item) => item.name).filter(Boolean).join(', ');
+  }
+
+  return '—';
+}
+
+const QuickAttendanceSelectedRow = memo(function QuickAttendanceSelectedRow({
+  row,
+  checked,
+  presenceValue,
+  overtimeValue,
+  markerSelection,
+  markersByValue,
   onToggle,
+  onRemove,
 }) {
+  const markerLabel =
+    markerSelection === 'keep'
+      ? 'Non modificare'
+      : markerSelection
+      ? formatMarkerOptionLabel(markersByValue.get(markerSelection))
+      : 'Nessuno';
+
   return (
-    <label
-      className={`quick-attendance-row ${selected ? 'quick-attendance-row--selected' : ''}`}
-      onDoubleClick={() => onToggle(employeeId, !selected)}
-    >
-      <input
-        type="checkbox"
-        checked={selected}
-        onChange={(event) => onToggle(employeeId, event.target.checked)}
-      />
-      <span className="quick-attendance-row__name">{label}</span>
-    </label>
+    <div className="quick-attendance-selected-row">
+      <label className="quick-attendance-selected-row__checkbox">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onToggle(row.employee.id, event.target.checked)}
+        />
+      </label>
+      <div className="quick-attendance-selected-row__name">
+        <div className="quick-attendance-selected-row__primary">{getRowDisplayName(row)}</div>
+      </div>
+      <div className="quick-attendance-selected-row__team">{getRowTeamLabel(row)}</div>
+      <div className="quick-attendance-selected-row__value">{presenceValue || '—'}</div>
+      <div className="quick-attendance-selected-row__value">{overtimeValue || '—'}</div>
+      <div className="quick-attendance-selected-row__value">{markerLabel}</div>
+      <div className="quick-attendance-selected-row__actions">
+        <button
+          type="button"
+          className="button-danger"
+          onClick={() => onRemove(row.employee.id)}
+        >
+          Rimuovi
+        </button>
+      </div>
+    </div>
   );
 });
 
 export default function QuickAttendanceModal({
   open,
   quickDate,
-  onDateChange,
   onClose,
   rows,
   saveState,
@@ -86,175 +107,244 @@ export default function QuickAttendanceModal({
   attendanceSettings,
   markers = [],
 }) {
-  const didInitOpenRef = useRef(false);
-  const presenceInputRef = useRef(null);
-  const [selectionState, setSelectionState] = useState({});
+  const searchInputRef = useRef(null);
+  const resultsRef = useRef(null);
+  const selectedRowsRef = useRef(null);
   const [presenceValue, setPresenceValue] = useState('');
   const [overtimeValue, setOvertimeValue] = useState('');
   const [markerSelection, setMarkerSelection] = useState('keep');
   const [searchText, setSearchText] = useState('');
-  const [dateInput, setDateInput] = useState(formatDateForDisplay(quickDate));
-  const [keepSelection, setKeepSelection] = useState(true);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [selectedRowIds, setSelectedRowIds] = useState([]);
+  const [checkedState, setCheckedState] = useState({});
+  const [highlightedEmployeeId, setHighlightedEmployeeId] = useState(null);
 
   const sortedRows = useMemo(() => sortRows(rows), [rows]);
-  const sortedEmployeeIds = useMemo(
-    () => sortedRows.map((row) => Number(row.employee.id)),
+  const rowsByEmployeeId = useMemo(
+    () => new Map(sortedRows.map((row) => [Number(row.employee.id), row])),
     [sortedRows]
   );
-
-  useEffect(() => {
-    setDateInput(formatDateForDisplay(quickDate));
-  }, [quickDate]);
-
-  useEffect(() => {
-    if (!open || !searchText.trim()) {
-      return;
-    }
-    console.info('[attendance-debug] quick-entry-search', {
-      query: searchText,
-      total_rows: sortedRows.length,
-    });
-  }, [open, searchText, sortedRows.length]);
+  const markersByValue = useMemo(
+    () => new Map(markers.map((marker) => [marker.value, marker])),
+    [markers]
+  );
+  const normalizedSearch = useMemo(() => searchText.trim().toLowerCase(), [searchText]);
 
   useEffect(() => {
     if (!open) {
-      didInitOpenRef.current = false;
+      setSearchText('');
+      setIsSearchOpen(false);
+      setSelectedRowIds([]);
+      setCheckedState({});
+      setHighlightedEmployeeId(null);
       return;
     }
 
-    if (didInitOpenRef.current) {
-      return;
-    }
-
-    const nextSelection = {};
-    for (const row of sortedRows) {
-      nextSelection[row.employee.id] = true;
-    }
-
-    setSelectionState((current) => (keepSelection && Object.keys(current).length ? current : nextSelection));
     setPresenceValue(formatDefaultPresenceValue(attendanceSettings));
     setOvertimeValue('');
     setMarkerSelection('keep');
-    setSearchText('');
-    didInitOpenRef.current = true;
     window.requestAnimationFrame(() => {
-      presenceInputRef.current?.focus();
-      presenceInputRef.current?.select?.();
+      searchInputRef.current?.focus();
     });
-    console.info('[attendance-debug] quick-entry-open', {
-      date: quickDate,
-      employees_count: sortedRows.length,
-    });
-  }, [attendanceSettings, keepSelection, open, quickDate, sortedRows]);
+  }, [attendanceSettings, open]);
 
-  const filteredRows = useMemo(() => {
-    if (!searchText.trim()) {
-      return sortedRows;
+  useEffect(() => {
+    if (!open) return undefined;
+
+    function handlePointerDown(event) {
+      if (!resultsRef.current?.contains(event.target) && !searchInputRef.current?.contains(event.target)) {
+        setIsSearchOpen(false);
+      }
     }
 
-    const lower = searchText.toLowerCase();
-    return sortedRows.filter((row) =>
-      `${row.employee.last_name} ${row.employee.first_name}`.toLowerCase().includes(lower) ||
-      `${row.employee.first_name} ${row.employee.last_name}`.toLowerCase().includes(lower)
-    );
-  }, [searchText, sortedRows]);
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [open]);
 
-  const selectedIds = useMemo(
-    () => Object.entries(selectionState)
-      .filter(([, selected]) => !!selected)
-      .map(([employeeId]) => Number(employeeId))
-      .filter((employeeId) => sortedEmployeeIds.includes(employeeId)),
-    [selectionState, sortedEmployeeIds]
+  const searchResults = useMemo(() => {
+    if (!normalizedSearch) {
+      return [];
+    }
+
+    return sortedRows.filter((row) => {
+      const haystack = [
+        row.employee.full_name,
+        row.employee.first_name,
+        row.employee.last_name,
+        `${row.employee.first_name || ''} ${row.employee.last_name || ''}`,
+        `${row.employee.last_name || ''} ${row.employee.first_name || ''}`,
+        getRowTeamLabel(row),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+
+      return haystack.includes(normalizedSearch);
+    });
+  }, [normalizedSearch, sortedRows]);
+
+  const selectedRows = useMemo(
+    () => selectedRowIds
+      .map((employeeId) => rowsByEmployeeId.get(Number(employeeId)))
+      .filter(Boolean),
+    [rowsByEmployeeId, selectedRowIds]
   );
+
+  const checkedIds = useMemo(
+    () => selectedRowIds.filter((employeeId) => checkedState[employeeId] !== false),
+    [selectedRowIds, checkedState]
+  );
+
   const saveStateTone =
     saveState === 'saving' || saveState === 'saved' || saveState === 'error'
       ? saveState
       : 'idle';
 
+  function addEmployeeToSelection(row) {
+    const employeeId = Number(row.employee.id);
+    setSelectedRowIds((current) => {
+      if (current.includes(employeeId)) {
+        setHighlightedEmployeeId(employeeId);
+        window.requestAnimationFrame(() => {
+          selectedRowsRef.current
+            ?.querySelector(`[data-employee-row="${employeeId}"]`)
+            ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
+        return current;
+      }
+      return [...current, employeeId];
+    });
+    setCheckedState((current) => ({
+      ...current,
+      [employeeId]: true,
+    }));
+    setSearchText('');
+    setIsSearchOpen(false);
+    setHighlightedEmployeeId(employeeId);
+  }
+
   function handleToggle(employeeId, checked) {
-    setSelectionState((current) => ({
+    setCheckedState((current) => ({
       ...current,
       [employeeId]: checked,
     }));
   }
 
-  function handleDateInputChange(value) {
-    setDateInput(value);
-    const parsed = parseDisplayDate(value);
-    if (parsed) {
-      onDateChange(parsed);
-    }
+  function handleRemove(employeeId) {
+    setSelectedRowIds((current) => current.filter((id) => Number(id) !== Number(employeeId)));
+    setCheckedState((current) => {
+      const next = { ...current };
+      delete next[employeeId];
+      return next;
+    });
   }
 
-  function handleDateInputBlur() {
-    const parsed = parseDisplayDate(dateInput);
-    setDateInput(formatDateForDisplay(parsed || quickDate));
+  function handleSelectAll() {
+    setCheckedState((current) => {
+      const next = { ...current };
+      selectedRowIds.forEach((employeeId) => {
+        next[employeeId] = true;
+      });
+      return next;
+    });
   }
 
-  function handleToggleAll(nextValue) {
-    const next = {};
-    for (const row of sortedRows) {
-      next[row.employee.id] = nextValue;
-    }
-    setSelectionState(next);
+  function handleDeselectAll() {
+    setCheckedState((current) => {
+      const next = { ...current };
+      selectedRowIds.forEach((employeeId) => {
+        next[employeeId] = false;
+      });
+      return next;
+    });
   }
 
   function handleApply() {
-    if (!selectedIds.length) {
+    if (!checkedIds.length) {
       return;
     }
 
-    console.info('[attendance-debug] quick-entry-apply', {
-      date: quickDate,
-      selected_count: selectedIds.length,
-      presence: presenceValue.trim(),
-      overtime: overtimeValue.trim(),
-      marker: markerSelection,
-    });
-
     if (presenceValue.trim()) {
-      onApplyHours(selectedIds, quickDate, presenceValue.trim());
+      onApplyHours(checkedIds, quickDate, presenceValue.trim());
     }
 
     if (overtimeValue.trim()) {
-      onApplyOvertime?.(selectedIds, quickDate, overtimeValue.trim());
+      onApplyOvertime?.(checkedIds, quickDate, overtimeValue.trim());
     }
 
     if (markerSelection !== 'keep') {
-      onApplyMarker?.(selectedIds, quickDate, markerSelection);
+      onApplyMarker?.(checkedIds, quickDate, markerSelection);
     }
   }
 
-  if (!open) return null;
+  if (!open) {
+    return null;
+  }
 
   return (
     <div className="modal-overlay">
       <div className="modal-dialog quick-attendance-modal">
-        <div className="quick-attendance-modal__bar">
-          <div className="quick-attendance-modal__field quick-attendance-modal__field--date">
-            <span>Data</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={dateInput}
-              onChange={(event) => handleDateInputChange(event.target.value)}
-              onBlur={handleDateInputBlur}
-              placeholder="gg/mm/aaaa"
-            />
+        <div className="quick-attendance-modal__topbar">
+          <div className="quick-attendance-modal__search-wrap">
+            <label className="quick-attendance-modal__field">
+              <span>Cerca dipendente</span>
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchText}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  setSearchText(nextValue);
+                  setIsSearchOpen(nextValue.trim().length > 0);
+                }}
+                onFocus={() => {
+                  if (searchText.trim()) {
+                    setIsSearchOpen(true);
+                  }
+                }}
+                placeholder="Nome o cognome"
+              />
+            </label>
+
+            {isSearchOpen ? (
+              <div className="quick-attendance-modal__results" ref={resultsRef}>
+                {searchResults.length ? (
+                  searchResults.map((row) => {
+                    const employeeId = Number(row.employee.id);
+                    const alreadySelected = selectedRowIds.includes(employeeId);
+                    return (
+                      <button
+                        key={`quick-result-${employeeId}`}
+                        type="button"
+                        className={`quick-attendance-modal__result ${alreadySelected ? 'quick-attendance-modal__result--selected' : ''}`}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => addEmployeeToSelection(row)}
+                      >
+                        <span className="quick-attendance-modal__result-name">{getRowDisplayName(row)}</span>
+                        <span className="quick-attendance-modal__result-team">{getRowTeamLabel(row)}</span>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="quick-attendance-modal__empty">Nessun dipendente trovato</div>
+                )}
+              </div>
+            ) : null}
           </div>
 
-          <div className="quick-attendance-modal__field">
+          <label className="quick-attendance-modal__field">
             <span>Presenza</span>
             <input
-              ref={presenceInputRef}
               type="text"
               value={presenceValue}
               onChange={(event) => setPresenceValue(event.target.value)}
               placeholder={attendanceSettings?.inputMode === 'hours_and_symbol' ? `Es. ${attendanceSettings.quickSymbol}` : 'Ore'}
             />
-          </div>
+          </label>
 
-          <div className="quick-attendance-modal__field">
+          <label className="quick-attendance-modal__field">
             <span>Straordinario</span>
             <input
               type="text"
@@ -262,9 +352,9 @@ export default function QuickAttendanceModal({
               onChange={(event) => setOvertimeValue(event.target.value)}
               placeholder="Ore"
             />
-          </div>
+          </label>
 
-          <div className="quick-attendance-modal__field">
+          <label className="quick-attendance-modal__field">
             <span>Marker</span>
             <select value={markerSelection} onChange={(event) => setMarkerSelection(event.target.value)}>
               <option value="keep">Non modificare</option>
@@ -275,26 +365,14 @@ export default function QuickAttendanceModal({
                 </option>
               ))}
             </select>
-          </div>
-
-          <div className="quick-attendance-modal__field quick-attendance-modal__field--search">
-            <span>Cerca dipendente</span>
-            <input
-              type="text"
-              value={searchText}
-              onChange={(event) => setSearchText(event.target.value)}
-              placeholder="Nome o cognome"
-            />
-          </div>
+          </label>
 
           <div className="quick-attendance-modal__summary">
-            <span className="quick-attendance-modal__counter">
-              {selectedIds.length} selezionati
-            </span>
+            <span className="quick-attendance-modal__counter">{checkedIds.length} selezionati</span>
           </div>
 
           <div className="quick-attendance-modal__actions">
-            <button type="button" className="button" onClick={handleApply} disabled={!selectedIds.length}>
+            <button type="button" className="button" onClick={handleApply} disabled={!checkedIds.length}>
               Applica
             </button>
             <button type="button" className="button-secondary" onClick={onClose}>
@@ -303,39 +381,68 @@ export default function QuickAttendanceModal({
           </div>
         </div>
 
-        <div className="quick-attendance-modal__list-head">
-          <button type="button" className="button-secondary" onClick={() => handleToggleAll(true)}>
-            Seleziona tutti
-          </button>
-          <button type="button" className="button-secondary" onClick={() => handleToggleAll(false)}>
-            Deseleziona tutti
-          </button>
-          <label className="quick-attendance-modal__keep">
-            <input
-              type="checkbox"
-              checked={keepSelection}
-              onChange={(event) => setKeepSelection(event.target.checked)}
-            />
-            <span>Mantieni selezione</span>
-          </label>
+        <div className="quick-attendance-modal__info">
+          Scrivi il nome del dipendente e clicca sul risultato per aggiungerlo alla lista.
+        </div>
+
+        <div className="quick-attendance-modal__list-toolbar">
+          <div className="quick-attendance-modal__list-actions">
+            <button type="button" className="button-secondary" onClick={handleSelectAll} disabled={!selectedRowIds.length}>
+              Seleziona tutti
+            </button>
+            <button type="button" className="button-secondary" onClick={handleDeselectAll} disabled={!selectedRowIds.length}>
+              Deseleziona tutti
+            </button>
+          </div>
           <span className={`quick-attendance-modal__status quick-attendance-modal__status--${saveStateTone}`}>
             {saveState === 'saving' ? 'Salvataggio...' : saveState === 'saved' ? 'Salvato' : saveState === 'error' ? 'Errore' : 'Pronto'}
           </span>
         </div>
 
-        <div className="quick-attendance-modal__list">
-          {filteredRows.map((row) => {
-            const isSelected = !!selectionState[row.employee.id];
-            return (
-              <QuickAttendanceListRow
-                key={row.employee.id}
-                employeeId={row.employee.id}
-                label={`${row.employee.last_name} ${row.employee.first_name}`}
-                selected={isSelected}
-                onToggle={handleToggle}
-              />
-            );
-          })}
+        <div className="quick-attendance-modal__selected">
+          <div className="quick-attendance-modal__selected-head">
+            <div>Checkbox</div>
+            <div>Nome dipendente</div>
+            <div>Squadra</div>
+            <div>Presenza</div>
+            <div>Straordinario</div>
+            <div>Marker</div>
+            <div>Rimuovi</div>
+          </div>
+
+          <div className="quick-attendance-modal__selected-body" ref={selectedRowsRef}>
+            {selectedRows.length ? (
+              selectedRows.map((row) => {
+                const employeeId = Number(row.employee.id);
+                return (
+                  <div
+                    key={`selected-${employeeId}`}
+                    data-employee-row={employeeId}
+                    className={`quick-attendance-selected-row-wrap ${highlightedEmployeeId === employeeId ? 'quick-attendance-selected-row-wrap--highlighted' : ''}`}
+                  >
+                    <QuickAttendanceSelectedRow
+                      row={row}
+                      checked={checkedState[employeeId] !== false}
+                      presenceValue={presenceValue.trim()}
+                      overtimeValue={overtimeValue.trim()}
+                      markerSelection={markerSelection}
+                      markersByValue={markersByValue}
+                      onToggle={handleToggle}
+                      onRemove={handleRemove}
+                    />
+                  </div>
+                );
+              })
+            ) : (
+              <div className="quick-attendance-modal__empty-state">
+                Nessun dipendente selezionato.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="quick-attendance-modal__footer-note">
+          Click singolo: inserisce il valore rapido • Doppio click: dettaglio avanzato
         </div>
       </div>
     </div>
