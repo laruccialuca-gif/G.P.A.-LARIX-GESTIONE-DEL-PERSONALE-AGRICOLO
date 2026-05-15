@@ -801,6 +801,41 @@ function getPayrollRecordById(id) {
   };
 }
 
+function updatePayrollReportPaymentStatus(id, paymentStatus, paymentDate) {
+  const db = getDb();
+  const record = getPayrollRecordById(id);
+  if (!record) {
+    throw new Error('Report storico non trovato.');
+  }
+
+  const normalizedStatus = String(paymentStatus || 'non_pagato').trim().toLowerCase();
+  const normalizedPaymentDate = String(paymentDate || '').trim();
+  const closedPaymentDate = normalizedPaymentDate || new Date().toISOString().slice(0, 10);
+
+  let isPagato = 0;
+  let restoPagato = 0;
+  let restoPagatoData = null;
+
+  if (normalizedStatus === 'parziale') {
+    isPagato = 1;
+  } else if (normalizedStatus === 'pagato' || normalizedStatus === 'saldato') {
+    isPagato = 1;
+    restoPagato = 1;
+    restoPagatoData = closedPaymentDate;
+  }
+
+  db.prepare(`
+    UPDATE payroll_records
+    SET is_pagato = ?,
+        resto_pagato = ?,
+        resto_pagato_data = ?,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `).run(isPagato, restoPagato, restoPagatoData, id);
+
+  return getPayrollRecordById(id);
+}
+
 function archivePayrollRecord(id) {
   const db = getDb();
   db.prepare(`
@@ -1010,6 +1045,7 @@ module.exports = {
   listPayrollRecordsByEmployee,
   openPayrollDocument,
   restorePayrollRecord,
+  updatePayrollReportPaymentStatus,
   updatePayrollRecord: upsertPayrollRecord,
   upsertPayrollRecord,
   uploadPayrollDocument,

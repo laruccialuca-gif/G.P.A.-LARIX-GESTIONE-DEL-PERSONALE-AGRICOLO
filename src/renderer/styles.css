@@ -435,6 +435,93 @@ textarea {
   padding: 10px 12px;
 }
 
+.report-entity-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 10px;
+  border-radius: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(14px);
+}
+
+.report-entity-dropdown__group {
+  display: grid;
+  gap: 4px;
+}
+
+.report-entity-dropdown__label {
+  padding: 2px 4px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #667085;
+}
+
+.report-entity-dropdown__clear {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 12px;
+  background: rgba(20, 33, 61, 0.06);
+  color: #314762;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.report-entity-dropdown__empty {
+  padding: 12px 14px;
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.report-entity-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 14px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.report-entity-option:hover {
+  background: rgba(20, 33, 61, 0.05);
+}
+
+.report-entity-option--selected {
+  background: rgba(219, 234, 254, 0.8);
+}
+
+.report-entity-option__name {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
+}
+
+.report-entity-option__badge {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .report-editor-panel {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -3431,10 +3518,9 @@ textarea {
 
   .print-area {
     display: block !important;
-    width: 202mm !important;
-    max-width: 202mm !important;
+    width: 100% !important;
+    max-width: none !important;
     margin: 0 !important;
-    margin-inline: auto !important;
     padding: 0 !important;
     font-size: 10px !important;
     line-height: 1.3 !important;
@@ -3694,21 +3780,29 @@ textarea {
   .attendance-print-page {
     page-break-after: always !important;
     break-after: page !important;
-    break-inside: avoid !important;
+    break-inside: auto !important;
   }
 
-  .attendance-print-page:last-child {
+  .attendance-print-page-last {
     page-break-after: auto !important;
     break-after: auto !important;
   }
 
   .attendance-print-area {
     display: block !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  .attendance-print-page,
+  .attendance-print-page > div {
+    width: 100% !important;
+    max-width: none !important;
   }
 
   .print-area th,
   .print-area td {
-    padding: 3px 2px !important;
+    padding: 2px 2px !important;
   }
 
   .print-area thead {
@@ -3718,6 +3812,17 @@ textarea {
   .print-area tr {
     break-inside: avoid !important;
     page-break-inside: avoid !important;
+  }
+
+  .attendance-print-page table {
+    table-layout: fixed !important;
+  }
+
+  .attendance-print-page th:nth-last-child(2),
+  .attendance-print-page th:last-child,
+  .attendance-print-page td:nth-last-child(2),
+  .attendance-print-page td:last-child {
+    white-space: nowrap !important;
   }
 
 button,

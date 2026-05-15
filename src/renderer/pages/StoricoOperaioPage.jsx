@@ -1,7 +1,6 @@
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatDisplayDateTime } from '../utils/dateFormat';
-import { formatWorkedSummary } from '../utils/attendanceSummary';
 import { formatCurrency } from '../utils/currencyFormat';
 import { useYearContext } from '../context/YearContext';
 
@@ -40,10 +39,6 @@ function formatMonth(monthStr) {
   if (!monthStr) return '';
   const [year, month] = monthStr.split('-');
   return `${MONTH_NAMES[parseInt(month, 10) - 1]} ${year}`;
-}
-
-function formatCurrencyLegacy(value) {
-  return formatCurrency(value);
 }
 
 function formatHours(value) {
@@ -119,7 +114,7 @@ function buildHistoryDetail(record) {
     parts.push(record.employee.role);
   }
 
-  return parts.join(' Â· ');
+  return parts.join(' • ');
 }
 
 function getIpcRecoveryMessage(error, fallbackMessage) {
@@ -205,8 +200,8 @@ function getRecordPaymentSummary(record) {
     status = 'pagato';
     label = 'Pagato';
   } else if (record?.resto_pagato) {
-    status = 'pagato';
-    label = 'Pagato';
+    status = 'saldato';
+    label = 'Saldato';
   } else if (basePaidAmount > 0 || record?.is_pagato) {
     status = 'parziale';
     label = 'Parziale';
@@ -276,6 +271,9 @@ export default function StoricoOperaioPage() {
   const [roleFilter, setRoleFilter] = useState('all');
   const [employerFilter, setEmployerFilter] = useState('all');
   const [previewRecord, setPreviewRecord] = useState(null);
+  const [previewPaymentStatus, setPreviewPaymentStatus] = useState('non_pagato');
+  const [previewPaymentDateInput, setPreviewPaymentDateInput] = useState('');
+  const [updatingPaymentStatus, setUpdatingPaymentStatus] = useState(false);
   const [showArchivedSlots, setShowArchivedSlots] = useState(false);
   const [historyTotal, setHistoryTotal] = useState(0);
   const deferredSearch = useDeferredValue(search);
@@ -351,10 +349,9 @@ export default function StoricoOperaioPage() {
     } catch (err) {
       console.error('Storico operaio: endpoint principale non disponibile, uso fallback.', err);
       try {
-        const fallbackData = await buildFallbackHistory();
+        setLoadNotice('Storico caricato in modalit? compatibile.');
         setRecords(fallbackData || []);
         setHistoryTotal((fallbackData || []).length);
-        setLoadNotice('Storico caricato in modalitÃ  compatibile.');
       } catch (fallbackErr) {
         console.error(fallbackErr);
         setRecords([]);
@@ -604,6 +601,37 @@ export default function StoricoOperaioPage() {
     navigate(`/report?employee=${record.employee_id}&month=${record.month}`);
   }
 
+  async function handleUpdatePreviewPaymentStatus() {
+    if (!previewRecord?.id) {
+      return;
+    }
+
+    const requiresPaymentDate =
+      previewPaymentStatus === 'pagato' || previewPaymentStatus === 'saldato';
+    const paymentDate = requiresPaymentDate ? previewPaymentDateInput : '';
+
+    if (requiresPaymentDate && !paymentDate) {
+      alert('Seleziona la data pagamento prima di aggiornare lo stato.');
+      return;
+    }
+
+    setUpdatingPaymentStatus(true);
+    try {
+      const updatedRecord = await window.api.payroll.updatePaymentStatus(
+        previewRecord.id,
+        previewPaymentStatus,
+        paymentDate
+      );
+      setPreviewRecord(updatedRecord || previewRecord);
+      await loadHistory();
+    } catch (err) {
+      console.error(err);
+      alert('Errore aggiornamento stato pagamento');
+    } finally {
+      setUpdatingPaymentStatus(false);
+    }
+  }
+
   async function handlePrintSnapshot(record) {
     const targetRecord = record?.report_html_snapshot
       ? record
@@ -687,7 +715,7 @@ export default function StoricoOperaioPage() {
     const rowsHtml = sortedSyntheticRows.map(({ record, employee, financials }) => `
       <tr>
         <td>${escapeHtml(`${employee.last_name || ''} ${employee.first_name || ''}`.trim())}</td>
-        <td>${escapeHtml((employee.team_names || []).join(', ') || 'â€”')}</td>
+        <td>${escapeHtml((employee.team_names || []).join(', ') || '—')}</td>
         <td>${escapeHtml(formatMonth(record.month))}</td>
         <td>${escapeHtml(formatCurrency(financials.payrollAmount))}</td>
         <td>${escapeHtml(formatCurrency(financials.totalCredits))}</td>
@@ -696,8 +724,8 @@ export default function StoricoOperaioPage() {
         <td>${escapeHtml(formatCurrency(financials.amountToGive))}</td>
         <td>${escapeHtml(formatCurrency(financials.amountToReceive))}</td>
         <td>${escapeHtml(financials.payment.label)}</td>
-        <td>${escapeHtml(financials.payment.paidDate ? formatDisplayDateTime(financials.payment.paidDate) : 'â€”')}</td>
-        <td>${escapeHtml(record.note || 'â€”')}</td>
+        <td>${escapeHtml(financials.payment.paidDate ? formatDisplayDateTime(financials.payment.paidDate) : '—')}</td>
+        <td>${escapeHtml(record.note || '—')}</td>
       </tr>
     `).join('');
 
@@ -757,37 +785,27 @@ export default function StoricoOperaioPage() {
   }
 
   const previewPaymentSummary = previewRecord ? getRecordPaymentSummary(previewRecord) : null;
-  const previewSnapshot = previewPaymentSummary?.snapshot || null;
-  const previewStandardHours = Number(
-    previewSnapshot?.standardHours || previewRecord?.employee?.standard_hours || 7
-  );
-  const previewWorkedSummary = previewRecord
-    ? formatWorkedSummary(
-        Number(previewSnapshot?.totalHours ?? previewRecord?.ore_totali ?? 0),
-        previewStandardHours
-      )
-    : '';
   const previewCreditAmount =
     previewPaymentSummary?.grossBalance > 0 ? previewPaymentSummary.originAmount : 0;
   const previewDebtAmount =
     previewPaymentSummary?.grossBalance < 0 ? previewPaymentSummary.originAmount : 0;
-  // Usa live_installments_total se presente (anche se 0 Ã¨ un valore valido).
-  // Fallback allo snapshot SOLO per record storici non ancora arricchiti dal backend.
-  // NON usare || perchÃ© 0 verrebbe ignorato come falsy.
-  const previewLiveInstallments = Number(
-    previewRecord?.live_installments_total ?? previewSnapshot?.current_installments_total ?? 0
-  );
-  const previewSnapshotInstallments = Number(previewSnapshot?.current_installments_total ?? 0);
-  // Mostra l'annotazione solo quando il campo live Ã¨ effettivamente presente
-  // (record arricchito dal backend) e il valore differisce dallo snapshot.
-  const previewLiveFieldPresent =
-    previewRecord != null &&
-    previewRecord.live_installments_total !== undefined &&
-    previewRecord.live_installments_total !== null;
-  const previewInstallmentsMismatch =
-    previewLiveFieldPresent &&
-    (!!previewRecord.installments_snapshot_mismatch ||
-      Math.abs(previewSnapshotInstallments - Number(previewRecord.live_installments_total)) > 0.009);
+
+  useEffect(() => {
+    if (!previewRecord) {
+      setPreviewPaymentStatus('non_pagato');
+      setPreviewPaymentDateInput('');
+      return;
+    }
+
+    const nextStatus = getRecordPaymentSummary(previewRecord).status || 'non_pagato';
+    setPreviewPaymentStatus(nextStatus);
+    setPreviewPaymentDateInput(
+      String(
+        previewRecord.resto_pagato_data ||
+          (previewRecord.is_pagato ? previewRecord.processed_at || '' : '')
+      ).slice(0, 10)
+    );
+  }, [previewRecord]);
 
   return (
     <div className="page">
@@ -878,9 +896,14 @@ export default function StoricoOperaioPage() {
             >
               Reset
             </button>
-            <span className="soft-chip" style={{ background: 'rgba(20, 33, 61, 0.06)', color: '#314762' }}>
-              {sortedSyntheticRows.length} record filtrati
-            </span>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginLeft: 'auto' }}>
+              <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
+                Da dare: {formatCurrency(historySummary.totalDaDare)} • Da ricevere: {formatCurrency(historySummary.totalDaRicevere)}
+              </span>
+              <span className="soft-chip" style={{ background: 'rgba(20, 33, 61, 0.06)', color: '#314762' }}>
+                {sortedSyntheticRows.length} record filtrati
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -912,14 +935,14 @@ export default function StoricoOperaioPage() {
           ) : (
             <div className="panel panel-section" style={{ padding: 0, overflow: 'hidden' }}>
               <div style={{ display: 'none', padding: 16, borderBottom: '1px solid #f3f4f6', fontWeight: 700 }}>
-                Archivio storico â€” clic su una voce per aprire l'anteprima del report collegato
+                Archivio storico — clic su una voce per aprire l'anteprima del report collegato
               </div>
               <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderBottom: '1px solid #f3f4f6' }}>
                 <div style={{ color: '#64748b', fontSize: 13 }}>
                   Caricati {records.length} record su {historyTotal} disponibili per il periodo selezionato.
                 </div>
                 <div className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
-                  Da dare: {formatCurrency(historySummary.totalDaDare)} Â· Da ricevere: {formatCurrency(historySummary.totalDaRicevere)}
+                  Da dare: {formatCurrency(historySummary.totalDaDare)} • Da ricevere: {formatCurrency(historySummary.totalDaRicevere)}
                 </div>
               </div>
 
@@ -979,7 +1002,7 @@ export default function StoricoOperaioPage() {
                                 </div>
                                 <div style={{ fontSize: 12, color: '#667085', lineHeight: 1.45 }}>
                                   {record.datore || 'Datore non indicato'}
-                                  {employee.role ? ` · ${employee.role}` : ''}
+                                  {employee.role ? ` • ${employee.role}` : ''}
                                   <div style={{ color: '#94a3b8', marginTop: 2 }}>
                                     Processato il {formatDisplayDateTime(record.processed_at || record.updated_at || record.created_at)}
                                   </div>
@@ -1008,7 +1031,7 @@ export default function StoricoOperaioPage() {
                                     Apri
                                   </button>
                                   <button type="button" className="button-secondary" onClick={() => handleOpenLinkedReport(record)}>
-                                    Modifica
+                                    Modifica report
                                   </button>
                                   <button type="button" className="button-secondary" onClick={() => handlePrintSnapshot(record)}>
                                     Stampa
@@ -1050,8 +1073,8 @@ export default function StoricoOperaioPage() {
                           </div>
                           <div style={{ color: '#667085', fontSize: 13 }}>
                             {group.employee.role || 'Nessuna mansione'}
-                            {group.employee.team_names?.length ? ` Â· Squadra: ${group.employee.team_names.join(', ')}` : ''}
-                            {group.employee.hired_by ? ` Â· Datore storico: ${group.employee.hired_by}` : ''}
+                            {group.employee.team_names?.length ? ` • Squadra: ${group.employee.team_names.join(', ')}` : ''}
+                            {group.employee.hired_by ? ` • Datore storico: ${group.employee.hired_by}` : ''}
                           </div>
                         </div>
                         <div className="soft-chip" style={{ background: '#eef2ff', color: '#4338ca' }}>
@@ -1218,61 +1241,67 @@ export default function StoricoOperaioPage() {
               <div>
                 <span className="page-kicker">Report processato</span>
                 <h2 style={{ margin: '6px 0 0' }}>
-                  {previewRecord.employee?.first_name} {previewRecord.employee?.last_name} Â· {formatMonth(previewRecord.month)}
+                  {previewRecord.employee?.first_name} {previewRecord.employee?.last_name} — {formatMonth(previewRecord.month)}
                 </h2>
               </div>
-              <button type="button" className="modal-close" onClick={() => setPreviewRecord(null)}>âœ•</button>
+              <button type="button" className="modal-close" onClick={() => setPreviewRecord(null)}>×</button>
             </div>
-
             {previewRecord.report_html_snapshot ? (
               <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.8fr) minmax(280px, 0.8fr)', gap: 18, alignItems: 'start' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <div style={{ fontSize: 11, color: '#92400e', padding: '5px 10px', background: '#fef3c7', borderRadius: 6, borderLeft: '3px solid #f59e0b', lineHeight: 1.4 }}>
-                    Anteprima storica â€” i valori mostrati qui riflettono il momento del salvataggio. Per i dati aggiornati (incluse rate/trattenute) usa la Sintesi nel pannello a destra.
+                    Anteprima storica — i valori mostrati qui riflettono il momento del salvataggio.
                   </div>
                   <div style={{ maxHeight: '68vh', overflow: 'auto', padding: 8, background: '#f8fafc', borderRadius: 16 }}>
                     <div dangerouslySetInnerHTML={{ __html: previewRecord.report_html_snapshot }} />
                   </div>
                 </div>
-
                 <div style={{ display: 'grid', gap: 14 }}>
                   <div className="panel panel-section" style={{ padding: 16 }}>
                     <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#667085', marginBottom: 12 }}>
                       Sintesi report
                     </div>
                     <div style={{ display: 'grid', gap: 10 }}>
-                      <HistorySummaryRow label="Dipendente" value={`${previewRecord.employee?.first_name || ''} ${previewRecord.employee?.last_name || ''}`.trim() || 'â€”'} />
+                      <HistorySummaryRow
+                        label="Dipendente"
+                        value={`${previewRecord.employee?.first_name || ''} ${previewRecord.employee?.last_name || ''}`.trim() || '—'}
+                      />
                       <HistorySummaryRow label="Mese" value={formatMonth(previewRecord.month)} />
                       <HistorySummaryRow label="Giornate lavorate" value={String(Number(previewRecord.giornate_effettuate || 0))} />
-                      <HistorySummaryRow label="Ore ordinarie" value={formatHours(previewPaymentSummary?.regularHours)} />
                       <HistorySummaryRow label="Ore totali" value={formatHours(previewRecord.ore_totali)} />
-                      <HistorySummaryRow label="Giornate + ore residue" value={previewWorkedSummary} />
-                      <HistorySummaryRow label="Retribuzione calcolata" value={formatCurrency(previewRecord.retribuzione_calcolata)} />
-                      <HistorySummaryRow label="Straordinario" value={formatHours(previewPaymentSummary?.overtimeHours)} />
-                      <HistorySummaryRow label="Importo straordinario" value={formatCurrency(previewPaymentSummary?.overtimeAmount)} />
-                      <HistorySummaryRow label="Acconti" value={formatCurrency(previewRecord.acconti)} />
-                      <HistorySummaryRow
-                        label="Rate / trattenute"
-                        value={
-                          previewInstallmentsMismatch
-                            ? `${formatCurrency(previewLiveInstallments)} Â· valore storico salvato: ${formatCurrency(previewSnapshotInstallments)}`
-                            : formatCurrency(previewLiveInstallments)
-                        }
-                      />
-                      <HistorySummaryRow label="Recuperi" value={formatCurrency(previewSnapshot?.recoveries_total)} />
-                      <HistorySummaryRow label="Resto precedente" value={formatCurrency(previewRecord.resto_precedente)} />
+                      <HistorySummaryRow label="Compenso mese" value={formatCurrency(previewRecord.retribuzione_calcolata)} />
                       <HistorySummaryRow label="Bonifico / assegno" value={formatCurrency(previewRecord.importo_busta_paga)} />
-                      <HistorySummaryRow label="Credito da dare all'operaio" value={formatCurrency(previewCreditAmount)} />
-                      <HistorySummaryRow label="Debito da ricevere dall'operaio" value={formatCurrency(previewDebtAmount)} />
-                      <HistorySummaryRow label="Importo originario aperto" value={formatCurrency(previewPaymentSummary?.originAmount)} />
-                      <HistorySummaryRow label="Importo pagato" value={formatCurrency(previewPaymentSummary?.paidAmount)} />
-                      <HistorySummaryRow label="Importo residuo" value={formatCurrency(previewPaymentSummary?.residualAmount)} />
-                      <HistorySummaryRow label="Saldo finale" value={formatCurrency(previewPaymentSummary?.residual)} />
-                      <HistorySummaryRow label="Stato pagamento" value={previewPaymentSummary?.label} />
-                      <HistorySummaryRow label="Data pagamento" value={previewPaymentSummary?.paidDate ? formatDisplayDateTime(previewPaymentSummary.paidDate) : 'â€”'} />
+                      <HistorySummaryRow label="Da dare all'operaio" value={formatCurrency(previewCreditAmount)} color="#166534" />
+                      <HistorySummaryRow label="Da ricevere dall'operaio" value={formatCurrency(previewDebtAmount)} color="#b91c1c" />
+                      <HistorySummaryRow label="Saldo finale" value={formatCurrency(previewPaymentSummary?.residual)} color={previewPaymentSummary?.residual >= 0 ? '#166534' : '#b91c1c'} />
+                      <div style={{ display: 'grid', gap: 8, paddingTop: 6, borderTop: '1px solid #e5e7eb' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+                          <span style={{ fontSize: 12, color: '#667085', fontWeight: 700 }}>Stato pagamento</span>
+                          <select
+                            value={previewPaymentStatus}
+                            onChange={(event) => setPreviewPaymentStatus(event.target.value)}
+                            style={{ minWidth: 168 }}
+                          >
+                            <option value="non_pagato">Non pagato</option>
+                            <option value="parziale">Parziale</option>
+                            <option value="pagato">Pagato</option>
+                            <option value="saldato">Saldato</option>
+                          </select>
+                        </div>
+                        {(previewPaymentStatus === 'pagato' || previewPaymentStatus === 'saldato') ? (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+                            <span style={{ fontSize: 12, color: '#667085', fontWeight: 700 }}>Data pagamento</span>
+                            <input type="date" value={previewPaymentDateInput} onChange={(event) => setPreviewPaymentDateInput(event.target.value)} />
+                          </div>
+                        ) : null}
+                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                          <button type="button" className="button-secondary" onClick={handleUpdatePreviewPaymentStatus} disabled={updatingPaymentStatus}>
+                            {updatingPaymentStatus ? 'Aggiornamento...' : 'Aggiorna stato'}
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
-
                   <div className="panel panel-section" style={{ padding: 16 }}>
                     <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#667085', marginBottom: 12 }}>
                       Azioni e allegati
@@ -1301,7 +1330,6 @@ export default function StoricoOperaioPage() {
                       </div>
                     </div>
                   </div>
-
                   <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     <button type="button" className="button" onClick={() => handleOpenLinkedReport(previewRecord)}>
                       Modifica report
@@ -1465,11 +1493,11 @@ function EmployeeMultiSelectModal({
   );
 }
 
-function HistorySummaryRow({ label, value }) {
+function HistorySummaryRow({ label, value, color = '#111827' }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
       <span style={{ fontSize: 12, color: '#667085', fontWeight: 700 }}>{label}</span>
-      <span style={{ fontSize: 14, color: '#111827', fontWeight: 800, textAlign: 'right' }}>{value || 'â€”'}</span>
+      <span style={{ fontSize: 14, color, fontWeight: 800, textAlign: 'right' }}>{value || '—'}</span>
     </div>
   );
 }

@@ -166,6 +166,8 @@ contextBridge.exposeInMainWorld('api', {
     listHistory: (options) => ipcRenderer.invoke('payroll:listHistory', options),
     getRecord: (employeeId, month) => ipcRenderer.invoke('payroll:getRecord', employeeId, month),
     getRecordById: (id) => ipcRenderer.invoke('payroll:getRecordById', id),
+    updatePaymentStatus: (id, paymentStatus, paymentDate) =>
+      ipcRenderer.invoke('payroll:updatePaymentStatus', id, paymentStatus, paymentDate),
     getPreviousBalance: (employeeId, month) =>
       ipcRenderer.invoke('payroll:getPreviousBalance', employeeId, month),
     uploadDocument: (employeeId, month) => ipcRenderer.invoke('payroll:uploadDocument', employeeId, month),

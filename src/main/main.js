@@ -706,6 +706,10 @@ async function createWindow() {
 }
 
 function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
+  const pageWidthMm = landscape ? 297 : 210;
+  const pageHeightMm = landscape ? 210 : 297;
+  const pageMarginMm = 6;
+  const pageContentWidthMm = pageWidthMm - pageMarginMm * 2;
   const debugBadgeHtml = debugRenderLabel
     ? `<div class="app-real-debug-label">${String(debugRenderLabel)}</div>`
     : '';
@@ -718,12 +722,12 @@ function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
       <style>
         @page {
           size: A4 ${landscape ? 'landscape' : 'portrait'};
-          margin: 2mm;
+          margin: ${pageMarginMm}mm;
         }
 
         html, body {
-          width: 210mm;
-          height: auto;
+          width: ${pageWidthMm}mm;
+          height: ${pageHeightMm}mm;
           margin: 0;
           padding: 0;
           overflow: visible;
@@ -741,8 +745,9 @@ function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
         }
 
         .print-root {
-          width: 206mm;
-          margin: 0 auto;
+          width: ${pageContentWidthMm}mm;
+          max-width: none;
+          margin: 0;
           padding: 0;
           position: relative;
         }
@@ -762,11 +767,11 @@ function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
         .report-page,
         .print-report,
         .pdf-report {
-          width: 206mm;
-          max-width: 206mm;
+          width: 100%;
+          max-width: none;
           min-height: 0;
           height: auto;
-          margin: 0 auto;
+          margin: 0;
           padding: 0;
           box-sizing: border-box;
           overflow: visible;
@@ -776,8 +781,8 @@ function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
 
         .print-sheet {
           width: 100%;
-          max-width: 206mm;
-          margin: 0 auto;
+          max-width: none;
+          margin: 0;
           break-inside: avoid;
           page-break-inside: avoid;
         }
@@ -795,8 +800,8 @@ function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
         /* === EMPLOYEE COMPACT A4 — 1 PAGE (no transform, natural fit) === */
         .employee-print-area {
           width: 100% !important;
-          max-width: 206mm !important;
-          margin: 0 auto !important;
+          max-width: none !important;
+          margin: 0 !important;
           transform: none !important;
           overflow: visible !important;
           page-break-after: avoid !important;
@@ -805,7 +810,7 @@ function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
 
         .employee-print-sheet {
           width: 100% !important;
-          max-width: 206mm !important;
+          max-width: none !important;
           min-height: 0 !important;
           padding: 4mm 5.5mm 3.5mm !important;
           border-radius: 0 !important;
@@ -2513,6 +2518,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('payroll:getRecordById', async (_, id) =>
     payrollRepo.getPayrollRecordById(id)
   );
+  ipcMain.handle('payroll:updatePaymentStatus', async (_, id, paymentStatus, paymentDate) => {
+    requireWritableLicense('La modifica dello stato pagamento dei report storici');
+    return payrollRepo.updatePayrollReportPaymentStatus(id, paymentStatus, paymentDate);
+  });
   ipcMain.handle('payroll:getPreviousBalance', async (_, employeeId, month) =>
     payrollRepo.getPreviousBalance(employeeId, month)
   );

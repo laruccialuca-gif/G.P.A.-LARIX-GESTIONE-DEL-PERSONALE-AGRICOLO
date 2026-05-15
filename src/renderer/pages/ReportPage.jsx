@@ -144,6 +144,11 @@ function getReportEmployeeDisplayName(employee) {
   return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
 }
 
+function getTeamDisplayName(team) {
+  if (!team) return '';
+  return `Squadra ${team.name || ''}`.trim();
+}
+
 function matchesReportEmployeeSearch(employee, normalizedSearch) {
   const haystack = [
     employee?.full_name,
@@ -606,8 +611,17 @@ export default function ReportPage() {
 
     return filtered;
   }, [normalizedSearch, sortedActiveEmployees, isEmployeeMode, employee]);
+  const filteredTeamsForSelect = useMemo(() => {
+    if (!normalizedSearch) {
+      return visibleTeams;
+    }
+
+    return visibleTeams.filter((team) =>
+      String(team.name || '').toLowerCase().includes(normalizedSearch)
+    );
+  }, [normalizedSearch, visibleTeams]);
   const hasEmployeeSearchResults = filteredEmployeesForSelect.length > 0;
-  const showEmployeeAutocomplete = isEmployeeAutocompleteOpen && normalizedSearch.length > 0;
+  const showEmployeeAutocomplete = isEmployeeAutocompleteOpen;
   const selectedTeam = isTeamMode
     ? visibleTeams.find((team) => String(team.id) === String(selectedMeta.id))
     : null;
@@ -656,7 +670,7 @@ export default function ReportPage() {
   function getEmployeeSelectLabel(item) {
     const baseLabel = getReportEmployeeDisplayName(item);
     return employeeProcessedStatusMap.get(Number(item.id))
-      ? `${baseLabel} — già elaborato`
+      ? `${baseLabel} - gia elaborato`
       : baseLabel;
   }
 
@@ -664,6 +678,65 @@ export default function ReportPage() {
     guardUnsavedChanges(() => {
       setSelectedEntity(`employee:${item.id}`);
       setReportSearchTerm(getReportEmployeeDisplayName(item));
+      setIsEmployeeAutocompleteOpen(false);
+    });
+  }
+
+  const employeeAttendanceStatusMap = useMemo(() => {
+    const map = new Map();
+    sortedActiveEmployees.forEach((item) => {
+      map.set(Number(item.id), false);
+    });
+
+    for (const item of attendance) {
+      if (!String(item?.date || '').startsWith(`${selectedReportMonthKey}-`)) {
+        continue;
+      }
+
+      const employeeId = Number(item.employee_id);
+      if (!Number.isFinite(employeeId)) {
+        continue;
+      }
+
+      map.set(employeeId, true);
+    }
+
+    return map;
+  }, [attendance, selectedReportMonthKey, sortedActiveEmployees]);
+
+  function getEmployeeDropdownStatus(item) {
+    const employeeId = Number(item.id);
+    if (employeeProcessedStatusMap.get(employeeId)) {
+      return {
+        key: 'processed',
+        label: 'gia elaborato',
+        style: {
+          background: 'rgba(22, 163, 74, 0.14)',
+          color: '#14532d',
+          borderColor: 'rgba(22, 101, 52, 0.14)',
+        },
+      };
+    }
+
+    if (employeeAttendanceStatusMap.get(employeeId)) {
+      return {
+        key: 'pending',
+        label: 'da elaborare',
+        style: {
+          background: 'rgba(245, 158, 11, 0.14)',
+          color: '#b45309',
+          borderColor: 'rgba(245, 158, 11, 0.18)',
+        },
+      };
+    }
+
+    return null;
+  }
+
+  function handleTeamAutocompleteSelect(team) {
+    guardUnsavedChanges(() => {
+      setSelectedEntity(`team:${team.id}`);
+      setReportSearchTerm(getTeamDisplayName(team));
       setIsEmployeeAutocompleteOpen(false);
     });
   }
@@ -738,6 +811,22 @@ export default function ReportPage() {
       document.removeEventListener('mousedown', handlePointerDown);
     };
   }, []);
+
+  useEffect(() => {
+    if (isEmployeeMode && employee) {
+      setReportSearchTerm(getReportEmployeeDisplayName(employee));
+      return;
+    }
+
+    if (isTeamMode && selectedTeam) {
+      setReportSearchTerm(getTeamDisplayName(selectedTeam));
+      return;
+    }
+
+    if (!selectedEntity) {
+      setReportSearchTerm('');
+    }
+  }, [selectedEntity, isEmployeeMode, isTeamMode, employee, selectedTeam]);
 
   useEffect(() => {
     if (!employee) {
@@ -1888,7 +1977,7 @@ export default function ReportPage() {
   }
 
   function removeDebtPlan(index) {
-    const confirmed = window.confirm('Il debito è stato saldato?');
+    const confirmed = window.confirm('Il debito e stato saldato?');
     if (!confirmed) return;
 
     setDebtPlans((current) => {
@@ -1920,7 +2009,7 @@ export default function ReportPage() {
   }
 
   function removeDebtInstallment(planIndex, installmentIndex) {
-    const confirmed = window.confirm('Il debito è stato saldato?');
+    const confirmed = window.confirm('Il debito e stato saldato?');
     if (!confirmed) return;
     setDebtPlans((current) => {
       const targetPlan = current[planIndex];
@@ -2114,7 +2203,7 @@ export default function ReportPage() {
     giftAmountNum > 0 ? `Extra: ${formatCurrency(giftAmountNum)}` : '',
   ].filter(Boolean);
   const benefitsSectionSummary = benefitsSectionSummaryParts.length
-    ? benefitsSectionSummaryParts.join(' · ')
+    ? benefitsSectionSummaryParts.join(' - ')
     : 'Nessun acconto, trasporto o extra';
   const benefitsSectionStorageKey = getBenefitsSectionStorageKey(selectedEntity, currentMonthKey);
   const currentEconomicSnapshot = buildEconomicSnapshot({
@@ -2444,118 +2533,95 @@ export default function ReportPage() {
               className="report-entity-select"
               value={reportSearchTerm}
               onFocus={() => {
-                if (reportSearchTerm.trim()) {
-                  setIsEmployeeAutocompleteOpen(true);
-                }
+                setIsEmployeeAutocompleteOpen(true);
               }}
               onChange={(event) => {
                 const nextValue = event.target.value;
                 setReportSearchTerm(nextValue);
-                setIsEmployeeAutocompleteOpen(nextValue.trim().length > 0);
+                setIsEmployeeAutocompleteOpen(true);
               }}
-              placeholder="Cerca dipendente..."
-              aria-label="Cerca dipendente..."
+              placeholder="Cerca dipendente o seleziona squadra..."
+              aria-label="Cerca dipendente o seleziona squadra..."
               style={{ width: '100%' }}
             />
 
             {showEmployeeAutocomplete ? (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 'calc(100% + 8px)',
-                  left: 0,
-                  right: 0,
-                  zIndex: 30,
-                  display: 'grid',
-                  gap: 0,
-                  maxHeight: 320,
-                  overflowY: 'auto',
-                  borderRadius: 18,
-                  border: '1px solid rgba(15, 23, 42, 0.08)',
-                  background: 'rgba(255, 255, 255, 0.98)',
-                  boxShadow: '0 18px 40px rgba(15, 23, 42, 0.14)',
-                  backdropFilter: 'blur(14px)',
-                }}
-              >
+              <div className="report-entity-dropdown">
+                {selectedEntity ? (
+                  <button
+                    type="button"
+                    className="report-entity-dropdown__clear"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      guardUnsavedChanges(() => {
+                        setSelectedEntity('');
+                        setReportSearchTerm('');
+                        setIsEmployeeAutocompleteOpen(false);
+                      });
+                    }}
+                  >
+                    Nessuna selezione
+                  </button>
+                ) : null}
+
                 {filteredEmployeesForSelect.length ? (
-                  filteredEmployeesForSelect.map((item) => {
-                    const isProcessed = employeeProcessedStatusMap.get(Number(item.id));
-                    return (
-                      <button
-                        key={`employee-autocomplete-${item.id}`}
-                        type="button"
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => handleEmployeeAutocompleteSelect(item)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: 12,
-                          width: '100%',
-                          padding: '12px 14px',
-                          border: 'none',
-                          borderBottom: '1px solid rgba(15, 23, 42, 0.06)',
-                          background: 'transparent',
-                          textAlign: 'left',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <span style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>
-                          {getReportEmployeeDisplayName(item)}
-                        </span>
-                        {isProcessed ? (
-                          <span
-                            style={{
-                              flexShrink: 0,
-                              padding: '4px 10px',
-                              borderRadius: 999,
-                              background: 'rgba(22, 163, 74, 0.12)',
-                              color: '#166534',
-                              fontSize: 11,
-                              fontWeight: 800,
-                            }}
-                          >
-                            già elaborato
+                  <div className="report-entity-dropdown__group">
+                    <div className="report-entity-dropdown__label">Dipendenti</div>
+                    {filteredEmployeesForSelect.map((item) => {
+                      const employeeStatus = getEmployeeDropdownStatus(item);
+                      const isSelected = selectedEntity === `employee:${item.id}`;
+                      return (
+                        <button
+                          key={`employee-autocomplete-${item.id}`}
+                          type="button"
+                          className={`report-entity-option ${isSelected ? 'report-entity-option--selected' : ''}`}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => handleEmployeeAutocompleteSelect(item)}
+                        >
+                          <span className="report-entity-option__name">
+                            {getReportEmployeeDisplayName(item)}
                           </span>
-                        ) : null}
-                      </button>
-                    );
-                  })
-                ) : (
-                  <div style={{ padding: '12px 14px', fontSize: 13, color: '#6b7280' }}>
-                    Nessun dipendente trovato
+                          {employeeStatus ? (
+                            <span className="soft-chip report-entity-option__badge" style={employeeStatus.style}>
+                              {employeeStatus.label}
+                            </span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
                   </div>
-                )}
+                ) : null}
+
+                {filteredTeamsForSelect.length ? (
+                  <div className="report-entity-dropdown__group">
+                    <div className="report-entity-dropdown__label">Squadre</div>
+                    {filteredTeamsForSelect.map((team) => {
+                      const isSelected = selectedEntity === `team:${team.id}`;
+                      return (
+                        <button
+                          key={`team-autocomplete-${team.id}`}
+                          type="button"
+                          className={`report-entity-option ${isSelected ? 'report-entity-option--selected' : ''}`}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => handleTeamAutocompleteSelect(team)}
+                        >
+                          <span className="report-entity-option__name">
+                            {getTeamDisplayName(team)}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+
+                {!filteredEmployeesForSelect.length && !filteredTeamsForSelect.length ? (
+                  <div className="report-entity-dropdown__empty">
+                    Nessun dipendente o squadra trovato
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
-
-          <select
-            className="report-entity-select"
-            value={selectedEntity}
-            onChange={(event) => guardUnsavedChanges(() => setSelectedEntity(event.target.value))}
-          >
-            <option value="">Seleziona dipendente o squadra...</option>
-            <optgroup label="Dipendenti">
-              {filteredEmployeesForSelect.map((item) => (
-                <option key={`employee-${item.id}`} value={`employee:${item.id}`}>
-                  {getEmployeeSelectLabel(item)}
-                </option>
-              ))}
-              {!hasEmployeeSearchResults ? (
-                <option value="" disabled>
-                  Nessun dipendente trovato
-                </option>
-              ) : null}
-            </optgroup>
-            <optgroup label="Squadre">
-              {visibleTeams.map((team) => (
-                <option key={`team-${team.id}`} value={`team:${team.id}`}>
-                  Squadra • {team.name}
-                </option>
-              ))}
-            </optgroup>
-          </select>
 
           {normalizedSearch && !showEmployeeAutocomplete && !hasEmployeeSearchResults ? (
             <div style={{ fontSize: 13, color: '#6b7280' }}>Nessun dipendente trovato</div>
@@ -2575,7 +2641,7 @@ export default function ReportPage() {
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                 {isEditUnlocked ? (
                   <div className="soft-chip" style={{ background: 'rgba(212, 160, 23, 0.16)', color: '#a16207', borderColor: 'rgba(212, 160, 23, 0.18)' }}>
-                    Modalità modifica attiva
+                    Modalita modifica attiva
                   </div>
                 ) : null}
                 <button
@@ -2634,14 +2700,14 @@ export default function ReportPage() {
                   <select value={datore} onChange={(e) => setDatore(e.target.value)} style={fieldStyle}>
                     {employerOptions.map((option) => (
                       <option key={option.short_name || option.value} value={option.short_name || option.value}>
-                        {(option.short_name || option.value)}{option.name ? ` · ${option.name}` : ''}
+                        {(option.short_name || option.value)}{option.name ? ` - ${option.name}` : ''}
                       </option>
                     ))}
                   </select>
                 </div>
 
                 <div>
-                  <div style={fieldLabelStyle}>Retribuzione giornaliera (€)</div>
+                  <div style={fieldLabelStyle}>Retribuzione giornaliera (EUR)</div>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <input
                       type="number"
@@ -2664,7 +2730,7 @@ export default function ReportPage() {
                 </div>
 
                 <div>
-                  <div style={fieldLabelStyle}>Importo busta paga (€)</div>
+                  <div style={fieldLabelStyle}>Importo busta paga (EUR)</div>
                   <input type="number" step="0.01" min="0" value={importoBustaPaga} onChange={(e) => setImportoBustaPaga(e.target.value)} placeholder="es. 800.00" style={fieldStyle} />
                 </div>
 
@@ -2683,7 +2749,7 @@ export default function ReportPage() {
                         onClick={() => setShowOvertimePanel(!showOvertimePanel)}
                         style={{ fontSize: 12, padding: '6px 12px' }}
                       >
-                        {showOvertimePanel ? 'Nascondi dettaglio â–²' : 'Mostra dettaglio â–¼'}
+                        {showOvertimePanel ? 'Nascondi dettaglio -' : 'Mostra dettaglio +'}
                       </button>
                     </div>
                     {showOvertimePanel && (
@@ -2691,7 +2757,7 @@ export default function ReportPage() {
                         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12, color: '#374151' }}>
                           <span>
                             <span style={{ color: '#6b7280', fontWeight: 600 }}>Tariffa:</span>{' '}
-                            <strong>{overtimeHourlyRate > 0 ? formatCurrency(overtimeHourlyRate) + ' / ora' : '—'}</strong>
+                            <strong>{overtimeHourlyRate > 0 ? formatCurrency(overtimeHourlyRate) + ' / ora' : '-'}</strong>
                           </span>
                           <span>
                             <span style={{ color: '#6b7280', fontWeight: 600 }}>Origine:</span>{' '}
@@ -2710,12 +2776,12 @@ export default function ReportPage() {
                         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 12, color: '#374151' }}>
                           <span>
                             <span style={{ color: '#6b7280', fontWeight: 600 }}>Ore straordinario:</span>{' '}
-                            <strong>{employeeTotals.totalOvertimeHours > 0 ? `${employeeTotals.totalOvertimeHours} h` : '—'}</strong>
+                            <strong>{employeeTotals.totalOvertimeHours > 0 ? `${employeeTotals.totalOvertimeHours} h` : '-'}</strong>
                           </span>
                           <span>
                             <span style={{ color: '#6b7280', fontWeight: 600 }}>Totale straordinario:</span>{' '}
                             <strong style={{ color: totalOvertimePay > 0 ? '#1F2937' : '#374151' }}>
-                              {totalOvertimePay > 0 ? formatCurrency(totalOvertimePay) : '—'}
+                              {totalOvertimePay > 0 ? formatCurrency(totalOvertimePay) : '-'}
                             </strong>
                           </span>
                         </div>
@@ -2769,7 +2835,7 @@ export default function ReportPage() {
                   </div>
 
                   <div style={fieldSubtleStyle}>
-                    Giornate teoriche: <strong>{payslipCalculatorDailyAmount > 0 ? payslipTheoreticalDays.toFixed(2) : '—'}</strong>
+                    Giornate teoriche: <strong>{payslipCalculatorDailyAmount > 0 ? payslipTheoreticalDays.toFixed(2) : '-'}</strong>
                   </div>
 
                   <div style={payslipDecisionGridStyle}>
@@ -2783,7 +2849,7 @@ export default function ReportPage() {
                       disabled={payslipCalculatorDailyAmount <= 0}
                     >
                       <div style={payslipDecisionTopRowStyle}>
-                        <div style={payslipDecisionTitleStyle}>Opzione A — arrotonda per difetto</div>
+                        <div style={payslipDecisionTitleStyle}>Opzione A - arrotonda per difetto</div>
                         <div style={payslipDecisionDaysStyle}>{payslipFloorDays} giornate</div>
                       </div>
                       <div style={payslipDecisionMetricsRowStyle}>
@@ -2838,7 +2904,7 @@ export default function ReportPage() {
                       disabled={payslipCalculatorDailyAmount <= 0}
                     >
                       <div style={payslipDecisionTopRowStyle}>
-                        <div style={payslipDecisionTitleStyle}>Opzione B — arrotonda per eccesso</div>
+                        <div style={payslipDecisionTitleStyle}>Opzione B - arrotonda per eccesso</div>
                         <div style={payslipDecisionDaysStyle}>{payslipCeilDays} giornate</div>
                       </div>
                       <div style={payslipDecisionMetricsRowStyle}>
@@ -2899,9 +2965,9 @@ export default function ReportPage() {
                       )}
                     >
                       <div style={payslipDecisionTopRowStyle}>
-                        <div style={payslipDecisionTitleStyle}>Opzione C — Personalizzata</div>
+                        <div style={payslipDecisionTitleStyle}>Opzione C - Personalizzata</div>
                         <div style={payslipDecisionDaysStyle}>
-                          {payslipCustomDays === '' ? '—' : `${payslipCustomDaysNum} giornate`}
+                          {payslipCustomDays === '' ? '-' : `${payslipCustomDaysNum} giornate`}
                         </div>
                       </div>
                       <div style={payslipDecisionInputRowStyle}>
@@ -3122,19 +3188,19 @@ export default function ReportPage() {
                     </div>
 
                     <div>
-                      <div style={fieldLabelStyle}>Prezzo per macchina (€)</div>
+                      <div style={fieldLabelStyle}>Prezzo per macchina (EUR)</div>
                       <input type="number" step="0.01" min="0" value={prezzoPerMacchina} onChange={(e) => setPrezzoPerMacchina(e.target.value)} placeholder="es. 15.00" style={fieldStyle} />
                     </div>
 
                     <div>
-                      <div style={fieldLabelStyle}>Totale trasporto (€)</div>
+                      <div style={fieldLabelStyle}>Totale trasporto (EUR)</div>
                       <div style={readonlyBoxStyle}>{formatCurrency(totaleTrasporto)}</div>
                     </div>
                   </>
                 ) : null}
 
                 <div>
-                  <div style={fieldLabelStyle}>Regalo (€)</div>
+                  <div style={fieldLabelStyle}>Regalo (EUR)</div>
                   <input type="number" step="0.01" min="0" value={giftAmount} onChange={(e) => setGiftAmount(e.target.value)} placeholder="Importo regalo" style={fieldStyle} />
                 </div>
 
@@ -3152,7 +3218,7 @@ export default function ReportPage() {
               <div style={fieldSubtleStyle}>Importa il credito o debito non ancora chiuso dal mese precedente.</div>
               <div style={{ ...editorBlockGridStyle, marginTop: 10 }}>
                 <div style={{ gridColumn: '1 / -1' }}>
-                  <div style={fieldLabelStyle}>Resto precedente (€)</div>
+                  <div style={fieldLabelStyle}>Resto precedente (EUR)</div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <input type="number" step="0.01" value={restoPrecedente} onChange={(e) => setRestoPrecedente(e.target.value)} placeholder="automatico dal mese precedente" style={fieldStyle} />
                     <button type="button" onClick={importPreviousBalance}>Importa</button>
@@ -3530,9 +3596,9 @@ export default function ReportPage() {
                     onChange={() => toggleFinancialImportSelection(item.id)}
                   />
                   <span style={{ minWidth: 0 }}>
-                    <strong>{formatDateLabel(item.movement_date)} · {formatCurrency(item.amount)}</strong>
+                    <strong>{formatDateLabel(item.movement_date)} - {formatCurrency(item.amount)}</strong>
                     <span style={{ display: 'block', color: '#4b5563', fontSize: 12 }}>
-                      {item.employer_key || datore || 'Datore'}{item.notes ? ` · ${item.notes}` : ''}
+                      {item.employer_key || datore || 'Datore'}{item.notes ? ` - ${item.notes}` : ''}
                     </span>
                   </span>
                 </label>
@@ -3562,7 +3628,7 @@ export default function ReportPage() {
               Attenzione: ci sono acconti o rate non ancora inseriti nel report. Vuoi controllarli prima di salvare?
             </div>
             <div style={{ ...fieldSubtleStyle, marginTop: 8 }}>
-              Acconti: {pendingSavePrompt.advance} · Rate: {pendingSavePrompt.installment}
+              Acconti: {pendingSavePrompt.advance} - Rate: {pendingSavePrompt.installment}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
               <button
@@ -4081,7 +4147,7 @@ function CompactAttendanceRow({ days, attendanceMap, hoursFormat }) {
                 background: isSunday ? '#fffbeb' : '#fff',
               }}
             >
-              {value || '—'}
+              {value || '-'}
             </td>
           );
         })}
@@ -4119,7 +4185,7 @@ function SummaryLineCompact({ label, detail, value, strong, color, subtle }) {
           <div style={{ fontSize: 9, color: subtle ? '#6b7280' : '#667085', marginTop: 1 }}>{detail}</div>
         ) : null}
       </div>
-      <div style={{ marginLeft: 'auto', fontWeight: strong ? 800 : 700, whiteSpace: 'nowrap' }}>{value || '—'}</div>
+      <div style={{ marginLeft: 'auto', fontWeight: strong ? 800 : 700, whiteSpace: 'nowrap' }}>{value || '-'}</div>
     </div>
   );
 }
@@ -4188,12 +4254,12 @@ function TeamPrintArea({
               <tr>
                 <td style={tdLabel}>Trasporto squadra</td>
                 <td style={tdCenter}>
-                  {teamTransportEnabled ? `${formatCurrency(teamTransportTotal)}${teamTransportDescription ? ` · ${teamTransportDescription}` : ''}` : '—'}
+                  {teamTransportEnabled ? `${formatCurrency(teamTransportTotal)}${teamTransportDescription ? ` • ${teamTransportDescription}` : ''}` : '—'}
                 </td>
               </tr>
               <tr>
                 <td style={tdLabel}>Acconti squadra</td>
-                <td style={tdCenter}>{filteredTeamAdvances.length ? formatCurrency(teamAdvancesTotal) : '—'}</td>
+                <td style={tdCenter}>{filteredTeamAdvances.length ? formatCurrency(teamAdvancesTotal) : '-'}</td>
               </tr>
               <tr>
                 <td style={{ ...tdLabel, fontWeight: 800 }}>Saldo finale</td>
@@ -4241,8 +4307,8 @@ function TeamPrintArea({
                         {row.member.employee.first_name} {row.member.employee.last_name}
                       </div>
                       <div style={{ color: '#6b7280' }}>
-                        {row.member.employee.role || '—'}
-                        {row.member.manage_by_days ? ' · gestione a giornate' : ''}
+                        {row.member.employee.role || '-'}
+                        {row.member.manage_by_days ? ' - gestione a giornate' : ''}
                       </div>
                     </td>
                     {teamPeriodDays.map((day) => (
@@ -4271,7 +4337,7 @@ function TeamPrintArea({
                       {row.member.employee.first_name} {row.member.employee.last_name}
                     </div>
                     <div style={{ color: '#667085', marginTop: 4 }}>
-                      {row.member.employee.role || 'Nessuna mansione'} · Periodo {teamPeriodLabel}
+                      {row.member.employee.role || 'Nessuna mansione'} - Periodo {teamPeriodLabel}
                     </div>
                   </div>
 
