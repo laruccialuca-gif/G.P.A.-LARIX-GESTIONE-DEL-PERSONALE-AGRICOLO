@@ -195,20 +195,23 @@ function getHistoryListSql(whereClause) {
       pr.note,
       pr.created_at,
       pr.updated_at,
-      pd.id AS payroll_document_id,
-      pd.file_name AS payroll_document_file_name,
-      pd.stored_name AS payroll_document_stored_name,
-      pd.relative_path AS payroll_document_relative_path,
-      pd.mime_type AS payroll_document_mime_type,
-      pd.size_bytes AS payroll_document_size_bytes,
-      pd.sha256 AS payroll_document_sha256,
-      pd.file_created_at AS payroll_document_file_created_at,
-      pd.uploaded_at AS payroll_document_uploaded_at,
-      pd.updated_at AS payroll_document_updated_at
+      CASE WHEN EXISTS (
+        SELECT 1 FROM payroll_documents pd
+        WHERE pd.payroll_record_id = pr.id
+          AND pd.category = '${PAYROLL_DOCUMENT_CATEGORY}'
+        LIMIT 1
+      ) THEN 1 ELSE 0 END AS has_payroll_document,
+      NULL AS payroll_document_id,
+      NULL AS payroll_document_file_name,
+      NULL AS payroll_document_stored_name,
+      NULL AS payroll_document_relative_path,
+      NULL AS payroll_document_mime_type,
+      NULL AS payroll_document_size_bytes,
+      NULL AS payroll_document_sha256,
+      NULL AS payroll_document_file_created_at,
+      NULL AS payroll_document_uploaded_at,
+      NULL AS payroll_document_updated_at
     FROM payroll_records pr
-    LEFT JOIN payroll_documents pd
-      ON pd.payroll_record_id = pr.id
-      AND pd.category = '${PAYROLL_DOCUMENT_CATEGORY}'
     ${whereClause}
   `;
 }
@@ -551,18 +554,126 @@ function upsertPayrollRecord(data) {
 }
 
 function listPayrollRecordsByEmployee(employeeId) {
+  const queryStart = Date.now();
   const db = getDb();
+
+  const sqlStart = Date.now();
   const rows = db.prepare(`
     ${getJoinedRecordSql('WHERE pr.employee_id = ? AND pr.archived_at IS NULL ORDER BY pr.month DESC')}
   `).all(employeeId);
+  const sqlDuration = Date.now() - sqlStart;
+  console.log(`[buste-perf-main] SQL query: ${sqlDuration}ms, rows: ${rows.length}, employee_id: ${employeeId}`);
 
-  return attachAdvances(rows).map((record) => ({
+  const attachStart = Date.now();
+  const result = attachAdvances(rows).map((record) => ({
     ...record,
-    debt_plans: getDebtPlansByEmployee(employeeId, { includeArchived: true }),
+    debt_plans: [],
   }));
+  const attachDuration = Date.now() - attachStart;
+  console.log(`[buste-perf-main] attachAdvances + mapping: ${attachDuration}ms`);
+
+  const totalDuration = Date.now() - queryStart;
+  console.log(`[buste-perf-main] listByEmployee complete: ${totalDuration}ms`);
+
+  return result;
+}
+
+function listPayrollRecordsForEmployees(options = {}) {
+  const queryStart = Date.now();
+  const db = getDb();
+  const employeeIds = Array.isArray(options.employeeIds) ? options.employeeIds : [];
+
+  if (!employeeIds.length) {
+    console.log(`[buste-perf-main] bulk payroll query: empty employee list`);
+    return {};
+  }
+
+  console.log(`[buste-perf-main] bulk payroll query start: employees=${employeeIds.length}, year=${options.year}, month=${options.month}`);
+
+  const sqlStart = Date.now();
+  const placeholders = employeeIds.map(() => '?').join(', ');
+
+  const query = `
+    SELECT
+      pr.id,
+      pr.employee_id,
+      pr.month,
+      pr.datore,
+      pr.giornate_effettuate,
+      pr.ore_totali,
+      pr.retribuzione_calcolata,
+      pr.giornate_busta_paga,
+      pr.importo_busta_paga,
+      pr.acconti,
+      pr.acconti_details,
+      pr.resto_precedente,
+      pr.differenza_finale,
+      pr.n_macchine_mese,
+      pr.prezzo_per_macchina,
+      pr.totale_trasporto,
+      pr.regalo_importo,
+      pr.regalo_descrizione,
+      pr.is_pagato,
+      pr.resto_pagato,
+      pr.resto_pagato_data,
+      pr.processed_at,
+      pr.archived_at,
+      pr.note,
+      pr.created_at,
+      pr.updated_at,
+      CASE WHEN EXISTS (
+        SELECT 1 FROM payroll_documents pd
+        WHERE pd.payroll_record_id = pr.id
+          AND pd.category = 'payroll_slip'
+        LIMIT 1
+      ) THEN 1 ELSE 0 END AS has_payroll_document
+    FROM payroll_records pr
+    WHERE pr.employee_id IN (${placeholders})
+      AND pr.archived_at IS NULL
+    ORDER BY pr.employee_id ASC, pr.month DESC
+  `;
+
+  const rows = db.prepare(query).all(...employeeIds);
+  const sqlDuration = Date.now() - sqlStart;
+  console.log(`[buste-perf-main] bulk SQL query: ${sqlDuration}ms, rows: ${rows.length}`);
+
+  const mappingStart = Date.now();
+  const resultMap = {};
+
+  for (const row of rows) {
+    if (!resultMap[row.employee_id]) {
+      resultMap[row.employee_id] = [];
+    }
+
+    resultMap[row.employee_id].push({
+      ...row,
+      payroll_document: !!row.has_payroll_document ? {} : null,
+      advances: [],
+      debt_plans: [],
+      is_pagato: !!row.is_pagato,
+      resto_pagato: !!row.resto_pagato,
+      is_processed: !!row.processed_at,
+      is_archived: !!row.archived_at,
+      report_snapshot_json: null,
+      report_html_snapshot: null,
+      live_installments_total: 0,
+      live_installments_count: 0,
+      snapshot_installments_total: 0,
+      installments_snapshot_mismatch: false,
+    });
+  }
+
+  const mappingDuration = Date.now() - mappingStart;
+  console.log(`[buste-perf-main] bulk mapping: ${mappingDuration}ms`);
+
+  const totalDuration = Date.now() - queryStart;
+  console.log(`[buste-perf-main] bulk payroll query end: ${totalDuration}ms`);
+
+  return resultMap;
 }
 
 function listPayrollHistory(options = {}) {
+  const queryStart = Date.now();
   const db = getDb();
   const conditions = [];
   const params = [];
@@ -570,6 +681,8 @@ function listPayrollHistory(options = {}) {
   const limit = requestedLimit > 0 ? Math.max(1, Math.min(requestedLimit, 200)) : 0;
   const offset = Math.max(0, Number(options.offset || 0) || 0);
   const search = String(options.search || '').trim().toLowerCase();
+
+  console.log(`[storico-perf-main] listHistory query start: year=${options.year}, month=${options.month}`);
 
   if (options.year) {
     conditions.push(`substr(history_rows.month, 1, 4) = ?`);
@@ -601,6 +714,8 @@ function listPayrollHistory(options = {}) {
   }
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const countStart = Date.now();
   const totalRow = db.prepare(`
     SELECT COUNT(*) AS total
     FROM (
@@ -609,9 +724,14 @@ function listPayrollHistory(options = {}) {
     JOIN employees e ON e.id = history_rows.employee_id
     ${whereClause}
   `).get(...params);
+  const countDuration = Date.now() - countStart;
+  console.log(`[storico-perf-main] COUNT query: ${countDuration}ms`);
+
   const total = Number(totalRow?.total || 0);
   const paginationSql = limit ? 'LIMIT ? OFFSET ?' : '';
   const queryParams = limit ? [...params, limit, offset] : params;
+
+  const selectStart = Date.now();
   const rows = db.prepare(`
     SELECT
       history_rows.*,
@@ -638,7 +758,10 @@ function listPayrollHistory(options = {}) {
     ORDER BY history_rows.archived_at IS NOT NULL ASC, history_rows.month DESC, e.last_name COLLATE NOCASE ASC, e.first_name COLLATE NOCASE ASC
     ${paginationSql}
   `).all(...queryParams);
+  const selectDuration = Date.now() - selectStart;
+  console.log(`[storico-perf-main] SELECT query: ${selectDuration}ms, rows: ${rows.length}`);
 
+  const processStart = Date.now();
   const items = attachAdvances(rows, {
     includePreviewData: false,
   }).map((record) => ({
@@ -658,8 +781,15 @@ function listPayrollHistory(options = {}) {
             .filter(Boolean)
         : [],
     },
-    debt_plans: getDebtPlansByEmployee(record.employee_id, { includeArchived: true }),
+    debt_plans: [],
+    payroll_document: !!record.has_payroll_document ? {} : null,
   }));
+  const processDuration = Date.now() - processStart;
+  console.log(`[storico-perf-main] attachAdvances + mapping: ${processDuration}ms`);
+
+  const queryDuration = Date.now() - queryStart;
+  const returnCount = Array.isArray(items) ? items.length : 0;
+  console.log(`[storico-perf-main] listHistory query end: ${queryDuration}ms, records: ${returnCount}, total available: ${total}`);
 
   if (!limit) {
     return items;
@@ -1043,6 +1173,7 @@ module.exports = {
   listPayrollHistory,
   listPayrollYears,
   listPayrollRecordsByEmployee,
+  listPayrollRecordsForEmployees,
   openPayrollDocument,
   restorePayrollRecord,
   updatePayrollReportPaymentStatus,

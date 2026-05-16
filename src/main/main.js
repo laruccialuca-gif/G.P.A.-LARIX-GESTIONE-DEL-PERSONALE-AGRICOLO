@@ -2509,6 +2509,17 @@ app.whenReady().then(async () => {
   ipcMain.handle('payroll:listByEmployee', async (_, employeeId) =>
     payrollRepo.listPayrollRecordsByEmployee(employeeId)
   );
+  ipcMain.handle('payroll:listByEmployees', async (_, options) => {
+    console.log(`[buste-perf-main] IPC handler called with ${(options?.employeeIds || []).length} employees`);
+    try {
+      const result = payrollRepo.listPayrollRecordsForEmployees(options);
+      console.log(`[buste-perf-main] IPC handler returning result with ${Object.keys(result).length} employee keys`);
+      return result;
+    } catch (error) {
+      console.error(`[buste-perf-main] IPC handler error:`, error);
+      throw error;
+    }
+  });
   ipcMain.handle('payroll:listHistory', async (_, options) =>
     payrollRepo.listPayrollHistory(options)
   );

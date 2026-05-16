@@ -48,14 +48,14 @@ export default function BustePagaPage() {
       setLoading(true);
       const __nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
       const __t0 = __nowMs();
+
+      console.log(`[buste-perf] mount start`);
+
       try {
         const __empT0 = __nowMs();
         const employeeData = await window.api.employees.listBasic({ includeDeleted: true });
         const __empMs = __nowMs() - __empT0;
-        console.info('[page-perf] payroll:employees-load:end', {
-          count: Array.isArray(employeeData) ? employeeData.length : 0,
-          duration_ms: Math.round(__empMs),
-        });
+        console.log(`[buste-perf] employees IPC: ${Math.round(__empMs)}ms, records: ${Array.isArray(employeeData) ? employeeData.length : 0}`);
         if (cancelled) return;
 
         const normalizedEmployees = (employeeData || [])
@@ -68,28 +68,43 @@ export default function BustePagaPage() {
 
         setEmployees(normalizedEmployees);
 
-        const payrollResults = await Promise.all(
-          normalizedEmployees.map((employee) => window.api.payroll.listByEmployee(employee.id))
-        );
+        const __payrollT0 = __nowMs();
+        console.log(`[buste-perf] calling listByEmployees with ${normalizedEmployees.length} employees`);
+
+        let payrollMap;
+        try {
+          payrollMap = await window.api.payroll.listByEmployees({
+            employeeIds: normalizedEmployees.map((e) => e.id),
+          });
+          console.log(`[buste-perf] listByEmployees returned:`, typeof payrollMap, Object.keys(payrollMap || {}).length);
+        } catch (ipcError) {
+          console.error(`[buste-error] listByEmployees IPC failed:`, ipcError);
+          throw ipcError;
+        }
+
+        const __payrollMs = __nowMs() - __payrollT0;
+        console.log(`[buste-perf] payroll all-employees IPC: ${Math.round(__payrollMs)}ms, employees: ${normalizedEmployees.length}`);
 
         if (cancelled) return;
 
         const nextMap = {};
-        normalizedEmployees.forEach((employee, index) => {
-          nextMap[employee.id] = (payrollResults[index] || [])
+        normalizedEmployees.forEach((employee) => {
+          const records = (payrollMap[employee.id] || [])
             .slice()
             .sort((a, b) => String(b.month || '').localeCompare(String(a.month || '')));
+          nextMap[employee.id] = records;
         });
         setRecordsByEmployee(nextMap);
       } catch (error) {
-        console.error(error);
-        alert('Errore caricamento sezione Buste paga');
+        console.error('[buste-error] load failed:', error);
+        console.error('[buste-error] stack:', error?.stack);
+        alert('Errore caricamento sezione Buste paga: ' + (error?.message || 'sconosciuto'));
       } finally {
         if (!cancelled) {
           setLoading(false);
         }
         const __dt = __nowMs() - __t0;
-        console.info('[page-perf] payroll:loadBaseData:end', { duration_ms: Math.round(__dt) });
+        console.log(`[buste-perf] page ready: ${Math.round(__dt)}ms`);
       }
     }
 
