@@ -51,7 +51,7 @@
         ]
       }
     ],
-    "icon": "build/resources/icon.ico",
+    "icon": "build/resources/icon-demo.ico",
     "publisherName": "Publisher modificabile",
     "requestedExecutionLevel": "asInvoker"
   },
