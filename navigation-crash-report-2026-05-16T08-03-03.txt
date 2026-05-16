@@ -1,0 +1,29 @@
+NAVIGATION CRASH TEST REPORT
+============================
+
+Generated: 2026-05-16T08:03:06.339Z
+
+Route          Name                Load Time   Errors                        Status
+---------------------------------------------------------------------------------------
+/              Home                790ms       %cDownload the React DevTool  ERRORS
+#/dipendenti   Dipendenti          2ms         -                             OK
+#/presenze     Presenze            2ms         -                             OK
+#/acconti-rate Acconti/Rate        3ms         -                             OK
+#/report       Report              3ms         -                             OK
+#/storico-operaioStorico Operaio     4ms         -                             OK
+#/buste-paga   Buste Paga          3ms         -                             OK
+#/comunicazioneComunicazione       3ms         -                             OK
+#/operai-assuntiOperai Assunti      2ms         -                             OK
+#/impostazioni Impostazioni        3ms         -                             OK
+#/utenti       Utenti              2ms         -                             OK
+
+SUMMARY
+=======
+Total Routes: 11
+OK: 10
+Errors: 1
+Crashes: 0
+
+
+Routes with errors:
+  - Home
