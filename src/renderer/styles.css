@@ -2380,6 +2380,173 @@ textarea {
   color: var(--text);
 }
 
+.report-attendance-editor {
+  width: min(1100px, 100%);
+}
+
+.report-attendance-editor__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.report-attendance-editor__calendar {
+  display: grid;
+  gap: 10px;
+}
+
+.report-attendance-editor__weekdays,
+.report-attendance-editor__week {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.report-attendance-editor__weekday {
+  font-size: 12px;
+  font-weight: 800;
+  color: #667085;
+  text-align: center;
+  padding-bottom: 4px;
+}
+
+.report-attendance-editor__weeks {
+  display: grid;
+  gap: 10px;
+}
+
+.report-attendance-editor__cell {
+  min-height: 92px;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  background: #fff;
+  display: grid;
+  align-content: space-between;
+  gap: 8px;
+  text-align: left;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.report-attendance-editor__cell--filled {
+  border-color: rgba(22, 163, 74, 0.28);
+  background: linear-gradient(180deg, rgba(240, 253, 244, 0.92), rgba(255, 255, 255, 0.96));
+}
+
+.report-attendance-editor__cell--empty {
+  min-height: 92px;
+  border-radius: 16px;
+  border: 1px dashed rgba(148, 163, 184, 0.24);
+  background: rgba(248, 250, 252, 0.6);
+}
+
+.report-attendance-editor__cell-day {
+  font-size: 12px;
+  font-weight: 800;
+  color: #667085;
+}
+
+.report-attendance-editor__cell-value {
+  font-size: 22px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.report-attendance-editor__cell-meta {
+  font-size: 12px;
+  color: #475467;
+  min-height: 16px;
+}
+
+.report-attendance-editor__footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 18px;
+}
+
+.report-attendance-editor__detail {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  background: rgba(248, 250, 252, 0.82);
+  display: grid;
+  gap: 14px;
+}
+
+.report-attendance-editor__detail-head,
+.report-attendance-editor__detail-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.report-attendance-editor__detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.report-attendance-editor__field {
+  display: grid;
+  gap: 6px;
+}
+
+.report-attendance-editor__field span {
+  font-size: 12px;
+  font-weight: 800;
+  color: #344054;
+}
+
+.report-attendance-editor__field input,
+.report-attendance-editor__field select,
+.report-attendance-editor__field textarea {
+  width: 100%;
+  min-width: 0;
+}
+
+.report-attendance-editor__field--wide {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .report-attendance-editor__weekdays,
+  .report-attendance-editor__week {
+    gap: 8px;
+  }
+
+  .report-attendance-editor__cell,
+  .report-attendance-editor__cell--empty {
+    min-height: 82px;
+    padding: 8px;
+  }
+
+  .report-attendance-editor__detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .report-attendance-editor__detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .report-attendance-editor__footer {
+    align-items: stretch;
+  }
+
+  .report-attendance-editor__footer > * {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 .form-grid {
   display: grid;
   gap: 18px;

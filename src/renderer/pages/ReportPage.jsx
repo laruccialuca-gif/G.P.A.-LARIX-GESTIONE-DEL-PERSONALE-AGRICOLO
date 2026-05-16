@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import DocumentActions from '../components/DocumentActions';
 import { calculateAttendanceTotals, formatHoursValue, formatWorkedSummary, getSafeStandardHours } from '../utils/attendanceSummary';
@@ -6,6 +6,8 @@ import { formatCurrency as sharedFormatCurrency, formatSignedCurrency as sharedF
 import { formatDisplayDate, formatDisplayDateTime } from '../utils/dateFormat';
 import { useYearContext } from '../context/YearContext';
 import { employeeIsActiveInYear } from '../utils/yearScope';
+import { parseMainInputValue, getMainInputValue } from '../utils/attendanceTableUtils';
+import { DEFAULT_DAY_MARKERS, MAIN_DAY_TYPES } from '../utils/attendancePrintUtils';
 
 const MONTH_NAMES = [
   'GENNAIO', 'FEBBRAIO', 'MARZO', 'APRILE', 'MAGGIO', 'GIUGNO',
@@ -471,6 +473,134 @@ function getHoursFormat(settings) {
   return settings?.general?.attendance_hours_format === 'hours_minutes' ? 'hours_minutes' : 'decimal';
 }
 
+function normalizeReportAttendanceEntry(item) {
+  const rawHours = item?.hours_worked;
+  const markerCode = item?.marker_code ? String(item.marker_code).trim().toUpperCase() : null;
+  const computedStatus =
+    item?.status ||
+    (rawHours === '' || rawHours === null || rawHours === undefined
+      ? 'presente'
+      : Number(rawHours || 0) === 0
+      ? 'assente'
+      : 'presente');
+  const hoursWorked =
+    rawHours === '' ||
+    rawHours === null ||
+    rawHours === undefined ||
+    (Number(rawHours || 0) === 0 && computedStatus === 'presente' && markerCode)
+      ? ''
+      : Number(rawHours || 0);
+
+  return {
+    ...item,
+    status: computedStatus,
+    marker_code: markerCode,
+    entry_code: item?.entry_code ? String(item.entry_code).trim().toUpperCase() : null,
+    hours_worked: hoursWorked,
+    overtime_hours: Number(item?.overtime_hours || 0),
+    notes: item?.notes || null,
+  };
+}
+
+function getReportAttendanceSettings(settings) {
+  return {
+    inputMode: settings?.general?.attendance_entry_mode === 'hours_only' ? 'hours_only' : 'hours_and_symbol',
+    quickSymbol: String(settings?.general?.attendance_quick_symbol || 'X').trim().toUpperCase().slice(0, 3) || 'X',
+    quickClickValue: String(
+      settings?.general?.attendance_quick_click_value || settings?.general?.standard_day_hours || 7
+    ).trim() || String(settings?.general?.standard_day_hours || 7),
+    quickClickUseSymbolForStandard:
+      settings?.general?.attendance_quick_click_use_symbol_for_standard !== false,
+    baseHours: getSafeStandardHours(settings?.general?.standard_day_hours),
+  };
+}
+
+function resolveReportQuickClickValue(attendanceSettings) {
+  const configuredValue = String(attendanceSettings?.quickClickValue || '').trim();
+  if (!configuredValue) {
+    return attendanceSettings?.inputMode === 'hours_and_symbol'
+      ? attendanceSettings.quickSymbol
+      : String(attendanceSettings?.baseHours || '');
+  }
+
+  if (configuredValue.toUpperCase() === String(attendanceSettings?.quickSymbol || '').toUpperCase()) {
+    return attendanceSettings.quickSymbol;
+  }
+
+  const normalizedNumber = Number(configuredValue.replace(',', '.'));
+  if (
+    Number.isFinite(normalizedNumber) &&
+    attendanceSettings?.quickClickUseSymbolForStandard &&
+    attendanceSettings?.inputMode === 'hours_and_symbol' &&
+    Math.abs(normalizedNumber - Number(attendanceSettings?.baseHours || 0)) < 0.0001
+  ) {
+    return attendanceSettings.quickSymbol;
+  }
+
+  return configuredValue;
+}
+
+function parseReportOvertimeInputValue(rawValue, attendanceSettings) {
+  const parsed = parseMainInputValue(rawValue, attendanceSettings);
+  if (parsed.kind === 'type') {
+    return { kind: 'invalid' };
+  }
+  return parsed;
+}
+
+function buildReportMainPatchFromParsedValue(parsedMain) {
+  if (parsedMain.kind === 'type') {
+    return {
+      status: parsedMain.status,
+      entry_code: null,
+      hours_worked: '',
+      marker_code: null,
+      overtime_hours: 0,
+    };
+  }
+
+  if (parsedMain.kind === 'symbol') {
+    return {
+      status: 'presente',
+      entry_code: parsedMain.symbol,
+      hours_worked: parsedMain.hours,
+    };
+  }
+
+  if (parsedMain.kind === 'empty') {
+    return {
+      status: 'presente',
+      entry_code: null,
+      hours_worked: '',
+    };
+  }
+
+  return {
+    status: parsedMain.hours === 0 ? 'assente' : 'presente',
+    entry_code: null,
+    hours_worked: parsedMain.hours,
+  };
+}
+
+function buildReportAttendancePayload(item) {
+  const normalized = normalizeReportAttendanceEntry(item);
+  return {
+    employee_id: normalized.employee_id,
+    date: normalized.date,
+    status: normalized.status,
+    marker_code: normalized.marker_code || null,
+    entry_code: normalized.entry_code || null,
+    hours_worked:
+      normalized.hours_worked === '' ||
+      normalized.hours_worked === null ||
+      normalized.hours_worked === undefined
+        ? null
+        : Number(normalized.hours_worked || 0),
+    overtime_hours: Number(normalized.overtime_hours || 0),
+    notes: normalized.notes || null,
+  };
+}
+
 const rp2DayIndicatorSlotStyle = {
   display: 'flex',
   alignItems: 'center',
@@ -492,6 +622,16 @@ export default function ReportPage() {
   const [isEmployeeAutocompleteOpen, setIsEmployeeAutocompleteOpen] = useState(false);
   const [directoryLoading, setDirectoryLoading] = useState(true);
   const [attendanceLoading, setAttendanceLoading] = useState(true);
+  const [isAttendanceEditorOpen, setIsAttendanceEditorOpen] = useState(false);
+  const [attendanceEditorDrafts, setAttendanceEditorDrafts] = useState({});
+  const [attendanceEditorSaving, setAttendanceEditorSaving] = useState(false);
+  const [attendanceEditorDetailDate, setAttendanceEditorDetailDate] = useState('');
+  const [attendanceEditorDetailValues, setAttendanceEditorDetailValues] = useState({
+    presence: '',
+    overtime: '',
+    marker: '',
+    notes: '',
+  });
 
   const [datore, setDatore] = useState('');
   const [importoBustaPaga, setImportoBustaPaga] = useState('');
@@ -538,6 +678,7 @@ export default function ReportPage() {
   const [pendingSavePrompt, setPendingSavePrompt] = useState(null);
   const [importedFinancialMovementIds, setImportedFinancialMovementIds] = useState([]);
   const autosaveTimeoutRef = useRef(null);
+  const attendanceEditorClickTimeoutRef = useRef(null);
   const mountedRef = useRef(false);
   const employeeAutocompleteRef = useRef(null);
 
@@ -750,6 +891,17 @@ export default function ReportPage() {
     });
   }
 
+  const reloadAttendanceData = useCallback(async () => {
+    const attendanceChunks = await Promise.all(
+      queryMonths.map((entry) => window.api.attendance.listByMonth(entry.year, entry.month))
+    );
+    const flattenedAttendance = attendanceChunks.flat();
+    if (mountedRef.current) {
+      setAttendance(flattenedAttendance);
+    }
+    return flattenedAttendance;
+  }, [queryMonths]);
+
   useEffect(() => {
     mountedRef.current = true;
     console.info('[route-lifecycle] enter Report', {
@@ -759,6 +911,10 @@ export default function ReportPage() {
 
     return () => {
       mountedRef.current = false;
+      if (attendanceEditorClickTimeoutRef.current) {
+        window.clearTimeout(attendanceEditorClickTimeoutRef.current);
+        attendanceEditorClickTimeoutRef.current = null;
+      }
       console.info('[route-lifecycle] leave Report', {
         pathname: window.location.pathname,
         timestamp: new Date().toISOString(),
@@ -779,6 +935,14 @@ export default function ReportPage() {
       return new Date(selectedYear, current.getMonth(), 1);
     });
   }, [selectedYear]);
+
+  useEffect(() => {
+    if (!isAttendanceEditorOpen) {
+      return;
+    }
+
+    resetAttendanceEditorState();
+  }, [employee?.id, currentMonth, isAttendanceEditorOpen]);
 
   useEffect(() => {
     if (!isTeamMode) return;
@@ -1039,10 +1203,7 @@ export default function ReportPage() {
       }
 
       try {
-        const attendanceChunks = await Promise.all(
-          queryMonths.map((entry) => window.api.attendance.listByMonth(entry.year, entry.month))
-        );
-
+        const flattenedAttendance = await reloadAttendanceData();
         if (cancelled || !mountedRef.current) {
           console.info('[route-lifecycle] async cancelled', {
             page: 'Report',
@@ -1050,9 +1211,6 @@ export default function ReportPage() {
           });
           return;
         }
-
-        const flattenedAttendance = attendanceChunks.flat();
-        setAttendance(flattenedAttendance);
         logReportPerf('page:attendance-load:end', {
           duration_ms: Date.now() - startedAt,
           months_count: queryMonths.length,
@@ -1075,7 +1233,7 @@ export default function ReportPage() {
     return () => {
       cancelled = true;
     };
-  }, [queryMonthsKey]);
+  }, [queryMonthsKey, reloadAttendanceData]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2094,6 +2252,42 @@ export default function ReportPage() {
     () => Object.fromEntries(employeeAttendance.map((item) => [item.date, item])),
     [employeeAttendance]
   );
+  const reportAttendanceSettings = useMemo(
+    () => getReportAttendanceSettings(settings),
+    [settings]
+  );
+  const reportQuickClickValue = useMemo(
+    () => resolveReportQuickClickValue(reportAttendanceSettings),
+    [reportAttendanceSettings]
+  );
+  const reportAttendanceMarkerOptions = useMemo(() => {
+    const configured = settings?.general?.attendance_markers;
+    if (!Array.isArray(configured) || !configured.length) {
+      return DEFAULT_DAY_MARKERS
+        .map((marker) => ({ ...marker, active: true }))
+        .filter((marker) => marker.active !== false);
+    }
+
+    return configured
+      .map((marker, index) => ({
+        value: String(marker?.value || `MARKER_${index + 1}`).trim().toUpperCase(),
+        text: String(marker?.text || `Marker ${index + 1}`).trim(),
+        active: marker?.active !== false,
+      }))
+      .filter((marker) => marker.active !== false);
+  }, [settings?.general?.attendance_markers]);
+  const reportAttendanceDays = useMemo(
+    () => getMonthDays(startOfMonth(currentMonth), endOfMonth(currentMonth)),
+    [currentMonth]
+  );
+  const reportAttendanceWeeks = useMemo(
+    () => groupDaysByWeek(reportAttendanceDays),
+    [reportAttendanceDays]
+  );
+  const attendanceEditorHasDraftChanges = useMemo(
+    () => Object.keys(attendanceEditorDrafts).length > 0,
+    [attendanceEditorDrafts]
+  );
   const employeeTotals = useMemo(
     () => calculateAttendanceTotals(employeeAttendance, attendanceBaseHours),
     [attendanceBaseHours, employeeAttendance]
@@ -2166,6 +2360,233 @@ export default function ReportPage() {
   const giftAmountNum = parseFloat(giftAmount) || 0;
   const isProcessedRecord = !!currentPayrollRecord?.processed_at;
   const isEmployeeEditingDisabled = isProcessedRecord && !isEditUnlocked;
+  const attendanceEditorMonthLabel = useMemo(
+    () => currentMonth.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' }),
+    [currentMonth]
+  );
+
+  function getAttendanceEditorEntry(dateStr) {
+    if (Object.prototype.hasOwnProperty.call(attendanceEditorDrafts, dateStr)) {
+      return attendanceEditorDrafts[dateStr];
+    }
+
+    if (attendanceMap[dateStr]) {
+      return normalizeReportAttendanceEntry(attendanceMap[dateStr]);
+    }
+
+    return normalizeReportAttendanceEntry({
+      employee_id: employee?.id || null,
+      date: dateStr,
+      status: 'presente',
+      marker_code: null,
+      entry_code: null,
+      hours_worked: '',
+      overtime_hours: 0,
+      notes: null,
+    });
+  }
+
+  function resetAttendanceEditorState() {
+    if (attendanceEditorClickTimeoutRef.current) {
+      window.clearTimeout(attendanceEditorClickTimeoutRef.current);
+      attendanceEditorClickTimeoutRef.current = null;
+    }
+    setAttendanceEditorDrafts({});
+    setAttendanceEditorDetailDate('');
+    setAttendanceEditorDetailValues({
+      presence: '',
+      overtime: '',
+      marker: '',
+      notes: '',
+    });
+  }
+
+  function handleOpenAttendanceEditor() {
+    if (!employee) {
+      return;
+    }
+
+    if (
+      isProcessedRecord &&
+      !window.confirm('Modificando le presenze, il report dovra essere ricalcolato. Continuare?')
+    ) {
+      return;
+    }
+
+    resetAttendanceEditorState();
+    setIsAttendanceEditorOpen(true);
+  }
+
+  function handleCloseAttendanceEditor(force = false) {
+    if (!force && attendanceEditorHasDraftChanges) {
+      const confirmed = window.confirm('Ci sono modifiche non salvate. Tornare al report?');
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    resetAttendanceEditorState();
+    setIsAttendanceEditorOpen(false);
+  }
+
+  function handleResetAttendanceEditorDrafts() {
+    resetAttendanceEditorState();
+  }
+
+  function handleToggleAttendanceEditorCellImmediate(dateStr) {
+    if (!employee) {
+      return;
+    }
+
+    const currentEntry = getAttendanceEditorEntry(dateStr);
+    const currentMainValue = String(getMainInputValue(currentEntry) || '').trim();
+
+    if (!currentMainValue) {
+      const parsedMain = parseMainInputValue(reportQuickClickValue, reportAttendanceSettings);
+      if (parsedMain.kind === 'invalid') {
+        alert('Valore presenza non valido');
+        return;
+      }
+
+      const nextEntry = normalizeReportAttendanceEntry({
+        ...currentEntry,
+        ...buildReportMainPatchFromParsedValue(parsedMain),
+        employee_id: Number(employee.id),
+        date: dateStr,
+      });
+      setAttendanceEditorDrafts((current) => ({ ...current, [dateStr]: nextEntry }));
+      return;
+    }
+
+    const nextEntry = normalizeReportAttendanceEntry({
+      employee_id: Number(employee.id),
+      date: dateStr,
+      status: 'presente',
+      marker_code: null,
+      entry_code: null,
+      hours_worked: '',
+      overtime_hours: 0,
+      notes: null,
+    });
+    setAttendanceEditorDrafts((current) => ({ ...current, [dateStr]: nextEntry }));
+  }
+
+  function handleToggleAttendanceEditorCell(dateStr) {
+    if (attendanceEditorClickTimeoutRef.current) {
+      window.clearTimeout(attendanceEditorClickTimeoutRef.current);
+    }
+
+    attendanceEditorClickTimeoutRef.current = window.setTimeout(() => {
+      handleToggleAttendanceEditorCellImmediate(dateStr);
+      attendanceEditorClickTimeoutRef.current = null;
+    }, 180);
+  }
+
+  function handleOpenAttendanceEditorDetail(dateStr) {
+    if (attendanceEditorClickTimeoutRef.current) {
+      window.clearTimeout(attendanceEditorClickTimeoutRef.current);
+      attendanceEditorClickTimeoutRef.current = null;
+    }
+
+    const entry = getAttendanceEditorEntry(dateStr);
+    setAttendanceEditorDetailValues({
+      presence: String(getMainInputValue(entry) || ''),
+      overtime: entry?.overtime_hours ? String(entry.overtime_hours).replace('.', ',') : '',
+      marker: entry?.marker_code || '',
+      notes: entry?.notes || '',
+    });
+    setAttendanceEditorDetailDate(dateStr);
+  }
+
+  function handleCloseAttendanceEditorDetail() {
+    setAttendanceEditorDetailDate('');
+    setAttendanceEditorDetailValues({
+      presence: '',
+      overtime: '',
+      marker: '',
+      notes: '',
+    });
+  }
+
+  function handleSaveAttendanceEditorDetail() {
+    if (!employee || !attendanceEditorDetailDate) {
+      return;
+    }
+
+    const parsedMain = parseMainInputValue(
+      attendanceEditorDetailValues.presence,
+      reportAttendanceSettings
+    );
+    const parsedOvertime = parseReportOvertimeInputValue(
+      attendanceEditorDetailValues.overtime,
+      reportAttendanceSettings
+    );
+
+    if (parsedMain.kind === 'invalid') {
+      alert('Valore presenza non valido');
+      return;
+    }
+
+    if (parsedOvertime.kind === 'invalid') {
+      alert('Valore straordinario non valido');
+      return;
+    }
+
+    const patch = {
+      ...buildReportMainPatchFromParsedValue(parsedMain),
+      overtime_hours: parsedOvertime.kind === 'empty' ? 0 : parsedOvertime.hours,
+      marker_code: attendanceEditorDetailValues.marker || null,
+      notes: attendanceEditorDetailValues.notes.trim() ? attendanceEditorDetailValues.notes.trim() : null,
+    };
+
+    if (MAIN_DAY_TYPES.some((item) => item.value === patch.status) && patch.marker_code) {
+      alert('I marker non sono disponibili per questo tipo di presenza.');
+      return;
+    }
+
+    const nextEntry = normalizeReportAttendanceEntry({
+      ...getAttendanceEditorEntry(attendanceEditorDetailDate),
+      ...patch,
+      employee_id: Number(employee.id),
+      date: attendanceEditorDetailDate,
+    });
+
+    setAttendanceEditorDrafts((current) => ({
+      ...current,
+      [attendanceEditorDetailDate]: nextEntry,
+    }));
+    handleCloseAttendanceEditorDetail();
+  }
+
+  async function handleSaveAttendanceEditor() {
+    if (!employee) {
+      return;
+    }
+
+    const draftEntries = Object.values(attendanceEditorDrafts);
+    if (!draftEntries.length) {
+      handleCloseAttendanceEditor(true);
+      return;
+    }
+
+    setAttendanceEditorSaving(true);
+
+    try {
+      await window.api.attendance.bulkUpsert(
+        draftEntries.map((entry) => buildReportAttendancePayload(entry))
+      );
+      await reloadAttendanceData();
+      setSaveState('idle');
+      handleCloseAttendanceEditor(true);
+    } catch (error) {
+      console.error(error);
+      alert('Errore durante il salvataggio delle presenze');
+    } finally {
+      if (mountedRef.current) {
+        setAttendanceEditorSaving(false);
+      }
+    }
+  }
   const compensationMonthAmount =
     totalCalculatedPayForReport +
     giftAmountNum +
@@ -2682,6 +3103,14 @@ export default function ReportPage() {
                     >
                       {'->'}
                     </a>
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={handleOpenAttendanceEditor}
+                      disabled={!employee}
+                    >
+                      Modifica presenze
+                    </button>
                   </div>
                 </div>
                 <label style={{ ...checkboxLabelStyle, padding: '8px 10px', borderRadius: 12, background: '#fff', border: '1px solid rgba(31, 41, 55, 0.08)' }}>
@@ -3569,6 +3998,249 @@ export default function ReportPage() {
       ) : (
         <div style={emptyBoxStyle}>Selezione non disponibile.</div>
       )}
+
+      {isAttendanceEditorOpen && employee ? (
+        <div className="modal-overlay no-print" onClick={() => handleCloseAttendanceEditor()}>
+          <div
+            className="modal-dialog report-attendance-editor"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header" style={{ alignItems: 'flex-start' }}>
+              <div style={{ display: 'grid', gap: 6 }}>
+                <div style={{ fontSize: 24, fontWeight: 800 }}>
+                  Presenze di {getReportEmployeeDisplayName(employee)} - {attendanceEditorMonthLabel}
+                </div>
+                <div style={{ color: '#667085', fontSize: 13 }}>
+                  Click: giornata standard. Doppio click: dettaglio presenza.
+                </div>
+                {isProcessedRecord ? (
+                  <div
+                    className="soft-chip"
+                    style={{
+                      width: 'fit-content',
+                      background: 'rgba(245, 158, 11, 0.14)',
+                      color: '#b45309',
+                      borderColor: 'rgba(245, 158, 11, 0.18)',
+                    }}
+                  >
+                    Modificando le presenze, il report dovra essere ricalcolato.
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => handleCloseAttendanceEditor()}
+                aria-label="Chiudi"
+              >
+                x
+              </button>
+            </div>
+
+            <div className="report-attendance-editor__meta">
+              <div className="soft-chip">Mese: {attendanceEditorMonthLabel}</div>
+              <div className="soft-chip">Dipendente: {getReportEmployeeDisplayName(employee)}</div>
+              <div className="soft-chip">Giorni: {reportAttendanceDays.length}</div>
+              <div className="soft-chip">Modifiche: {Object.keys(attendanceEditorDrafts).length}</div>
+            </div>
+
+            <div className="report-attendance-editor__calendar">
+              <div className="report-attendance-editor__weekdays">
+                {DAY_ABBR_SHORT.map((label) => (
+                  <div key={label} className="report-attendance-editor__weekday">
+                    {label}
+                  </div>
+                ))}
+              </div>
+
+              <div className="report-attendance-editor__weeks">
+                {reportAttendanceWeeks.map((week, weekIndex) => (
+                  <div key={`week-${weekIndex}`} className="report-attendance-editor__week">
+                    {week.map((day, dayIndex) => {
+                      if (!day) {
+                        return (
+                          <div
+                            key={`empty-${weekIndex}-${dayIndex}`}
+                            className="report-attendance-editor__cell report-attendance-editor__cell--empty"
+                          />
+                        );
+                      }
+
+                      const dateStr = formatLocalDate(day);
+                      const entry = getAttendanceEditorEntry(dateStr);
+                      const mainValue = String(getMainInputValue(entry) || '').trim();
+                      const hasValue =
+                        !!mainValue ||
+                        Number(entry?.overtime_hours || 0) > 0 ||
+                        !!entry?.marker_code ||
+                        !!entry?.notes;
+                      const markerText = reportAttendanceMarkerOptions.find(
+                        (marker) => marker.value === entry?.marker_code
+                      )?.text;
+
+                      return (
+                        <button
+                          key={dateStr}
+                          type="button"
+                          className={`report-attendance-editor__cell${hasValue ? ' report-attendance-editor__cell--filled' : ''}`}
+                          onClick={() => handleToggleAttendanceEditorCell(dateStr)}
+                          onDoubleClick={() => handleOpenAttendanceEditorDetail(dateStr)}
+                          title={hasValue ? 'Click per rimuovere. Doppio click per modificare.' : 'Click per inserire la giornata standard.'}
+                        >
+                          <span className="report-attendance-editor__cell-day">{day.getDate()}</span>
+                          <span className="report-attendance-editor__cell-value">{mainValue || '+'}</span>
+                          <span className="report-attendance-editor__cell-meta">
+                            {entry?.overtime_hours ? `Str ${entry.overtime_hours}` : markerText || (entry?.notes ? 'Note' : '')}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="report-attendance-editor__footer">
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={handleResetAttendanceEditorDrafts}
+                  disabled={!attendanceEditorHasDraftChanges || attendanceEditorSaving}
+                >
+                  Annulla
+                </button>
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={() => handleCloseAttendanceEditor()}
+                  disabled={attendanceEditorSaving}
+                >
+                  Torna al report
+                </button>
+              </div>
+              <button
+                type="button"
+                className="button"
+                onClick={handleSaveAttendanceEditor}
+                disabled={attendanceEditorSaving}
+              >
+                {attendanceEditorSaving ? 'Salvataggio...' : 'Salva e aggiorna report'}
+              </button>
+            </div>
+
+            {attendanceEditorDetailDate ? (
+              <div className="report-attendance-editor__detail">
+                <div className="report-attendance-editor__detail-head">
+                  <div>
+                    <div style={{ fontSize: 18, fontWeight: 800 }}>
+                      Dettaglio presenza - {formatDisplayDate(attendanceEditorDetailDate)}
+                    </div>
+                    <div style={{ color: '#667085', fontSize: 13 }}>
+                      Modifica presenza, straordinario, marker e note del giorno.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={handleCloseAttendanceEditorDetail}
+                  >
+                    Chiudi
+                  </button>
+                </div>
+
+                <div className="report-attendance-editor__detail-grid">
+                  <label className="report-attendance-editor__field">
+                    <span>Presenza</span>
+                    <input
+                      type="text"
+                      value={attendanceEditorDetailValues.presence}
+                      onChange={(event) =>
+                        setAttendanceEditorDetailValues((current) => ({
+                          ...current,
+                          presence: event.target.value,
+                        }))
+                      }
+                      placeholder={
+                        reportAttendanceSettings.inputMode === 'hours_and_symbol'
+                          ? reportAttendanceSettings.quickSymbol
+                          : String(reportAttendanceSettings.baseHours || 7)
+                      }
+                    />
+                  </label>
+
+                  <label className="report-attendance-editor__field">
+                    <span>Straordinario</span>
+                    <input
+                      type="text"
+                      value={attendanceEditorDetailValues.overtime}
+                      onChange={(event) =>
+                        setAttendanceEditorDetailValues((current) => ({
+                          ...current,
+                          overtime: event.target.value,
+                        }))
+                      }
+                      placeholder="0"
+                    />
+                  </label>
+
+                  <label className="report-attendance-editor__field">
+                    <span>Marker</span>
+                    <select
+                      value={attendanceEditorDetailValues.marker}
+                      onChange={(event) =>
+                        setAttendanceEditorDetailValues((current) => ({
+                          ...current,
+                          marker: event.target.value,
+                        }))
+                      }
+                    >
+                      <option value="">Nessuno</option>
+                      {reportAttendanceMarkerOptions.map((marker) => (
+                        <option key={marker.value} value={marker.value}>
+                          {marker.text}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="report-attendance-editor__field report-attendance-editor__field--wide">
+                    <span>Note</span>
+                    <textarea
+                      rows="2"
+                      value={attendanceEditorDetailValues.notes}
+                      onChange={(event) =>
+                        setAttendanceEditorDetailValues((current) => ({
+                          ...current,
+                          notes: event.target.value,
+                        }))
+                      }
+                      placeholder="Note del giorno"
+                    />
+                  </label>
+                </div>
+
+                <div className="report-attendance-editor__detail-actions">
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={handleCloseAttendanceEditorDetail}
+                  >
+                    Annulla
+                  </button>
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={handleSaveAttendanceEditorDetail}
+                  >
+                    Salva dettaglio
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {financialImportModal.open ? (
         <div className="no-print" style={modalBackdropStyle}>
