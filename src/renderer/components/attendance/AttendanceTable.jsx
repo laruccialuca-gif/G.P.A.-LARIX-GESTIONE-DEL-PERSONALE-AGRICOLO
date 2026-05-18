@@ -62,6 +62,8 @@ function AttendanceTable(props) {
   dayInfoMap,
   todayKey,
   attendanceRowsData,
+  dailySubtotals,
+  formatAttendanceSubtotalValue,
   selectedEmployeeIds,
   dayKeys,
   availableMarkers,
@@ -87,6 +89,7 @@ function AttendanceTable(props) {
   todayCellStyle,
   toggleSelectAllVisible,
   toggleEmployeeSelection,
+  moveVisibleEmployeeRow,
   setOpenMarkerMenuKey,
   setCompactOvertimeEditorKey,
   handleMainValueChange,
@@ -201,10 +204,15 @@ function AttendanceTable(props) {
           {(() => {
             let headcountSectionShown = false;
             const items = [];
+            const movableRows = attendanceRowsData.filter((row) => !row.headcountMode);
+            const movableRowIndexById = new Map(
+              movableRows.map((row, index) => [Number(row.employee.id), index])
+            );
             for (const rowData of attendanceRowsData) {
               const { employee, teamMember, effectiveAttendance, totals, headcountMode } = rowData;
               const employeeId = employee.id;
               const isHCTeam = !!headcountMode;
+              const movableRowIndex = movableRowIndexById.get(Number(employeeId)) ?? -1;
 
               // Inserire sezione header prima del primo headcount team (solo in modo "Tutti")
               if (isHCTeam && !headcountSectionShown && selectedMeta.type === 'all') {
@@ -290,7 +298,28 @@ function AttendanceTable(props) {
                   handleOvertimeValueBlur={handleOvertimeValueBlur}
                   onCellSingleClick={onCellSingleClick}
                   onCellDoubleClick={onCellDoubleClick}
+                  canMoveUp={!isHCTeam && movableRowIndex > 0}
+                  canMoveDown={!isHCTeam && movableRowIndex >= 0 && movableRowIndex < movableRows.length - 1}
+                  moveVisibleEmployeeRow={moveVisibleEmployeeRow}
                 />
+              );
+            }
+            if (attendanceRowsData.length) {
+              items.push(
+                <tr key="daily-subtotal" className="attendance-subtotal-row">
+                  <td style={{ ...tdStyleLeftCurrent, background: '#eef6ff' }}>
+                    <strong>Totale giornaliero</strong>
+                  </td>
+                  {dailySubtotals.byDay.map((value, index) => (
+                    <td key={dayKeys[index]} style={tdStyleCenterCurrent}>
+                      {formatAttendanceSubtotalValue(value)}
+                    </td>
+                  ))}
+                  <td style={tdStyleRightHoursCurrent}>
+                    {formatAttendanceSubtotalValue(dailySubtotals.monthTotal)}
+                  </td>
+                  <td style={tdStyleRightSummaryCurrent}>gg</td>
+                </tr>
               );
             }
             return items;

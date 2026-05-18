@@ -1421,6 +1421,30 @@ textarea {
   gap: 10px;
 }
 
+.attendance-row-order-actions {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: auto;
+}
+
+.attendance-row-order-actions button {
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid rgba(31, 41, 55, 0.14);
+  background: #fff;
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.attendance-row-order-actions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .attendance-left-head input,
 .attendance-left-cell input {
   width: 16px;
@@ -1682,12 +1706,23 @@ textarea {
 
 .attendance-compact-cell__dot {
   position: absolute;
-  top: 4px;
+  bottom: 4px;
   right: 4px;
   width: 5px;
   height: 5px;
   border-radius: 999px;
   background: #2563eb;
+}
+
+.attendance-compact-cell__overtime {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  color: #000;
+  font-size: 8px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .attendance-section-header-row {
@@ -2378,6 +2413,16 @@ textarea {
   border-radius: 14px;
   background: rgba(20, 33, 61, 0.06);
   color: var(--text);
+}
+
+.attendance-subtotal-row td {
+  background: #eef6ff;
+  font-weight: 800;
+  border-top: 2px solid #93c5fd;
+}
+
+.attendance-subtotal-row td:first-child {
+  background: #eef6ff;
 }
 
 .report-attendance-editor {

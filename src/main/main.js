@@ -670,6 +670,7 @@ async function createWindow() {
   const rendererEntryPath = getRendererEntryPath();
 
   mainWindow = new BrowserWindow({
+    title: variantConfig.productName,
     width: 1400,
     height: 900,
     minWidth: 1100,

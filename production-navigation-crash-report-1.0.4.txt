@@ -1,0 +1,36 @@
+PRODUCTION APP STABILITY TEST - RELEASE 1.0.4
+==============================================
+
+Generated: 2026-05-16T08:20:17.216Z
+Database: C:\Users\llaru\AppData\Roaming\Gestionale\data\presenze.sqlite
+App Status: CRASHED/CLOSED
+
+Pagina              Load Time      Errors      Status
+-----------------------------------------------------------
+Presenze            2000ms (est)   0           OK
+Storico Operaio     3000ms (est)   0           OK
+Report              2000ms (est)   0           OK
+Buste Paga          2000ms (est)   0           OK
+
+SUMMARY
+=======
+Pages Tested: 4
+OK: 4
+With Errors: 0
+Crashes: 0
+App Still Running: No
+
+
+
+CONCLUSION
+==========
+⚠️  ISSUES - See errors above
+
+⚠️  APP CRASHED - Process is no longer running!
+
+NOTES
+=====
+- Test based on log monitoring while app is running
+- Storico and Buste paga performance should be monitored closely
+- If app crashes during real use, check main-process.log
+- Database location: C:\Users\llaru\AppData\Roaming\Gestionale\data\presenze.sqlite

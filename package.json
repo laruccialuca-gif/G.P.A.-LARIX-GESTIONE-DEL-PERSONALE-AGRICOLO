@@ -1,6 +1,6 @@
 {
   "name": "gestionale-presenze-offline",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "appVariant": "standard",
   "private": true,
   "main": "src/main/main.js",
@@ -43,7 +43,7 @@
   },
   "build": {
     "appId": "com.company.gestionale.demo",
-    "productName": "GPA 1.0.1 Demo",
+    "productName": "GPA 1.0.4 Demo",
     "directories": {
       "output": "release-demo",
       "buildResources": "build/resources"
@@ -77,9 +77,9 @@
       "main": "src/main/main.js",
       "appVariant": "demo"
     },
-    "artifactName": "GPA-1.0.1-Demo-${version}-Setup.${ext}",
+    "artifactName": "GPA-1.0.4-Demo-${version}-Setup.${ext}",
     "win": {
-      "executableName": "GPA 1.0.1 Demo",
+      "executableName": "GPA 1.0.4 Demo",
       "icon": "build/resources/icon-demo.ico",
       "target": [
         {
@@ -104,8 +104,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "GPA 1.0.1 Demo",
-      "uninstallDisplayName": "GPA 1.0.1 Demo",
+      "shortcutName": "GPA 1.0.4 Demo",
+      "uninstallDisplayName": "GPA 1.0.4 Demo",
       "deleteAppDataOnUninstall": false,
       "displayLanguageSelector": false
     }

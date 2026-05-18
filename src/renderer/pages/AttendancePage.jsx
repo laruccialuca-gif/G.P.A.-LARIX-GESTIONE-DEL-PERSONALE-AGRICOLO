@@ -45,6 +45,7 @@ function useStableCallback(fn) {
 
 const ATTENDANCE_LAYOUT_STORAGE_KEY = 'attendance_layout_mode_v1';
 const ATTENDANCE_EMPLOYEE_FILTER_STORAGE_KEY = 'attendance_employee_filter_v1';
+const ATTENDANCE_EMPLOYEE_ORDER_STORAGE_KEY = 'attendance_employee_order_v1';
 const TEAM_ATTENDANCE_MODE_DETAILS = 'details';
 const TEAM_ATTENDANCE_MODE_HEADCOUNT = 'headcount';
 const TEAM_HEADCOUNT_ROW_ID_OFFSET = 1000000000;
@@ -62,6 +63,29 @@ function readStoredEmployeeFilter() {
   } catch {
     return [];
   }
+}
+
+function readStoredEmployeeOrder() {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(ATTENDANCE_EMPLOYEE_ORDER_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id));
+  } catch {
+    return [];
+  }
+}
+
+function formatAttendanceSubtotalValue(value) {
+  const safeValue = Number(value || 0);
+  if (safeValue <= 0) return '';
+  return Number.isInteger(safeValue)
+    ? String(safeValue)
+    : safeValue.toFixed(2).replace(/\.?0+$/, '');
 }
 const EMPTY_ROW_ATTENDANCE = Object.freeze({});
 const ATTENDANCE_DIAG_MODE = 'off'; // 'off' | 'a' | 'b' | 'c'
@@ -755,6 +779,7 @@ export default function AttendancePage() {
   const [inputDrafts, setInputDrafts] = useState({});
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
   const [employeeFilterIds, setEmployeeFilterIds] = useState(() => readStoredEmployeeFilter());
+  const [employeeDisplayOrder, setEmployeeDisplayOrder] = useState(() => readStoredEmployeeOrder());
   const [bulkHoursValue, setBulkHoursValue] = useState('');
   const [bulkMarkerValue, setBulkMarkerValue] = useState('');
   const [bulkOvertimeValue, setBulkOvertimeValue] = useState('');
@@ -792,6 +817,7 @@ export default function AttendancePage() {
   const mountedRef = useRef(false);
   const flushRetryTimeoutRef = useRef(null);
   const previewScrollTimeoutRef = useRef(null);
+  const cellEditorPresenceInputRef = useRef(null);
 
   const daysInMonth = useMemo(() => getMonthDays(currentMonth), [currentMonth]);
   const dayKeys = useMemo(() => daysInMonth.map((day) => formatDate(day)), [daysInMonth]);
@@ -1079,6 +1105,20 @@ export default function AttendancePage() {
     }
   }, [employeeFilterIds]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        ATTENDANCE_EMPLOYEE_ORDER_STORAGE_KEY,
+        JSON.stringify(employeeDisplayOrder)
+      );
+    } catch {
+      // localStorage may be unavailable; ignore.
+    }
+  }, [employeeDisplayOrder]);
+
   const isWriteBlocked = Boolean(licenseStatus?.is_write_blocked);
 
   useEffect(() => {
@@ -1293,6 +1333,26 @@ export default function AttendancePage() {
         return employeeFilterSet.has(employeeId);
       });
     }
+    const customOrderIndex = new Map(employeeDisplayOrder.map((id, index) => [Number(id), index]));
+    rows = rows
+      .map((row, originalIndex) => ({ row, originalIndex }))
+      .sort((a, b) => {
+        const aId = Number(a.row.employee.id);
+        const bId = Number(b.row.employee.id);
+        const aIsHeadcount = isTeamHeadcountRowId(aId);
+        const bIsHeadcount = isTeamHeadcountRowId(bId);
+        if (aIsHeadcount !== bIsHeadcount) {
+          return aIsHeadcount ? 1 : -1;
+        }
+        const aOrder = customOrderIndex.has(aId) ? customOrderIndex.get(aId) : Number.MAX_SAFE_INTEGER;
+        const bOrder = customOrderIndex.has(bId) ? customOrderIndex.get(bId) : Number.MAX_SAFE_INTEGER;
+        if (aOrder !== bOrder) {
+          return aOrder - bOrder;
+        }
+        return a.originalIndex - b.originalIndex;
+      })
+      .map(({ row }) => row);
+
     const headcountRows = rows.filter(row => isTeamHeadcountRowId(Number(row.employee.id)));
     if (headcountRows.length > 0) {
       console.log('[attendance-debug] displayRows-headcount', {
@@ -1302,7 +1362,7 @@ export default function AttendancePage() {
       });
     }
     return rows;
-  }, [entityRows, employeeFilterSet]);
+  }, [employeeDisplayOrder, employeeFilterSet, entityRows]);
 
   const filterAvailableEmployees = useMemo(
     () => entityRows.map(({ employee }) => employee),
@@ -1313,6 +1373,20 @@ export default function AttendancePage() {
     () => displayRows.map(({ employee }) => Number(employee.id)).filter(Number.isFinite),
     [displayRows]
   );
+
+  const moveVisibleEmployeeRow = useStableCallback((employeeId, direction) => {
+    const orderedIds = displayRows
+      .map(({ employee }) => Number(employee.id))
+      .filter((id) => Number.isFinite(id) && !isTeamHeadcountRowId(id));
+    const currentIndex = orderedIds.indexOf(Number(employeeId));
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= orderedIds.length) {
+      return;
+    }
+    const nextOrder = [...orderedIds];
+    [nextOrder[currentIndex], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[currentIndex]];
+    setEmployeeDisplayOrder(nextOrder);
+  });
 
   useEffect(() => {
     console.log('[attendance-debug] employee-filter-render', {
@@ -1624,7 +1698,17 @@ export default function AttendancePage() {
     setSelectedCellKey(null);
   });
 
-  const handleSaveCellEditor = useStableCallback(() => {
+  const openNextCellEditor = useStableCallback((employeeId, dateStr) => {
+    const currentDayIndex = dayKeys.indexOf(dateStr);
+    const nextDateStr = currentDayIndex >= 0 ? dayKeys[currentDayIndex + 1] : null;
+    if (!nextDateStr) {
+      setSelectedCellKey(null);
+      return;
+    }
+    handleCellDoubleClick(employeeId, nextDateStr);
+  });
+
+  const handleSaveCellEditor = useStableCallback(({ moveNext = false } = {}) => {
     if (!selectedCellData) {
       return;
     }
@@ -1654,7 +1738,11 @@ export default function AttendancePage() {
         field: 'all',
         source: 'compact-cell-editor-headcount',
       });
-      setSelectedCellKey(null);
+      if (moveNext) {
+        openNextCellEditor(selectedCellData.employeeId, selectedCellData.dateStr);
+      } else {
+        setSelectedCellKey(null);
+      }
       return;
     }
 
@@ -1694,7 +1782,11 @@ export default function AttendancePage() {
       field: 'all',
       source: 'compact-cell-editor',
     });
-    setSelectedCellKey(null);
+    if (moveNext) {
+      openNextCellEditor(selectedCellData.employeeId, selectedCellData.dateStr);
+    } else {
+      setSelectedCellKey(null);
+    }
   });
 
   const selectedCellData = useMemo(() => {
@@ -1716,6 +1808,14 @@ export default function AttendancePage() {
       isHeadcountMode: isTeamHeadcountRowId(employeeId) || !!employee?.is_headcount_team_row,
     };
   }, [selectedCellKey, activeEmployees, attendanceMap, displayRows, pendingChanges]);
+
+  useEffect(() => {
+    if (!selectedCellKey) {
+      return;
+    }
+    cellEditorPresenceInputRef.current?.focus();
+    cellEditorPresenceInputRef.current?.select();
+  }, [selectedCellKey]);
 
   const attendanceRowsData = useMemo(
     () => {
@@ -1765,30 +1865,6 @@ export default function AttendancePage() {
         return nextRow;
       });
 
-      if (selectedMeta.type === 'all') {
-        rows = rows
-          .map((row, originalIndex) => ({
-            row,
-            originalIndex,
-          }))
-          .sort((a, b) => {
-            const aIsHeadcount = !!a.row.headcountMode;
-            const bIsHeadcount = !!b.row.headcountMode;
-            // Squadre headcount sempre dopo i dipendenti normali
-            if (aIsHeadcount !== bIsHeadcount) {
-              return aIsHeadcount ? 1 : -1;
-            }
-            // Stessa categoria: ordine alfabetico per nome
-            const compareResult = String(getAttendanceEmployeeDisplayName(a.row.employee) || '').localeCompare(
-              String(getAttendanceEmployeeDisplayName(b.row.employee) || ''),
-              'it',
-              { sensitivity: 'base' }
-            );
-            return compareResult !== 0 ? compareResult : a.originalIndex - b.originalIndex;
-          })
-          .map(({ row }) => row);
-      }
-
       attendanceRowsCacheRef.current = nextCache;
       logAttendancePerf('page:calculate-totals:end', {
         rows_count: rows.length,
@@ -1807,6 +1883,22 @@ export default function AttendancePage() {
     },
     [attendanceByEmployeeId, attendanceSettings.baseHours, dayKeys, displayRows, pendingChangesByEmployeeId, selectedMeta.type]
   );
+
+  const dailySubtotals = useMemo(() => {
+    const totalsByDay = dayKeys.map((dateStr) =>
+      attendanceRowsData.reduce((sum, row) => {
+        if (row.headcountMode) {
+          return sum;
+        }
+        const entry = row.effectiveAttendance[dateStr];
+        return sum + Number(entry?.hours_worked || 0) / attendanceSettings.baseHours;
+      }, 0)
+    );
+    return {
+      byDay: totalsByDay,
+      monthTotal: totalsByDay.reduce((sum, value) => sum + value, 0),
+    };
+  }, [attendanceRowsData, attendanceSettings.baseHours, dayKeys]);
 
   function getInputDraftKey(employeeId, date, field = 'main') {
     return `${employeeId}_${date}_${field}`;
@@ -3523,6 +3615,8 @@ export default function AttendancePage() {
             dayInfoMap={dayInfoMap}
             todayKey={todayKey}
             attendanceRowsData={attendanceRowsData}
+            dailySubtotals={dailySubtotals}
+            formatAttendanceSubtotalValue={formatAttendanceSubtotalValue}
             selectedEmployeeIds={selectedEmployeeIds}
             dayKeys={dayKeys}
             availableMarkers={availableMarkers}
@@ -3547,6 +3641,7 @@ export default function AttendancePage() {
             todayCellStyle={todayCellStyle}
             toggleSelectAllVisible={toggleSelectAllVisible}
             toggleEmployeeSelection={toggleEmployeeSelection}
+            moveVisibleEmployeeRow={moveVisibleEmployeeRow}
             setOpenMarkerMenuKey={setOpenMarkerMenuKey}
             setCompactOvertimeEditorKey={setCompactOvertimeEditorKey}
             handleMainValueChange={handleMainValueChange}
@@ -3581,7 +3676,16 @@ export default function AttendancePage() {
 
       {selectedCellData ? (
         <div className="modal-overlay" onClick={handleCloseCellEditor}>
-          <div className="modal-dialog attendance-cell-editor" onClick={(event) => event.stopPropagation()}>
+          <div
+            className="modal-dialog attendance-cell-editor"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && event.target.tagName !== 'TEXTAREA') {
+                event.preventDefault();
+                handleSaveCellEditor({ moveNext: true });
+              }
+            }}
+          >
             <div className="modal-header attendance-cell-editor__header">
               <div>
                 <span className="page-kicker">
@@ -3603,6 +3707,7 @@ export default function AttendancePage() {
               <label className="field">
                 <span>{selectedCellData.isHeadcountMode ? 'Numero presenti' : 'Presenza'}</span>
                 <input
+                  ref={cellEditorPresenceInputRef}
                   type="text"
                   value={cellEditorValues.presence}
                   onChange={(event) => setCellEditorValues((current) => ({ ...current, presence: event.target.value }))}

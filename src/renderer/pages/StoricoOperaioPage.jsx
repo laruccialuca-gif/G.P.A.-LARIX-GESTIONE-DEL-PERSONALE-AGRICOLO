@@ -1,4 +1,4 @@
-import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import React, { useDeferredValue, useEffect, useMemo, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatDisplayDateTime } from '../utils/dateFormat';
 import { formatCurrency } from '../utils/currencyFormat';
@@ -55,7 +55,7 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
-function parseSnapshot(record) {
+function parseSnapshotUncached(record) {
   return typeof record?.report_snapshot_json === 'string'
     ? (() => {
         try {
@@ -65,6 +65,10 @@ function parseSnapshot(record) {
         }
       })()
     : record?.report_snapshot_json || null;
+}
+
+function parseSnapshot(record) {
+  return parseSnapshotUncached(record);
 }
 
 function getCurrentInstallmentsTotal(record, snapshot = null) {
@@ -183,8 +187,8 @@ function getSnapshot(record) {
   return parseSnapshot(record);
 }
 
-function getRecordPaymentSummary(record) {
-  const snapshot = getSnapshot(record);
+function getRecordPaymentSummary(record, precomputedSnapshot = null) {
+  const snapshot = precomputedSnapshot !== null ? precomputedSnapshot : getSnapshot(record);
   const grossBalance = getRecordEffectiveBalance(record);
   const residual = record?.resto_pagato ? 0 : grossBalance;
   const basePaidAmount =
@@ -229,8 +233,8 @@ function getRecordPaymentSummary(record) {
   };
 }
 
-function getSyntheticFinancialSummary(record) {
-  const payment = getRecordPaymentSummary(record);
+function getSyntheticFinancialSummary(record, precomputedSnapshot = null) {
+  const payment = getRecordPaymentSummary(record, precomputedSnapshot);
   const totalCredits =
     Number(record?.retribuzione_calcolata || 0) +
     Number(record?.resto_precedente || 0) +
@@ -252,7 +256,12 @@ function getSyntheticFinancialSummary(record) {
   };
 }
 
+const PAGE_PERF_START = performance.now();
+
 export default function StoricoOperaioPage() {
+  const mountStart = performance.now();
+  console.log(`[storico-perf] mount start: ${mountStart - PAGE_PERF_START}ms from page load`);
+
   const navigate = useNavigate();
   const { selectedYear, yearOptions } = useYearContext();
   const [records, setRecords] = useState([]);
@@ -277,6 +286,7 @@ export default function StoricoOperaioPage() {
   const [showArchivedSlots, setShowArchivedSlots] = useState(false);
   const [historyTotal, setHistoryTotal] = useState(0);
   const deferredSearch = useDeferredValue(search);
+  const snapshotCacheRef = useRef(new Map());
 
   async function buildFallbackHistory() {
     const employees = await window.api.employees.list({ includeDeleted: true });
@@ -320,19 +330,28 @@ export default function StoricoOperaioPage() {
   }
 
   async function loadHistory() {
+    const loadStartTime = performance.now();
+    console.log(`[storico-perf] loadHistory start: ${loadStartTime - PAGE_PERF_START}ms`);
     setLoading(true);
+
     try {
       setLoadNotice('');
-      const startedAt = performance.now();
       const normalizedMonth = monthFilter !== 'all'
         ? `${historyYearFilter}-${String(monthFilter).padStart(2, '0')}`
         : '';
+
+      const ipcStartTime = performance.now();
       const data = typeof window.api.payroll.listHistory === 'function'
         ? await window.api.payroll.listHistory({
             year: historyYearFilter,
             month: normalizedMonth,
           })
         : await buildFallbackHistory();
+      const ipcDuration = performance.now() - ipcStartTime;
+      const recordCount = Array.isArray(data) ? (data || []).length : (data?.items || []).length;
+
+      console.log(`[storico-perf] listHistory IPC: ${Math.round(ipcDuration)}ms, records: ${recordCount}`);
+
       if (Array.isArray(data)) {
         setRecords(data || []);
         setHistoryTotal((data || []).length);
@@ -340,12 +359,10 @@ export default function StoricoOperaioPage() {
         setRecords(data?.items || []);
         setHistoryTotal(Number(data?.total || 0));
       }
-      console.info('[storico-perf] synthetic-summary-load', {
-        year: historyYearFilter,
-        month: normalizedMonth || 'all',
-        records_count: Array.isArray(data) ? (data || []).length : (data?.items || []).length,
-        duration_ms: Math.round(performance.now() - startedAt),
-      });
+
+      const totalDuration = performance.now() - loadStartTime;
+      console.log(`[storico-perf] loadHistory end: ${Math.round(totalDuration)}ms total`);
+
     } catch (err) {
       console.error('Storico operaio: endpoint principale non disponibile, uso fallback.', err);
       try {
@@ -410,10 +427,11 @@ export default function StoricoOperaioPage() {
   }, [records]);
 
   const filteredRecords = useMemo(() => {
+    const filterStartTime = performance.now();
     const query = deferredSearch.trim().toLowerCase();
     const selectedEmployeeIdSet = new Set(selectedEmployeeIds.map((id) => Number(id)));
 
-    return records.filter((record) => {
+    const result = records.filter((record) => {
       const employee = record.employee || {};
       const currentStatus = employeeStatusLabel(employee);
 
@@ -464,25 +482,47 @@ export default function StoricoOperaioPage() {
 
       return haystack.includes(query);
     });
+    const filterDuration = Math.round(performance.now() - filterStartTime);
+    console.log(`[storico-perf] filter records: ${filterDuration}ms (${result.length} / ${records.length})`);
+    return result;
   }, [records, deferredSearch, statusFilter, teamFilter, employeeFilter, selectedEmployeeIds, roleFilter, employerFilter, showArchivedSlots]);
 
   const syntheticRows = useMemo(() => {
-    const startedAt = performance.now();
-    const rows = filteredRecords.map((record) => ({
-      record,
-      employee: record.employee || {},
-      financials: getSyntheticFinancialSummary(record),
-    }));
-    console.info('[storico-perf] synthetic-summary-load', {
-      phase: 'derive',
-      filtered_count: rows.length,
-      duration_ms: Math.round(performance.now() - startedAt),
+    const groupingStart = performance.now();
+    const jsonParseStart = performance.now();
+    let jsonParseDuration = 0;
+    let jsonParseCount = 0;
+
+    const rows = filteredRecords.map((record) => {
+      const cacheKey = `${record.id}:${record.report_snapshot_json ? record.report_snapshot_json.slice(0, 50) : ''}`;
+
+      if (!snapshotCacheRef.current.has(cacheKey)) {
+        const singleParseStart = performance.now();
+        const parsed = parseSnapshotUncached(record);
+        jsonParseDuration += (performance.now() - singleParseStart);
+        jsonParseCount++;
+        snapshotCacheRef.current.set(cacheKey, parsed);
+      }
+
+      const cachedSnapshot = snapshotCacheRef.current.get(cacheKey);
+
+      return {
+        record,
+        employee: record.employee || {},
+        financials: getSyntheticFinancialSummary(record, cachedSnapshot),
+      };
     });
+
+    const groupingDuration = Math.round(performance.now() - groupingStart);
+    console.log(`[storico-perf] parse snapshot json: ${Math.round(jsonParseDuration)}ms (${jsonParseCount} new, cache hit: ${rows.length - jsonParseCount})`);
+    console.log(`[storico-perf] grouping: ${groupingDuration}ms`);
+
     return rows;
   }, [filteredRecords]);
 
   const sortedSyntheticRows = useMemo(() => {
-    return syntheticRows
+    const sortStartTime = performance.now();
+    const result = syntheticRows
       .map((row, originalIndex) => ({ ...row, originalIndex }))
       .sort((left, right) => {
         const nameCompare = getHistoryEmployeeName(left.employee).localeCompare(
@@ -493,6 +533,9 @@ export default function StoricoOperaioPage() {
         if (nameCompare !== 0) return nameCompare;
         return left.originalIndex - right.originalIndex;
       });
+    const sortDuration = Math.round(performance.now() - sortStartTime);
+    console.log(`[storico-perf] sort: ${sortDuration}ms`);
+    return result;
   }, [syntheticRows]);
 
   const historySummary = useMemo(() => {
@@ -774,10 +817,8 @@ export default function StoricoOperaioPage() {
         fileName: `storico-sintetico-${historyYearFilter}${monthFilter !== 'all' ? `-${monthFilter}` : ''}.pdf`,
         landscape: false,
       });
-      console.info('[storico-perf] synthetic-print-generate', {
-        rows_count: syntheticRows.length,
-        duration_ms: Math.round(performance.now() - startedAt),
-      });
+      const printDuration = Math.round(performance.now() - startedAt);
+      console.log(`[storico-perf] synthetic-print-generate: ${printDuration}ms (${syntheticRows.length} rows)`);
     } catch (err) {
       console.error(err);
       alert('Errore stampa sintetica storico');
@@ -806,6 +847,14 @@ export default function StoricoOperaioPage() {
       ).slice(0, 10)
     );
   }, [previewRecord]);
+
+  useEffect(() => {
+    if (sortedSyntheticRows.length > 0) {
+      const totalDuration = Math.round(performance.now() - PAGE_PERF_START);
+      console.log(`[storico-perf] render rows: ${sortedSyntheticRows.length} (${sortedSyntheticRows.length} records)`);
+      console.log(`[storico-perf] total page ready: ${totalDuration}ms`);
+    }
+  }, [sortedSyntheticRows]);
 
   return (
     <div className="page">

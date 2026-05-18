@@ -40,6 +40,9 @@ function AttendanceRow({
   handleOvertimeValueBlur,
   onCellSingleClick,
   onCellDoubleClick,
+  canMoveUp,
+  canMoveDown,
+  moveVisibleEmployeeRow,
 }) {
   const clickTimeoutRef = React.useRef(null);
   const renderStartedAt = __eqNow();
@@ -72,11 +75,40 @@ function AttendanceRow({
               {teamMember?.manage_by_days ? ' - gestione a giornate' : ''}
             </div>
           </div>
+          {!employee.is_headcount_team_row ? (
+            <div className="attendance-row-order-actions">
+              <button
+                type="button"
+                onClick={() => moveVisibleEmployeeRow(Number(employee.id), -1)}
+                disabled={!canMoveUp}
+                aria-label={`Sposta su ${getAttendanceEmployeeDisplayName(employee)}`}
+                title="Sposta su"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                onClick={() => moveVisibleEmployeeRow(Number(employee.id), 1)}
+                disabled={!canMoveDown}
+                aria-label={`Sposta giu ${getAttendanceEmployeeDisplayName(employee)}`}
+                title="Sposta giu"
+              >
+                ↓
+              </button>
+            </div>
+          ) : null}
         </div>
       </td>
 
       {cells.map((cell) => {
         const hasSecondaryDetails = Boolean(cell.overtimeHasValue || cell.markerMeta || cell.att?.notes);
+        const overtimeBadgeValue = Number(cell.att?.overtime_hours || 0);
+        const overtimeBadgeLabel = overtimeBadgeValue > 0
+          ? `+${Number.isInteger(overtimeBadgeValue)
+            ? overtimeBadgeValue
+            : overtimeBadgeValue.toFixed(2).replace(/\.?0+$/, '')}`
+          : '';
+        const hasNonOvertimeDetails = Boolean(cell.markerMeta || cell.att?.notes);
 
         return (
           <td
@@ -115,7 +147,12 @@ function AttendanceRow({
               aria-label={`Modifica presenza del ${cell.dateStr} per ${getAttendanceEmployeeDisplayName(employee)}`}
             >
               <span className="attendance-compact-cell__value">{cell.mainInputValue || ''}</span>
-              {hasSecondaryDetails ? <span className="attendance-compact-cell__dot" aria-hidden="true" /> : null}
+              {overtimeBadgeLabel ? (
+                <span className="attendance-compact-cell__overtime" aria-hidden="true">
+                  {overtimeBadgeLabel}
+                </span>
+              ) : null}
+              {hasNonOvertimeDetails ? <span className="attendance-compact-cell__dot" aria-hidden="true" /> : null}
             </button>
           </td>
         );
@@ -197,6 +234,9 @@ function arePropsEqualImpl(prev, next) {
   if (prev.tdStyleRightSummaryCurrent !== next.tdStyleRightSummaryCurrent) return false;
   if (prev.onCellSingleClick !== next.onCellSingleClick) return false;
   if (prev.onCellDoubleClick !== next.onCellDoubleClick) return false;
+  if (prev.canMoveUp !== next.canMoveUp) return false;
+  if (prev.canMoveDown !== next.canMoveDown) return false;
+  if (prev.moveVisibleEmployeeRow !== next.moveVisibleEmployeeRow) return false;
   if (!areCellsEqual(prev.cells, next.cells)) return false;
   return true;
 }
