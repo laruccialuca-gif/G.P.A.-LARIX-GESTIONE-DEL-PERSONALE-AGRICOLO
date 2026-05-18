@@ -3861,8 +3861,8 @@ textarea {
   .calendar-section,
   .economic-section,
   .result-box {
-    margin-top: 4px !important;
-    padding: 6px 8px !important;
+    margin-top: 5px !important;
+    padding: 7px 9px !important;
     border-color: #1f2937 !important;
     background: #fff !important;
     break-inside: avoid !important;
@@ -3896,7 +3896,7 @@ textarea {
   }
 
   .employee-print-sheet [style*="grid-template-rows"][style*="justify-items: center"] {
-    grid-template-rows: 17px 18px 10px 10px 10px !important;
+    grid-template-rows: 18px 19px 11px 11px 11px !important;
     padding: 3px 3px !important;
     gap: 1px !important;
   }
@@ -3921,7 +3921,7 @@ textarea {
   }
 
   .employee-print-sheet [style*="min-height: 24"] {
-    min-height: 12px !important;
+    min-height: 13px !important;
     font-size: 8.4px !important;
   }
 

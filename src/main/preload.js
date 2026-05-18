@@ -194,6 +194,7 @@ contextBridge.exposeInMainWorld('api', {
 
   reports: {
     savePdf: (payload) => ipcRenderer.invoke('reports:savePdf', payload),
+    savePdfToFolder: (payload) => ipcRenderer.invoke('reports:savePdfToFolder', payload),
     printHtml: (payload) => ipcRenderer.invoke('reports:printHtml', payload),
   },
 });

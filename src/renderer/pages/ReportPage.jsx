@@ -1668,6 +1668,38 @@ export default function ReportPage() {
     }
   }
 
+  async function handleSavePdfToFolder() {
+    const printArea = document.querySelector('.print-area');
+    if (!printArea) {
+      alert('Area report non trovata');
+      return;
+    }
+    if (!employee || isTeamMode) {
+      alert('Seleziona un dipendente per salvare il PDF nella cartella report operai');
+      return;
+    }
+
+    const monthFolderName = formatMonthLabelForFile(currentMonth);
+    const fileName = sanitizeFileName(
+      `${employee.first_name || ''} ${employee.last_name || ''} - ${monthFolderName}.pdf`
+    );
+
+    try {
+      const result = await window.api.reports.savePdfToFolder({
+        fileName,
+        monthFolderName,
+        html: printArea.outerHTML,
+        debugRenderLabel: '',
+      });
+      if (!result?.canceled) {
+        alert(`PDF salvato in:\n${result.file_path}`);
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Errore salvataggio PDF in cartella');
+    }
+  }
+
   async function openFinancialImportModal(type = 'advance') {
     if (!employee) {
       alert('Seleziona un dipendente');
@@ -2943,6 +2975,11 @@ export default function ReportPage() {
           {selectedEntity ? (
             <div className="page-actions">
               <button className="button" onClick={handleSavePdf}>Genera PDF</button>
+              {!isTeamMode ? (
+                <button className="button-secondary" onClick={handleSavePdfToFolder}>
+                  Salva PDF in cartella
+                </button>
+              ) : null}
               <button className="button-secondary" onClick={() => window.print()}>Stampa</button>
             </div>
           ) : null}
@@ -4604,10 +4641,17 @@ function EmployeePrintArea({
   const displayTotalHours = showOvertimeInReport
     ? employeeTotals.totalHours
     : employeeTotals.totalRegularHours;
+  const ordinaryEquivalentDays = attendanceBaseHours > 0
+    ? employeeTotals.totalRegularHours / attendanceBaseHours
+    : 0;
   const payCalculationDetail = showPayCalculationDetail
-    ? `${formatReportHoursValue(employeeTotals.totalRegularHours)} h ord. \u00d7 ${formatCurrency(regularHourlyRate)}/h${showOvertimeInReport && employeeTotals.totalOvertimeHours > 0
-      ? ` + ${formatReportHoursValue(employeeTotals.totalOvertimeHours)} h str. \u00d7 ${formatCurrency(overtimeHourlyRate)}/h`
-      : ''}`
+    ? [
+        `Giornate ordinarie: ${formatReportHoursValue(ordinaryEquivalentDays)} gg \u00d7 ${formatCurrency(dailyPay)} = ${formatCurrency(totalRegularPay)}`,
+        ...(showOvertimeInReport && employeeTotals.totalOvertimeHours > 0
+          ? [`Straordinario: ${formatReportHoursValue(employeeTotals.totalOvertimeHours)} h \u00d7 ${formatCurrency(overtimeHourlyRate)} = ${formatCurrency(totalOvertimePay)}`]
+          : []),
+        `Totale retribuzione: ${formatCurrency(totalCalculatedPay)}`,
+      ]
     : formatWorkedSummary(displayTotalHours, attendanceBaseHours, hoursFormat);
   const compensationMonthAmount =
     totalCalculatedPay +
@@ -4795,7 +4839,15 @@ function EmployeePrintArea({
               <div key={row.label} style={rp2EconRowStyle(row.strong)}>
                 <div style={{ minWidth: 0 }}>
                   <div style={rp2EconLabelStyle(row.strong)}>{row.label}</div>
-                  <div style={rp2EconSubStyle}>{row.detail}</div>
+                  {Array.isArray(row.detail) ? (
+                    <div style={rp2EconSubStackStyle}>
+                      {row.detail.map((line) => (
+                        <div key={line}>{line}</div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={rp2EconSubStyle}>{row.detail}</div>
+                  )}
                 </div>
                 <div style={rp2EconAmountStyle(row.tone, row.strong)}>
                   {row.tone === 'negative' && !String(row.value).trim().startsWith('-') ? `- ${row.value}` : row.value}
@@ -5989,7 +6041,7 @@ const rp2DayDetailStyle = (active) => ({
   width: '100%',
   textAlign: 'center',
 });
-const rp2DayMetaAccentStyle = { fontSize: 9.5, color: '#000', fontWeight: 900, lineHeight: 1.1, minHeight: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', textAlign: 'center' };
+const rp2DayMetaAccentStyle = { fontSize: 12.5, color: '#000', fontWeight: 900, lineHeight: 1, minHeight: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', textAlign: 'center' };
 const rp2DayMetaStyle = (markerColor) => ({ fontSize: 10, color: markerColor || '#111827', fontWeight: 800, lineHeight: 1.1, minHeight: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', textAlign: 'center' });
 const rp2DayMetaMutedStyle = { fontSize: 8, color: '#9ca3af', lineHeight: 1.1, minHeight: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', textAlign: 'center' };
 const rp2AttendanceLegendStyle = { display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 12, fontSize: 11.5, color: '#111827' };
@@ -6012,6 +6064,7 @@ const rp2EconRowStyle = (strong = false) => ({
 });
 const rp2EconLabelStyle = (strong = false) => ({ fontSize: strong ? 13 : 12, fontWeight: strong ? 800 : 700, color: '#111827' });
 const rp2EconSubStyle = { fontSize: 11.5, color: '#1f2937', marginTop: 4, lineHeight: 1.35 };
+const rp2EconSubStackStyle = { ...rp2EconSubStyle, display: 'grid', gap: 2 };
 const rp2EconAmountStyle = (tone = 'base', strong = false) => ({
   fontSize: strong ? 15 : 13,
   fontWeight: 800,

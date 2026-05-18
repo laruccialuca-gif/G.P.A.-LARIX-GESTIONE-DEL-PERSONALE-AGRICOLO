@@ -296,7 +296,7 @@ const diagnosticsService = require('./diagnosticsService');
 const licenseService = require('./licenseService');
 const demoService = require('./demoService');
 const { getDb, getDbPath, closeDb } = require('./db');
-const { ensureAppStorageStructure } = require('./storagePaths');
+const { ensureAppStorageStructure, getDocumentsDir } = require('./storagePaths');
 
 const runtime = getRuntimeContext();
 
@@ -748,7 +748,7 @@ function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
         .print-root {
           width: ${pageContentWidthMm}mm;
           max-width: none;
-          margin: 0;
+          margin: 0 auto;
           padding: 0;
           position: relative;
         }
@@ -802,7 +802,7 @@ function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
         .employee-print-area {
           width: 100% !important;
           max-width: none !important;
-          margin: 0 !important;
+          margin: 0 auto !important;
           transform: none !important;
           overflow: visible !important;
           page-break-after: avoid !important;
@@ -1103,7 +1103,9 @@ async function normalizeEmployeeReportPrintWindow(printWindow) {
       const sections = Array.from(document.querySelectorAll('.employee-print-section'));
       const economicSection = sections.find((section) => /Riepilogo economico/i.test(section.textContent));
       const table = economicSection?.children?.[1];
-      if (!table) return;
+      if (!table) {
+        return;
+      }
 
       const orderedRows = [];
       Array.from(table.children).forEach((row) => {
@@ -1136,6 +1138,7 @@ async function normalizeEmployeeReportPrintWindow(printWindow) {
       });
 
       orderedRows.sort((a, b) => a.order - b.order).forEach(({ row }) => table.appendChild(row));
+
     })();
   `);
 }
@@ -1216,6 +1219,17 @@ function buildTempPdfPath(fileName = 'stampa.pdf') {
     : `${safeBaseName}.pdf`;
 
   return path.join(tempDir, `${Date.now()}-${finalFileName}`);
+}
+
+function buildUniquePdfPath(directoryPath, fileName) {
+  const parsed = path.parse(fileName);
+  let candidate = path.join(directoryPath, `${parsed.name}${parsed.ext || '.pdf'}`);
+  let suffix = 1;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(directoryPath, `${parsed.name} (${suffix})${parsed.ext || '.pdf'}`);
+    suffix += 1;
+  }
+  return candidate;
 }
 
 async function printHtmlDocument({ html, landscape = false, fileName, onProgress = () => {} }) {
@@ -2652,6 +2666,36 @@ app.whenReady().then(async () => {
         };
       },
     });
+  });
+
+  ipcMain.handle('reports:savePdfToFolder', async (_, payload) => {
+    requireWritableLicense('La creazione di nuovi report');
+    const html = payload?.html || '';
+    if (!html.trim()) {
+      throw new Error('HTML report mancante');
+    }
+
+    const selected = await dialog.showOpenDialog(mainWindow, {
+      title: 'Seleziona cartella base per i report',
+      defaultPath: getDocumentsDir(),
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (selected.canceled || !selected.filePaths?.[0]) {
+      return { canceled: true };
+    }
+
+    const monthFolderName = String(payload?.monthFolderName || 'Report').replace(/[\\/:*?"<>|]/g, '').trim() || 'Report';
+    const safeFileName = String(payload?.fileName || 'report.pdf').replace(/[\\/:*?"<>|]/g, '').trim() || 'report.pdf';
+    const targetDir = path.join(selected.filePaths[0], 'Report operai', monthFolderName);
+    fs.mkdirSync(targetDir, { recursive: true });
+    const filePath = buildUniquePdfPath(targetDir, safeFileName);
+    await renderPdfToFile({
+      html,
+      filePath,
+      landscape: !!payload?.landscape,
+      debugRenderLabel: payload?.debugRenderLabel || '',
+    });
+    return { canceled: false, file_path: filePath };
   });
 
   ipcMain.handle('reports:printHtml', async (_, payload) => {
