@@ -2416,13 +2416,28 @@ textarea {
 }
 
 .attendance-subtotal-row td {
-  background: #eef6ff;
   font-weight: 800;
   border-top: 2px solid #93c5fd;
 }
 
-.attendance-subtotal-row td:first-child {
+.attendance-subtotal-row--employees {
   background: #eef6ff;
+}
+
+.attendance-subtotal-row--teams {
+  background: #ecfdf5;
+}
+
+.attendance-subtotal-row--teams td {
+  border-top-color: #6ee7b7;
+}
+
+.attendance-subtotal-row--final {
+  background: #fef3c7;
+}
+
+.attendance-subtotal-row--final td {
+  border-top-color: #f59e0b;
 }
 
 .report-attendance-editor {

@@ -818,6 +818,10 @@ export default function AttendancePage() {
   const flushRetryTimeoutRef = useRef(null);
   const previewScrollTimeoutRef = useRef(null);
   const cellEditorPresenceInputRef = useRef(null);
+  const cellEditorHoursInputRef = useRef(null);
+  const cellEditorOvertimeInputRef = useRef(null);
+  const cellEditorMarkerSelectRef = useRef(null);
+  const cellEditorSaveButtonRef = useRef(null);
 
   const daysInMonth = useMemo(() => getMonthDays(currentMonth), [currentMonth]);
   const dayKeys = useMemo(() => daysInMonth.map((day) => formatDate(day)), [daysInMonth]);
@@ -1698,17 +1702,7 @@ export default function AttendancePage() {
     setSelectedCellKey(null);
   });
 
-  const openNextCellEditor = useStableCallback((employeeId, dateStr) => {
-    const currentDayIndex = dayKeys.indexOf(dateStr);
-    const nextDateStr = currentDayIndex >= 0 ? dayKeys[currentDayIndex + 1] : null;
-    if (!nextDateStr) {
-      setSelectedCellKey(null);
-      return;
-    }
-    handleCellDoubleClick(employeeId, nextDateStr);
-  });
-
-  const handleSaveCellEditor = useStableCallback(({ moveNext = false } = {}) => {
+  const handleSaveCellEditor = useStableCallback(() => {
     if (!selectedCellData) {
       return;
     }
@@ -1738,11 +1732,7 @@ export default function AttendancePage() {
         field: 'all',
         source: 'compact-cell-editor-headcount',
       });
-      if (moveNext) {
-        openNextCellEditor(selectedCellData.employeeId, selectedCellData.dateStr);
-      } else {
-        setSelectedCellKey(null);
-      }
+      setSelectedCellKey(null);
       return;
     }
 
@@ -1782,11 +1772,7 @@ export default function AttendancePage() {
       field: 'all',
       source: 'compact-cell-editor',
     });
-    if (moveNext) {
-      openNextCellEditor(selectedCellData.employeeId, selectedCellData.dateStr);
-    } else {
-      setSelectedCellKey(null);
-    }
+    setSelectedCellKey(null);
   });
 
   const selectedCellData = useMemo(() => {
@@ -1816,6 +1802,24 @@ export default function AttendancePage() {
     cellEditorPresenceInputRef.current?.focus();
     cellEditorPresenceInputRef.current?.select();
   }, [selectedCellKey]);
+
+  const focusNextCellEditorControl = useStableCallback((currentTarget) => {
+    const orderedControls = selectedCellData?.isHeadcountMode
+      ? [
+          cellEditorPresenceInputRef.current,
+          cellEditorHoursInputRef.current,
+          cellEditorSaveButtonRef.current,
+        ]
+      : [
+          cellEditorPresenceInputRef.current,
+          cellEditorOvertimeInputRef.current,
+          cellEditorMarkerSelectRef.current,
+          cellEditorSaveButtonRef.current,
+        ];
+    const currentIndex = orderedControls.indexOf(currentTarget);
+    const nextControl = orderedControls[currentIndex + 1];
+    nextControl?.focus();
+  });
 
   const attendanceRowsData = useMemo(
     () => {
@@ -1885,18 +1889,57 @@ export default function AttendancePage() {
   );
 
   const dailySubtotals = useMemo(() => {
-    const totalsByDay = dayKeys.map((dateStr) =>
-      attendanceRowsData.reduce((sum, row) => {
-        if (row.headcountMode) {
-          return sum;
-        }
+    const employeeRows = attendanceRowsData.filter((row) => !row.headcountMode);
+    const teamRows = attendanceRowsData.filter((row) => row.headcountMode);
+    const employeesByDay = dayKeys.map((dateStr) =>
+      employeeRows.reduce((sum, row) => {
         const entry = row.effectiveAttendance[dateStr];
         return sum + Number(entry?.hours_worked || 0) / attendanceSettings.baseHours;
       }, 0)
     );
+    const teamsByDay = dayKeys.map((dateStr) => {
+      if (dateStr === '2026-05-08') {
+        console.info(`[attendance-subtotal-debug] date=${dateStr}`);
+      }
+
+      const subtotalTeamsDays = teamRows.reduce((sum, row) => {
+        const entry = row.effectiveAttendance[dateStr];
+        const headcount = Number(entry?.hours_worked || 0);
+        const hoursPerPerson = Number(entry?.overtime_hours || attendanceSettings.baseHours);
+        const totalHours = headcount * hoursPerPerson;
+        const equivalentDays = attendanceSettings.baseHours > 0
+          ? totalHours / attendanceSettings.baseHours
+          : 0;
+
+        if (dateStr === '2026-05-08' && headcount > 0) {
+          console.info(
+            `[attendance-subtotal-debug] team=${row.employee?.full_name || row.team?.name || row.employee?.first_name || 'Squadra'} headcount=${headcount} hoursPerPerson=${hoursPerPerson} totalHours=${totalHours} standardDayHours=${attendanceSettings.baseHours} equivalentDays=${Number(equivalentDays.toFixed(2))}`
+          );
+        }
+
+        return sum + equivalentDays;
+      }, 0);
+
+      if (dateStr === '2026-05-08') {
+        console.info(`[attendance-subtotal-debug] subtotalTeamsDays=${Number(subtotalTeamsDays.toFixed(2))}`);
+      }
+
+      return subtotalTeamsDays;
+    });
+    const finalByDay = dayKeys.map((_, index) => employeesByDay[index] + teamsByDay[index]);
     return {
-      byDay: totalsByDay,
-      monthTotal: totalsByDay.reduce((sum, value) => sum + value, 0),
+      employees: {
+        byDay: employeesByDay,
+        monthTotal: employeesByDay.reduce((sum, value) => sum + value, 0),
+      },
+      teams: {
+        byDay: teamsByDay,
+        monthTotal: teamsByDay.reduce((sum, value) => sum + value, 0),
+      },
+      final: {
+        byDay: finalByDay,
+        monthTotal: finalByDay.reduce((sum, value) => sum + value, 0),
+      },
     };
   }, [attendanceRowsData, attendanceSettings.baseHours, dayKeys]);
 
@@ -3682,7 +3725,11 @@ export default function AttendancePage() {
             onKeyDown={(event) => {
               if (event.key === 'Enter' && event.target.tagName !== 'TEXTAREA') {
                 event.preventDefault();
-                handleSaveCellEditor({ moveNext: true });
+                if (event.target === cellEditorSaveButtonRef.current) {
+                  handleSaveCellEditor();
+                  return;
+                }
+                focusNextCellEditorControl(event.target);
               }
             }}
           >
@@ -3723,6 +3770,7 @@ export default function AttendancePage() {
                 <label className="field">
                   <span>Ore per persona</span>
                   <input
+                    ref={cellEditorHoursInputRef}
                     type="text"
                     value={cellEditorValues.overtime}
                     onChange={(event) => setCellEditorValues((current) => ({ ...current, overtime: event.target.value }))}
@@ -3733,6 +3781,7 @@ export default function AttendancePage() {
                 <label className="field">
                   <span>Straordinario</span>
                   <input
+                    ref={cellEditorOvertimeInputRef}
                     type="text"
                     value={cellEditorValues.overtime}
                     onChange={(event) => setCellEditorValues((current) => ({ ...current, overtime: event.target.value }))}
@@ -3745,6 +3794,7 @@ export default function AttendancePage() {
                 <label className="field">
                   <span>Marker</span>
                   <select
+                    ref={cellEditorMarkerSelectRef}
                     value={cellEditorValues.marker}
                     onChange={(event) => setCellEditorValues((current) => ({ ...current, marker: event.target.value }))}
                   >
@@ -3789,7 +3839,12 @@ export default function AttendancePage() {
             </div>
 
             <div className="attendance-cell-editor__actions">
-              <button type="button" className="button" onClick={handleSaveCellEditor}>
+              <button
+                ref={cellEditorSaveButtonRef}
+                type="button"
+                className="button"
+                onClick={handleSaveCellEditor}
+              >
                 Salva
               </button>
               <button type="button" className="button-secondary" onClick={handleCloseCellEditor}>

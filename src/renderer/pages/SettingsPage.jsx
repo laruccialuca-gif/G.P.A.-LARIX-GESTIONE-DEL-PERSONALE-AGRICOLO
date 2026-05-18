@@ -242,6 +242,18 @@ function ReportPdfSection({ settings, isAdmin, updateSection }) {
             />
             Compensi nelle stampe
           </label>
+          <label className="communication-checkbox">
+            <input
+              type="checkbox"
+              checked={!!settings.report?.show_pay_calculation_detail}
+              disabled={!isAdmin}
+              onChange={(e) => updateSection('report', {
+                ...settings.report,
+                show_pay_calculation_detail: e.target.checked,
+              })}
+            />
+            Mostra spiegazione dettagliata calcolo retribuzione
+          </label>
         </div>
       </SettingsBox>
 
@@ -393,6 +405,7 @@ function emptySettings() {
     },
     report: {
       print_layout_version: 'v1',
+      show_pay_calculation_detail: false,
     },
     security: {
       current_role: 'standard',
@@ -535,6 +548,7 @@ function normalizeSettingsPayload(input = {}) {
       print_layout_version: String(
         input.report?.print_layout_version || defaults.report.print_layout_version
       ),
+      show_pay_calculation_detail: !!input.report?.show_pay_calculation_detail,
     },
   };
 }
@@ -576,7 +590,9 @@ export default function SettingsPage() {
       }
       const [settingsData, backupData, licenseData, usersData] = await Promise.all(requests);
 
-      setSettings(normalizeSettingsPayload(settingsData || {}));
+      const normalizedSettings = normalizeSettingsPayload(settingsData || {});
+      console.info('[settings-debug] loaded report settings =', normalizedSettings.report);
+      setSettings(normalizedSettings);
       setBackups(backupData || []);
       setLicenseStatus(licenseData || null);
       setUsers(usersData || []);
@@ -923,7 +939,8 @@ export default function SettingsPage() {
   async function handleSaveSettings() {
     setSaving(true);
     try {
-      const saved = await window.api.settings.save({
+      console.info('[settings-debug] before save report settings =', settings.report);
+      const payload = {
         company: settings.company,
         employers: {
           mode: settings.employers.mode,
@@ -939,9 +956,13 @@ export default function SettingsPage() {
         ocr: settings.ocr,
         software: settings.software,
         licensing: settings.licensing,
-      });
+      };
+      console.info('[settings-debug] payload before save =', payload.report);
+      const saved = await window.api.settings.save(payload);
       const freshSettings = await window.api.settings.get();
-      setSettings(normalizeSettingsPayload(freshSettings || saved || {}));
+      const normalizedSettings = normalizeSettingsPayload(freshSettings || saved || {});
+      console.info('[settings-debug] after save report settings =', normalizedSettings.report);
+      setSettings(normalizedSettings);
       setLicenseStatus(await window.api.license.getStatus());
       alert('Impostazioni salvate.');
       setBackups(await window.api.backups.list());
@@ -956,7 +977,7 @@ export default function SettingsPage() {
   async function handleUnlockAdmin() {
     try {
       const result = await window.api.settings.unlockAdmin(unlockPin);
-      setSettings(result);
+      setSettings(normalizeSettingsPayload(result));
       setLicenseStatus(await window.api.license.getStatus());
       setUnlockPin('');
     } catch (err) {
@@ -967,7 +988,7 @@ export default function SettingsPage() {
 
   async function handleSwitchToStandard() {
     try {
-      setSettings(await window.api.settings.setRole('standard'));
+      setSettings(normalizeSettingsPayload(await window.api.settings.setRole('standard')));
       setLicenseStatus(await window.api.license.getStatus());
     } catch (err) {
       console.error(err);
@@ -979,7 +1000,7 @@ export default function SettingsPage() {
     try {
       const result = await window.api.settings.chooseBackupDirectory();
       if (!result?.canceled && result.settings) {
-        setSettings(result.settings);
+        setSettings(normalizeSettingsPayload(result.settings));
         setBackups(await window.api.backups.list());
       }
     } catch (err) {
@@ -992,7 +1013,7 @@ export default function SettingsPage() {
     try {
       const result = await window.api.settings.uploadLogo();
       if (!result?.canceled && result.settings) {
-        setSettings(result.settings);
+        setSettings(normalizeSettingsPayload(result.settings));
       }
     } catch (err) {
       console.error(err);

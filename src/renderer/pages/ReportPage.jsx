@@ -183,7 +183,15 @@ function getReportCellValue(att, hoursFormat = 'decimal') {
   if (att.entry_code) {
     return att.entry_code;
   }
-  return Number(att.hours_worked || 0) + Number(att.overtime_hours || 0) || '';
+  return formatReportHoursValue(att.hours_worked);
+}
+
+function formatReportHoursValue(value) {
+  const hours = Number(value || 0);
+  if (!hours) return '';
+  return Number.isInteger(hours)
+    ? String(hours)
+    : hours.toFixed(2).replace(/\.?0+$/, '');
 }
 
 function isDateWithinRange(value, start, end) {
@@ -2302,6 +2310,10 @@ export default function ReportPage() {
   const totalOvertimePay = employeeTotals.totalOvertimeHours * overtimeHourlyRate;
   const totalCalculatedPay = totalRegularPay + totalOvertimePay;
   const totalCalculatedPayForReport = showOvertimeInReport ? totalCalculatedPay : totalRegularPay;
+  const showPayCalculationDetail = !!settings?.report?.show_pay_calculation_detail;
+  const equivalentWorkedDays = attendanceBaseHours > 0
+    ? employeeTotals.totalHours / attendanceBaseHours
+    : 0;
   const normalizedAdvances = advances
     .map((advance, index) => ({
       id: advance.id || `advance-${index}`,
@@ -2595,6 +2607,7 @@ export default function ReportPage() {
     currentInstallmentTotal -
     Math.abs(Math.min(restoPrecedenteNum, 0)) -
     totalAdvances;
+
   const payslipCalculatorDailyAmount = Number(payslipCalcDailyAmount || 0);
   const payslipTheoreticalDays =
     payslipCalculatorDailyAmount > 0
@@ -2790,6 +2803,51 @@ export default function ReportPage() {
     totalAdvances -
     currentInstallmentTotal -
     importoBustaPagaNum;
+
+  useEffect(() => {
+    if (!employee) {
+      return;
+    }
+
+    const employeeName = getReportEmployeeDisplayName(employee).toUpperCase();
+    console.info(
+      `[report-calc-debug] employee=${employeeName} month=${currentMonthKey}`
+    );
+    console.info('[report-calc-debug] dailyRate=', dailyPay);
+    console.info('[report-calc-debug] overtimeRate=', overtimeHourlyRate);
+    console.info('[report-calc-debug] standardDayHours=', standardHours);
+    console.info('[report-calc-debug] attendanceBaseHours=', attendanceBaseHours);
+    console.info('[report-calc-debug] regularHourlyRate=', regularHourlyRate);
+    console.info('[report-calc-debug] totalHours=', employeeTotals.totalHours);
+    console.info('[report-calc-debug] regularHours=', employeeTotals.totalRegularHours);
+    console.info('[report-calc-debug] overtimeHours=', employeeTotals.totalOvertimeHours);
+    console.info('[report-calc-debug] computedDays=', workedDays);
+    console.info('[report-calc-debug] baseAmount=', totalRegularPay);
+    console.info('[report-calc-debug] overtimeAmount=', totalOvertimePay);
+    console.info('[report-calc-debug] previousCredit=', Math.max(restoPrecedenteNum, 0));
+    console.info('[report-calc-debug] previousDebt=', Math.abs(Math.min(restoPrecedenteNum, 0)));
+    console.info('[report-calc-debug] calculatedPay=', totalCalculatedPay);
+    console.info('[report-calc-debug] finalAmount=', compensationMonthAmount);
+    console.info('[report-calc-debug] finalBalance=', differenzaFinale);
+  }, [
+    attendanceBaseHours,
+    compensationMonthAmount,
+    currentMonthKey,
+    dailyPay,
+    differenzaFinale,
+    employee,
+    employeeTotals.totalHours,
+    employeeTotals.totalOvertimeHours,
+    employeeTotals.totalRegularHours,
+    overtimeHourlyRate,
+    regularHourlyRate,
+    restoPrecedenteNum,
+    standardHours,
+    totalCalculatedPay,
+    totalOvertimePay,
+    totalRegularPay,
+    workedDays,
+  ]);
 
   const teamStartDate = parseDateValue(teamPeriodStart);
   const teamEndDate = parseDateValue(teamPeriodEnd);
@@ -3877,7 +3935,10 @@ export default function ReportPage() {
                   overtimeHourlyRate={overtimeHourlyRate}
                   overtimeView={overtimeView}
                   showOvertimeInReport={showOvertimeInReport}
+                  showPayCalculationDetail={showPayCalculationDetail}
                   workedDays={workedDays}
+                  equivalentWorkedDays={equivalentWorkedDays}
+                  regularHourlyRate={regularHourlyRate}
                   totalRegularPay={totalRegularPay}
                   totalOvertimePay={totalOvertimePay}
                   totalCalculatedPay={totalCalculatedPayForReport}
@@ -4443,7 +4504,9 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers, showOvertimeIn
           : isSunday || isEmptyDay
           ? 'neutral'
           : 'empty';
-        const indicatorLabel = isWorkedDay ? (entryCode || 'X') : specialCode || '';
+        const indicatorLabel = isWorkedDay
+          ? (entryCode || formatReportHoursValue(normalHours))
+          : specialCode || '';
         const rawHelperLabel = markerMeta?.symbol || markerMeta?.text || markerMeta?.value || '';
         const hasRealPresence = isWorkedDay || overtimeHours > 0;
         const showMarker = !!markerMeta && (isWorkedDay || !!specialCode || overtimeHours > 0) && rawHelperLabel && rawHelperLabel !== indicatorLabel;
@@ -4491,7 +4554,10 @@ function EmployeePrintArea({
   overtimeHourlyRate,
   overtimeView,
   showOvertimeInReport,
+  showPayCalculationDetail,
   workedDays,
+  equivalentWorkedDays,
+  regularHourlyRate,
   totalRegularPay,
   totalOvertimePay,
   totalCalculatedPay,
@@ -4538,6 +4604,11 @@ function EmployeePrintArea({
   const displayTotalHours = showOvertimeInReport
     ? employeeTotals.totalHours
     : employeeTotals.totalRegularHours;
+  const payCalculationDetail = showPayCalculationDetail
+    ? `${formatReportHoursValue(employeeTotals.totalRegularHours)} h ord. \u00d7 ${formatCurrency(regularHourlyRate)}/h${showOvertimeInReport && employeeTotals.totalOvertimeHours > 0
+      ? ` + ${formatReportHoursValue(employeeTotals.totalOvertimeHours)} h str. \u00d7 ${formatCurrency(overtimeHourlyRate)}/h`
+      : ''}`
+    : formatWorkedSummary(displayTotalHours, attendanceBaseHours, hoursFormat);
   const compensationMonthAmount =
     totalCalculatedPay +
     giftAmountNum +
@@ -4549,7 +4620,7 @@ function EmployeePrintArea({
   const creditRows = [
     {
       label: 'Retribuzione calcolata',
-      detail: formatWorkedSummary(displayTotalHours, attendanceBaseHours, hoursFormat),
+      detail: payCalculationDetail,
       value: formatCurrency(totalCalculatedPay),
       tone: 'base',
       order: 1,
@@ -4663,9 +4734,9 @@ function EmployeePrintArea({
 
         <div style={rp2SummaryRowStyle}>
           <div style={rp2SummaryCardStyle}>
-            <div style={rp2CardLabelStyle}>Giorni lavorati</div>
-            <div style={rp2CardValueStyle}>{workedDays}</div>
-            <div style={rp2CardSubStyle}>Giornate registrate</div>
+            <div style={rp2CardLabelStyle}>Giornate equivalenti</div>
+            <div style={rp2CardValueStyle}>{formatReportHoursValue(equivalentWorkedDays)}</div>
+            <div style={rp2CardSubStyle}>Ore totali / ore giornata standard</div>
           </div>
           <div style={rp2SummaryCardStyle}>
             <div style={rp2CardLabelStyle}>Ore totali</div>

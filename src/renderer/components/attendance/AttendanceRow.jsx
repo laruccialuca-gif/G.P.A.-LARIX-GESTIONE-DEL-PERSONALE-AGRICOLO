@@ -101,14 +101,22 @@ function AttendanceRow({
       </td>
 
       {cells.map((cell) => {
-        const hasSecondaryDetails = Boolean(cell.overtimeHasValue || cell.markerMeta || cell.att?.notes);
+        const isTeamHeadcountCell = Boolean(employee.is_headcount_team_row || cell.att?.is_headcount_mode);
+        const hasSecondaryDetails = !isTeamHeadcountCell && Boolean(cell.overtimeHasValue || cell.markerMeta || cell.att?.notes);
         const overtimeBadgeValue = Number(cell.att?.overtime_hours || 0);
-        const overtimeBadgeLabel = overtimeBadgeValue > 0
+        const overtimeBadgeLabel = !isTeamHeadcountCell && overtimeBadgeValue > 0
           ? `+${Number.isInteger(overtimeBadgeValue)
             ? overtimeBadgeValue
             : overtimeBadgeValue.toFixed(2).replace(/\.?0+$/, '')}`
           : '';
-        const hasNonOvertimeDetails = Boolean(cell.markerMeta || cell.att?.notes);
+        const hasNonOvertimeDetails = !isTeamHeadcountCell && Boolean(cell.markerMeta || cell.att?.notes);
+        const teamHoursPerPerson = Number(cell.att?.overtime_hours || 0);
+        const teamHoursPerPersonLabel = Number.isInteger(teamHoursPerPerson)
+          ? String(teamHoursPerPerson)
+          : teamHoursPerPerson.toFixed(2).replace(/\.?0+$/, '');
+        const displayedCellValue = isTeamHeadcountCell && cell.att && teamHoursPerPerson > 0
+          ? `${cell.att.hours_worked}\u00d7${teamHoursPerPersonLabel}`
+          : (cell.mainInputValue || '');
 
         return (
           <td
@@ -146,7 +154,7 @@ function AttendanceRow({
               disabled={isWriteBlocked}
               aria-label={`Modifica presenza del ${cell.dateStr} per ${getAttendanceEmployeeDisplayName(employee)}`}
             >
-              <span className="attendance-compact-cell__value">{cell.mainInputValue || ''}</span>
+              <span className="attendance-compact-cell__value">{displayedCellValue}</span>
               {overtimeBadgeLabel ? (
                 <span className="attendance-compact-cell__overtime" aria-hidden="true">
                   {overtimeBadgeLabel}

@@ -140,6 +140,24 @@ function AttendanceTable(props) {
       });
     }
   });
+
+  const renderSubtotalRow = (key, label, subtotal, className) => (
+    <tr key={key} className={className}>
+      <td style={{ ...tdStyleLeftCurrent, background: 'inherit' }}>
+        <strong>{label}</strong>
+      </td>
+      {subtotal.byDay.map((value, index) => (
+        <td key={dayKeys[index]} style={tdStyleCenterCurrent}>
+          {formatAttendanceSubtotalValue(value)}
+        </td>
+      ))}
+      <td style={tdStyleRightHoursCurrent}>
+        {formatAttendanceSubtotalValue(subtotal.monthTotal)}
+      </td>
+      <td style={tdStyleRightSummaryCurrent}>gg</td>
+    </tr>
+  );
+
   return (
     <div className={`attendance-table-region ${isCompactLayout ? 'attendance-table-region--compact' : ''}`}>
       <div
@@ -208,6 +226,8 @@ function AttendanceTable(props) {
             const movableRowIndexById = new Map(
               movableRows.map((row, index) => [Number(row.employee.id), index])
             );
+            const hasEmployeeRows = attendanceRowsData.some((row) => !row.headcountMode);
+            const hasTeamRows = attendanceRowsData.some((row) => row.headcountMode);
             for (const rowData of attendanceRowsData) {
               const { employee, teamMember, effectiveAttendance, totals, headcountMode } = rowData;
               const employeeId = employee.id;
@@ -217,6 +237,16 @@ function AttendanceTable(props) {
               // Inserire sezione header prima del primo headcount team (solo in modo "Tutti")
               if (isHCTeam && !headcountSectionShown && selectedMeta.type === 'all') {
                 headcountSectionShown = true;
+                if (hasEmployeeRows) {
+                  items.push(
+                    renderSubtotalRow(
+                      'employee-subtotal',
+                      'Subtotale dipendenti',
+                      dailySubtotals.employees,
+                      'attendance-subtotal-row attendance-subtotal-row--employees'
+                    )
+                  );
+                }
                 items.push(
                   <tr key="section-headcount-teams" className="attendance-section-header-row">
                     <td
@@ -304,22 +334,34 @@ function AttendanceTable(props) {
                 />
               );
             }
+            if (!headcountSectionShown && hasEmployeeRows) {
+              items.push(
+                renderSubtotalRow(
+                  'employee-subtotal',
+                  'Subtotale dipendenti',
+                  dailySubtotals.employees,
+                  'attendance-subtotal-row attendance-subtotal-row--employees'
+                )
+              );
+            }
+            if (hasTeamRows) {
+              items.push(
+                renderSubtotalRow(
+                  'team-subtotal',
+                  'Subtotale squadre',
+                  dailySubtotals.teams,
+                  'attendance-subtotal-row attendance-subtotal-row--teams'
+                )
+              );
+            }
             if (attendanceRowsData.length) {
               items.push(
-                <tr key="daily-subtotal" className="attendance-subtotal-row">
-                  <td style={{ ...tdStyleLeftCurrent, background: '#eef6ff' }}>
-                    <strong>Totale giornaliero</strong>
-                  </td>
-                  {dailySubtotals.byDay.map((value, index) => (
-                    <td key={dayKeys[index]} style={tdStyleCenterCurrent}>
-                      {formatAttendanceSubtotalValue(value)}
-                    </td>
-                  ))}
-                  <td style={tdStyleRightHoursCurrent}>
-                    {formatAttendanceSubtotalValue(dailySubtotals.monthTotal)}
-                  </td>
-                  <td style={tdStyleRightSummaryCurrent}>gg</td>
-                </tr>
+                renderSubtotalRow(
+                  'final-total',
+                  'Totale finale',
+                  dailySubtotals.final,
+                  'attendance-subtotal-row attendance-subtotal-row--final'
+                )
               );
             }
             return items;
