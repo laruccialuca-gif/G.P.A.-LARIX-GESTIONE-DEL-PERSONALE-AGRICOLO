@@ -20,6 +20,10 @@ function hashFile(filePath) {
   return hash.digest('hex');
 }
 
+function nowMs() {
+  return Date.now();
+}
+
 function sanitizeSegment(value) {
   return String(value || '')
     .replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-')
@@ -76,12 +80,19 @@ function storeSelectedFile(sourcePath, targetDirSegments, targetBaseName) {
   const absolutePath = getAbsolutePath(relativePath);
 
   ensureDir(path.dirname(absolutePath));
+
+  const copyStartedAt = nowMs();
   fs.copyFileSync(sourcePath, absolutePath);
+  console.info('[documents-perf] file copy ms', nowMs() - copyStartedAt);
 
   const stats = fs.statSync(absolutePath);
   const createdAt = stats.birthtime instanceof Date && !Number.isNaN(stats.birthtime.getTime())
     ? stats.birthtime.toISOString()
     : new Date().toISOString();
+
+  const hashStartedAt = nowMs();
+  const sha256 = hashFile(absolutePath);
+  console.info('[documents-perf] hash ms', nowMs() - hashStartedAt);
 
   return {
     file_name: sourceName,
@@ -89,7 +100,7 @@ function storeSelectedFile(sourcePath, targetDirSegments, targetBaseName) {
     relative_path: relativePath,
     mime_type: detectMimeType(extension),
     size_bytes: stats.size,
-    sha256: hashFile(absolutePath),
+    sha256,
     file_created_at: createdAt,
   };
 }

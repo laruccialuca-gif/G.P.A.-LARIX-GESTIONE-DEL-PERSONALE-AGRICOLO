@@ -511,8 +511,12 @@ function listBasicEmployees(options = {}) {
       e.standard_hours,
       e.medical_visit_required,
       e.medical_visit_done,
+      e.medical_visit_date,
+      e.medical_visit_expiry,
       e.art37_required,
-      e.art37_done
+      e.art37_done,
+      e.art37_date,
+      e.art37_expiry
     FROM employees e
     ${whereClause}
     ORDER BY e.is_deleted ASC, e.last_name COLLATE NOCASE, e.first_name COLLATE NOCASE
@@ -588,8 +592,12 @@ function listBasicEmployees(options = {}) {
       standard_hours: row.standard_hours,
       medical_visit_required: !!row.medical_visit_required,
       medical_visit_done: !!row.medical_visit_done,
+      medical_visit_date: row.medical_visit_date || null,
+      medical_visit_expiry: row.medical_visit_expiry || null,
       art37_required: !!row.art37_required,
       art37_done: !!row.art37_done,
+      art37_date: row.art37_date || null,
+      art37_expiry: row.art37_expiry || null,
     };
     if (periodsMap) {
       const periods = periodsMap.get(row.id) || [{
@@ -1081,13 +1089,34 @@ function getEmploymentPeriodHireDocument(employeeId, employmentPeriodId) {
   return period?.hire_document || null;
 }
 
+function describeEmployeeDocumentRow(row) {
+  const document = describeStoredFile(row);
+  if (!document) {
+    return null;
+  }
+
+  return {
+    ...document,
+    employee_id: row.employee_id,
+    category: row.category,
+  };
+}
+
+function getEmployeeDocumentRowByCategory(employeeId, category) {
+  return getDb().prepare(`
+    SELECT *
+    FROM employee_documents
+    WHERE employee_id = ? AND category = ?
+    LIMIT 1
+  `).get(employeeId, category);
+}
+
 function getEmployeeDocumentByCategory(employeeId, category) {
-  const documentKey = EMPLOYEE_DOCUMENT_META[category]?.key;
-  if (!documentKey) {
+  if (!EMPLOYEE_DOCUMENT_META[category]) {
     throw new Error('Categoria documento non supportata.');
   }
 
-  return getEmployeeById(employeeId, { includeDeleted: true })?.[documentKey] || null;
+  return describeEmployeeDocumentRow(getEmployeeDocumentRowByCategory(employeeId, category));
 }
 
 function deleteEmployeeDocumentByCategory(employeeId, category) {
@@ -1122,7 +1151,12 @@ function deleteEmployeeDocumentByCategory(employeeId, category) {
 
 async function uploadEmployeeDocumentByCategory(browserWindow, employeeId, category) {
   const db = getDb();
-  const employee = getEmployeeById(employeeId, { includeDeleted: true });
+  const employee = db.prepare(`
+    SELECT id, first_name, last_name
+    FROM employees
+    WHERE id = ?
+    LIMIT 1
+  `).get(employeeId);
   if (!employee) {
     throw new Error('Dipendente non trovato');
   }
@@ -1137,23 +1171,22 @@ async function uploadEmployeeDocumentByCategory(browserWindow, employeeId, categ
     return { canceled: true };
   }
 
+  const startedAt = nowMs();
+  console.info('[documents-perf] saveEmployeeDocument start', { employeeId, category });
+
   const stored = storeSelectedFile(
     selectedPath,
     ['employees', String(employeeId), meta.subdir],
     `${employee.last_name}-${employee.first_name}-${meta.nameSuffix}`
   );
 
-  const existing = db.prepare(`
-    SELECT *
-    FROM employee_documents
-    WHERE employee_id = ? AND category = ?
-    LIMIT 1
-  `).get(employeeId, category);
+  const existing = getEmployeeDocumentRowByCategory(employeeId, category);
 
   if (existing?.relative_path && existing.relative_path !== stored.relative_path) {
     removeStoredFile(existing.relative_path);
   }
 
+  const sqliteStartedAt = nowMs();
   if (existing) {
     db.prepare(`
       UPDATE employee_documents
@@ -1183,10 +1216,14 @@ async function uploadEmployeeDocumentByCategory(browserWindow, employeeId, categ
       ...stored,
     });
   }
+  console.info('[documents-perf] sqlite insert/update ms', nowMs() - sqliteStartedAt);
+
+  const updatedDocument = getEmployeeDocumentByCategory(employeeId, category);
+  console.info('[documents-perf] total ms', nowMs() - startedAt);
 
   return {
     canceled: false,
-    document: getEmployeeDocumentByCategory(employeeId, category),
+    document: updatedDocument,
   };
 }
 

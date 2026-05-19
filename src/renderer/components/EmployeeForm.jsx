@@ -162,6 +162,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
     art37_document: null,
     medical_visit_document: null,
   });
+  const [documentBusyKey, setDocumentBusyKey] = useState('');
   const [employmentPeriods, setEmploymentPeriods] = useState([]);
   const [employerOptions, setEmployerOptions] = useState([
     { value: 'LC', label: 'LC' },
@@ -354,15 +355,51 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
     }
   }
 
-  async function handleDocumentAction(action, errorMessage) {
+  async function handleDocumentAction(action, errorMessage, options = {}) {
+    const { documentKey = '', busyKey = documentKey, perfName = '' } = options;
+    const perf = typeof performance !== 'undefined' ? performance : { now: () => Date.now() };
+    const startedAt = perf.now();
+    const isFormationUpload = perfName === 'formazione';
+
+    if (busyKey) {
+      setDocumentBusyKey(busyKey);
+    }
+    if (isFormationUpload) {
+      console.info('[documents-perf] formazione upload start');
+    }
+
     try {
       const result = await action();
       if (!result?.canceled) {
-        await refreshEmployeeDocuments();
+        if (isFormationUpload) {
+          console.info(
+            `[documents-perf] formazione upload saved in ${Math.round(perf.now() - startedAt)} ms`
+          );
+        }
+
+        const uiStartedAt = perf.now();
+        if (documentKey && Object.prototype.hasOwnProperty.call(result || {}, 'document')) {
+          setEmployeeDocuments((current) => ({
+            ...current,
+            [documentKey]: result.document || null,
+          }));
+        } else {
+          await refreshEmployeeDocuments();
+        }
+
+        if (isFormationUpload) {
+          console.info(
+            `[documents-perf] formazione ui updated in ${Math.round(perf.now() - uiStartedAt)} ms`
+          );
+        }
       }
     } catch (err) {
       console.error(err);
       alert(errorMessage);
+    } finally {
+      if (busyKey) {
+        setDocumentBusyKey('');
+      }
     }
   }
 
@@ -904,7 +941,12 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                 onUpload={() =>
                   handleDocumentAction(
                     () => window.api.employees.uploadArt37Document(employee.id),
-                    'Errore caricamento allegato formazione art. 37'
+                    'Errore caricamento allegato formazione art. 37',
+                    {
+                      documentKey: 'art37_document',
+                      busyKey: 'art37_document',
+                      perfName: 'formazione',
+                    }
                   )
                 }
                 onOpen={() =>
@@ -921,10 +963,13 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                       }
                       return window.api.employees.deleteArt37Document(employee.id);
                     },
-                    'Errore eliminazione allegato formazione art. 37'
+                    'Errore eliminazione allegato formazione art. 37',
+                    { documentKey: 'art37_document', busyKey: 'art37_document' }
                   )
                 }
                 emptyLabel="Nessun allegato formazione art. 37"
+                loading={documentBusyKey === 'art37_document'}
+                loadingLabel="Salvataggio formazione in corso..."
               />
 
               <DocumentActions
@@ -932,7 +977,8 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                 onUpload={() =>
                   handleDocumentAction(
                     () => window.api.employees.uploadMedicalVisitDocument(employee.id),
-                    'Errore caricamento allegato visita medica'
+                    'Errore caricamento allegato visita medica',
+                    { documentKey: 'medical_visit_document', busyKey: 'medical_visit_document' }
                   )
                 }
                 onOpen={() =>
@@ -949,10 +995,12 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                       }
                       return window.api.employees.deleteMedicalVisitDocument(employee.id);
                     },
-                    'Errore eliminazione allegato visita medica'
+                    'Errore eliminazione allegato visita medica',
+                    { documentKey: 'medical_visit_document', busyKey: 'medical_visit_document' }
                   )
                 }
                 emptyLabel="Nessun allegato visita medica"
+                loading={documentBusyKey === 'medical_visit_document'}
               />
             </div>
           ) : (

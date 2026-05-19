@@ -41,6 +41,16 @@ function formatMonth(monthStr) {
   return `${MONTH_NAMES[parseInt(month, 10) - 1]} ${year}`;
 }
 
+function formatDateOnly(value) {
+  if (!value) return '';
+  const clean = String(value).split('T')[0].split(' ')[0];
+  const parts = clean.split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return clean;
+}
+
 function formatHours(value) {
   const hours = Number(value || 0);
   return Number.isInteger(hours) ? `${hours} h` : `${hours.toFixed(2).replace('.', ',')} h`;
@@ -284,6 +294,7 @@ export default function StoricoOperaioPage() {
   const [previewPaymentDateInput, setPreviewPaymentDateInput] = useState('');
   const [updatingPaymentStatus, setUpdatingPaymentStatus] = useState(false);
   const [showArchivedSlots, setShowArchivedSlots] = useState(false);
+  const [expandedMonths, setExpandedMonths] = useState(() => new Set());
   const [historyTotal, setHistoryTotal] = useState(0);
   const deferredSearch = useDeferredValue(search);
   const snapshotCacheRef = useRef(new Map());
@@ -561,6 +572,67 @@ export default function StoricoOperaioPage() {
 
   const uniqueEmployees = historySummary.employeeIds.size;
 
+  const historyMonthGroups = useMemo(() => {
+    const groups = new Map();
+
+    for (const row of syntheticRows) {
+      const monthKey = row.record.month || 'senza-mese';
+      if (!groups.has(monthKey)) {
+        groups.set(monthKey, {
+          month: monthKey,
+          label: formatMonth(monthKey) || 'Senza mese',
+          rows: [],
+          summary: {
+            totalGiornate: 0,
+            totalBonifici: 0,
+            totalDaDare: 0,
+            totalDaRicevere: 0,
+            saldoNetto: 0,
+            employeeIds: new Set(),
+            reportCount: 0,
+          },
+        });
+      }
+
+      const group = groups.get(monthKey);
+      group.rows.push(row);
+      group.summary.totalGiornate += Number(row.record.giornate_effettuate || 0);
+      group.summary.totalBonifici += Number(row.financials.payrollAmount || 0);
+      group.summary.totalDaDare += Number(row.financials.amountToGive || 0);
+      group.summary.totalDaRicevere += Number(row.financials.amountToReceive || 0);
+      group.summary.saldoNetto += Number(row.financials.finalBalance || 0);
+      group.summary.employeeIds.add(Number(row.record.employee_id));
+      group.summary.reportCount += 1;
+    }
+
+    return [...groups.values()]
+      .map((group) => ({
+        ...group,
+        rows: group.rows.sort((left, right) => {
+          const nameCompare = getHistoryEmployeeName(left.employee).localeCompare(
+            getHistoryEmployeeName(right.employee),
+            'it',
+            { sensitivity: 'base' }
+          );
+          if (nameCompare !== 0) return nameCompare;
+          return Number(left.record.id || 0) - Number(right.record.id || 0);
+        }),
+      }))
+      .sort((left, right) => String(right.month).localeCompare(String(left.month)));
+  }, [syntheticRows]);
+
+  function toggleMonthGroup(monthKey) {
+    setExpandedMonths((current) => {
+      const next = new Set(current);
+      if (next.has(monthKey)) {
+        next.delete(monthKey);
+      } else {
+        next.add(monthKey);
+      }
+      return next;
+    });
+  }
+
   function handleResetFilters() {
     setSearch('');
     setHistoryYearFilter(String(selectedYear));
@@ -572,6 +644,7 @@ export default function StoricoOperaioPage() {
     setRoleFilter('all');
     setEmployerFilter('all');
     setShowArchivedSlots(false);
+    setExpandedMonths(new Set());
   }
 
   async function handleUploadDocument(record) {
@@ -809,13 +882,113 @@ export default function StoricoOperaioPage() {
     `;
   }
 
+  function buildGroupedSyntheticPrintHtml() {
+    const summaryCards = [
+      ['Numero report', historySummary.reportCount],
+      ['Operai coinvolti', uniqueEmployees],
+      ['Totale bonifici/assegni', formatCurrency(historySummary.totalBonifici)],
+      ['Totale da dare', formatCurrency(historySummary.totalDaDare)],
+      ['Totale da ricevere', formatCurrency(historySummary.totalDaRicevere)],
+      ['Saldo netto finale', formatCurrency(historySummary.saldoNetto)],
+    ].map(([label, value]) => `
+      <div class="history-synthetic-print__card">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(String(value))}</strong>
+      </div>
+    `).join('');
+
+    const mapPaymentStatus = (label) => {
+      if (!label) return { class: 'unpaid', text: 'Non pagato' };
+      const lower = String(label).toLowerCase();
+      if (lower.includes('saldato') || lower.includes('pagato')) return { class: 'paid', text: 'Saldato' };
+      if (lower.includes('parziale')) return { class: 'partial', text: 'Parziale' };
+      return { class: 'unpaid', text: label };
+    };
+
+    const monthSections = historyMonthGroups.map((group) => {
+      const rowsHtml = group.rows.map(({ record, employee, financials }) => {
+        const note = String(record.note || '').trim();
+        const paymentStatus = mapPaymentStatus(financials.payment.label);
+        const mainRow = `
+          <tr class="history-synthetic-print__row">
+            <td><strong>${escapeHtml(getHistoryEmployeeName(employee))}</strong></td>
+            <td>${escapeHtml((employee.team_names || []).join(', ') || '—')}</td>
+            <td>${escapeHtml(String(Number(record.giornate_effettuate || 0)))}</td>
+            <td>${escapeHtml(formatCurrency(record.retribuzione_calcolata))}</td>
+            <td>${escapeHtml(formatCurrency(financials.payrollAmount))}</td>
+            <td class="amount-give">${escapeHtml(formatCurrency(financials.amountToGive))}</td>
+            <td class="amount-receive">${escapeHtml(formatCurrency(financials.amountToReceive))}</td>
+            <td>${escapeHtml(formatCurrency(financials.finalBalance))}</td>
+            <td>
+              <span class="pdf-badge pdf-badge--${paymentStatus.class}">${escapeHtml(paymentStatus.text)}</span>
+              ${financials.payment.paidDate ? `<div class="history-synthetic-print__date">${escapeHtml(formatDateOnly(financials.payment.paidDate))}</div>` : ''}
+            </td>
+          </tr>
+        `;
+        const noteRow = note ? `
+          <tr class="history-synthetic-print__note-row">
+            <td colspan="9" class="history-synthetic-print__note-cell">
+              <span class="history-synthetic-print__note-label">Nota:</span> ${escapeHtml(note)}
+            </td>
+          </tr>
+        ` : '';
+        return mainRow + noteRow;
+      }).join('');
+
+      return `
+        <section class="history-synthetic-print__month">
+          <div class="history-synthetic-print__month-head">
+            <h2>${escapeHtml(group.label)}</h2>
+            <div>
+              <span>${escapeHtml(String(group.summary.reportCount))} report</span>
+              <span>Bonifici ${escapeHtml(formatCurrency(group.summary.totalBonifici))}</span>
+              <span>Da dare ${escapeHtml(formatCurrency(group.summary.totalDaDare))}</span>
+              <span>Da ricevere ${escapeHtml(formatCurrency(group.summary.totalDaRicevere))}</span>
+              <span>Saldo ${escapeHtml(formatCurrency(group.summary.saldoNetto))}</span>
+            </div>
+          </div>
+          <table class="history-synthetic-print__table">
+            <thead>
+              <tr>
+                <th>Dipendente</th>
+                <th>Squadra</th>
+                <th>Giornate</th>
+                <th>Compenso</th>
+                <th>Bonifici/Assegni</th>
+                <th>Da dare</th>
+                <th>Da ricevere</th>
+                <th>Saldo</th>
+                <th>Stato</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </section>
+      `;
+    }).join('');
+
+    return `
+      <div class="history-synthetic-print">
+        <div class="history-synthetic-print__header">
+          <div>
+            <span>Archivio contabile</span>
+            <h1>Storico Operaio - Riepilogo sintetico</h1>
+          </div>
+          <div>${escapeHtml(buildFilterSummaryLabel())}</div>
+        </div>
+        <div class="history-synthetic-print__cards">${summaryCards}</div>
+        ${monthSections}
+      </div>
+    `;
+  }
+
   async function handleSyntheticPrint() {
     const startedAt = performance.now();
     try {
       await window.api.reports.printHtml({
-        html: buildSyntheticPrintHtml(),
+        html: buildGroupedSyntheticPrintHtml(),
         fileName: `storico-sintetico-${historyYearFilter}${monthFilter !== 'all' ? `-${monthFilter}` : ''}.pdf`,
-        landscape: false,
+        landscape: true,
       });
       const printDuration = Math.round(performance.now() - startedAt);
       console.log(`[storico-perf] synthetic-print-generate: ${printDuration}ms (${syntheticRows.length} rows)`);
@@ -995,7 +1168,109 @@ export default function StoricoOperaioPage() {
                 </div>
               </div>
 
-              <div className="table-shell">
+              <div className="history-month-groups">
+                {historyMonthGroups.map((group) => {
+                  const isOpen = expandedMonths.has(group.month);
+                  return (
+                    <section key={group.month} className="history-month-group">
+                      <button
+                        type="button"
+                        className="history-month-group__header"
+                        onClick={() => toggleMonthGroup(group.month)}
+                      >
+                        <div>
+                          <div className="history-month-group__title">
+                            <span>{isOpen ? '▾' : '▸'}</span>
+                            {group.label}
+                          </div>
+                          <div className="history-month-group__meta">
+                            {group.summary.reportCount} report • {group.summary.employeeIds.size} operai
+                          </div>
+                        </div>
+                        <div className="history-month-group__totals">
+                          <span>Bonifici {formatCurrency(group.summary.totalBonifici)}</span>
+                          <span>Da dare {formatCurrency(group.summary.totalDaDare)}</span>
+                          <span>Da ricevere {formatCurrency(group.summary.totalDaRicevere)}</span>
+                          <span>Saldo {formatCurrency(group.summary.saldoNetto)}</span>
+                        </div>
+                      </button>
+
+                      {isOpen ? (
+                        <div className="history-month-group__rows">
+                          {group.rows.map(({ record, employee, financials }) => {
+                            const paymentSummary = financials.payment;
+                            const saldoColor =
+                              financials.finalBalance > 0 ? '#dc2626' : financials.finalBalance < 0 ? '#059669' : '#111827';
+                            const paymentStyle =
+                              paymentSummary.status === 'pagato' || paymentSummary.status === 'saldato'
+                                ? { background: '#ecfdf3', color: '#166534' }
+                                : paymentSummary.status === 'parziale'
+                                ? { background: '#fef3c7', color: '#92400e' }
+                                : { background: '#fee2e2', color: '#b91c1c' };
+
+                            return (
+                              <div key={record.id} className="history-record-row">
+                                <button
+                                  type="button"
+                                  className="history-record-row__main"
+                                  onClick={() => handleOpenPreview(record)}
+                                  title="Apri anteprima report"
+                                >
+                                  <div className="history-record-row__employee">
+                                    <strong>{getHistoryEmployeeName(employee)}</strong>
+                                    <span>
+                                      {record.datore || 'Datore non indicato'}
+                                      {employee.role ? ` • ${employee.role}` : ''}
+                                      {record.archived_at ? ' • slot archiviato' : ''}
+                                    </span>
+                                  </div>
+                                  <div className="history-record-row__team">
+                                    {(employee.team_names || []).join(', ') || '—'}
+                                  </div>
+                                  <div>{Number(record.giornate_effettuate || 0)}</div>
+                                  <div>{formatCurrency(record.retribuzione_calcolata)}</div>
+                                  <div style={{ color: saldoColor, fontWeight: 900 }}>
+                                    {formatCurrency(financials.finalBalance)}
+                                  </div>
+                                  <span className="soft-chip" style={paymentStyle}>
+                                    {paymentSummary.label}
+                                  </span>
+                                </button>
+
+                                <div className="history-record-row__actions">
+                                  <button type="button" className="button-secondary" onClick={() => handleOpenPreview(record)}>
+                                    Apri
+                                  </button>
+                                  <button type="button" className="button-secondary" onClick={() => handleOpenLinkedReport(record)}>
+                                    Modifica report
+                                  </button>
+                                  <button type="button" className="button-secondary" onClick={() => handlePrintSnapshot(record)}>
+                                    Stampa
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={record.payroll_document ? 'button-secondary' : 'button'}
+                                    onClick={() => (record.payroll_document ? handleOpenDocument(record) : handleUploadDocument(record))}
+                                    disabled={busyRecordId === String(record.id)}
+                                  >
+                                    {busyRecordId === String(record.id)
+                                      ? '...'
+                                      : record.payroll_document
+                                      ? 'PDF'
+                                      : 'Carica PDF'}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </section>
+                  );
+                })}
+              </div>
+
+              <div className="table-shell" style={{ display: 'none' }}>
                 <div className="table-scroll">
                   <table className="table">
                     <thead>

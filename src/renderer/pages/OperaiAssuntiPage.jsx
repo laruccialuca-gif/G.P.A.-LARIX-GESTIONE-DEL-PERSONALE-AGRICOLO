@@ -5,6 +5,15 @@ function sanitizeFileName(value) {
   return value.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim();
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function getIpcRecoveryMessage(error, fallbackMessage) {
   const message = String(error?.message || '');
   if (message.includes('No handler registered')) {
@@ -37,9 +46,63 @@ const INITIAL_FILTERS = {
   datore: 'TUTTI',
   team: 'TUTTI',
   status: 'TUTTI',
+  training: 'TUTTI',
+  medical: 'TUTTI',
   search: '',
   // bonus: extension points for future filters (period, status, ...)
 };
+
+function isPastDate(value) {
+  if (!value) return false;
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return parsed < today;
+}
+
+function getComplianceInfo(employee, type) {
+  const prefix = type === 'medical' ? 'medical_visit' : 'art37';
+  const done = !!employee?.[`${prefix}_done`];
+  const required = !!employee?.[`${prefix}_required`];
+  const expiry = employee?.[`${prefix}_expiry`] || null;
+  const expired = done && isPastDate(expiry);
+
+  if (expired) {
+    return {
+      state: 'SCADUTO',
+      label: 'Scaduta',
+      detail: expiry ? `Scad. ${formatDisplayDate(expiry)}` : '',
+      tone: 'expired',
+    };
+  }
+  if (done) {
+    return {
+      state: 'VALIDO',
+      label: expiry ? 'Valida' : 'Presente',
+      detail: expiry ? `Scad. ${formatDisplayDate(expiry)}` : '',
+      tone: 'valid',
+    };
+  }
+  return {
+    state: 'MANCANTE',
+    label: required ? 'Mancante' : 'Assente',
+    detail: required ? 'Richiesta' : 'Non presente',
+    tone: required ? 'missing' : 'neutral',
+  };
+}
+
+function matchesComplianceFilter(employee, type, filterValue) {
+  if (!filterValue || filterValue === 'TUTTI') return true;
+  return getComplianceInfo(employee, type).state === filterValue;
+}
+
+function getComplianceFilterLabel(value) {
+  if (value === 'VALIDO') return 'presenti / validi';
+  if (value === 'MANCANTE') return 'mancanti';
+  if (value === 'SCADUTO') return 'scaduti';
+  return 'tutti';
+}
 
 function matchEmployeeFilter(employee, filters) {
   if (filters.datore !== 'TUTTI' && (employee.hired_by || '') !== filters.datore) {
@@ -51,6 +114,12 @@ function matchEmployeeFilter(employee, filters) {
     if (!list.some((t) => String(t.team_id) === wanted)) return false;
   }
   if (filters.status !== 'TUTTI' && (employee.status || '') !== filters.status) {
+    return false;
+  }
+  if (!matchesComplianceFilter(employee, 'training', filters.training)) {
+    return false;
+  }
+  if (!matchesComplianceFilter(employee, 'medical', filters.medical)) {
     return false;
   }
   if (filters.search) {
@@ -68,10 +137,17 @@ const nameButtonStyle = {
   border: 'none',
   padding: 0,
   margin: 0,
+  display: 'block',
+  width: '100%',
+  minWidth: 0,
+  overflow: 'hidden',
+  whiteSpace: 'nowrap',
+  textOverflow: 'ellipsis',
   font: 'inherit',
   color: '#0f172a',
   fontWeight: 700,
   cursor: 'pointer',
+  textAlign: 'left',
   textDecoration: 'underline',
   textUnderlineOffset: 3,
   textDecorationColor: 'rgba(15, 23, 42, 0.25)',
@@ -86,6 +162,10 @@ export default function OperaiAssuntiPage() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [busyId, setBusyId] = useState(null);
   const [detailEmployeeId, setDetailEmployeeId] = useState(null);
+  const [earlyClosureOpen, setEarlyClosureOpen] = useState(false);
+  const [earlyClosureDate, setEarlyClosureDate] = useState('');
+  const [earlyClosureNotes, setEarlyClosureNotes] = useState('');
+  const [earlyClosureGenerating, setEarlyClosureGenerating] = useState(false);
 
   const [detailEmployee, setDetailEmployee] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -244,8 +324,14 @@ export default function OperaiAssuntiPage() {
     if (filters.status && filters.status !== 'TUTTI') {
       parts.push(`Stato: ${filters.status}`);
     }
+    if (filters.training && filters.training !== 'TUTTI') {
+      parts.push(`Formazione: ${getComplianceFilterLabel(filters.training)}`);
+    }
+    if (filters.medical && filters.medical !== 'TUTTI') {
+      parts.push(`Visita medica: ${getComplianceFilterLabel(filters.medical)}`);
+    }
     if (filters.search) parts.push(`Ricerca: "${filters.search}"`);
-    return parts.join(' · ');
+    return parts.join(' • ');
   }
 
   function buildPrintHtml(list, modeLabel) {
@@ -256,14 +342,28 @@ export default function OperaiAssuntiPage() {
       return String(a.first_name || '').localeCompare(String(b.first_name || ''));
     });
 
-    const rows = sortedList.map((employee) => `
+    const renderCompliancePrintCell = (info) => `
+      <td style="padding:8px 9px; color:#334155;">
+        <strong style="display:block; color:${info.tone === 'expired' ? '#991b1b' : info.tone === 'valid' ? '#14532d' : '#92400e'};">
+          ${info.label}
+        </strong>
+        ${info.detail ? `<span style="font-size:10px; color:#64748b;">${info.detail}</span>` : ''}
+      </td>
+    `;
+
+    const rows = sortedList.map((employee) => {
+      const trainingInfo = getComplianceInfo(employee, 'training');
+      const medicalInfo = getComplianceInfo(employee, 'medical');
+      return `
       <tr>
         <td style="padding:10px 12px; font-weight:700; color:#1F2937;">${employee.last_name || ''} ${employee.first_name || ''}</td>
         <td style="padding:10px 12px; color:#334155;">${employee.role || '—'}</td>
         <td style="padding:10px 12px; color:#334155; white-space:nowrap;">${formatDisplayDate(employee.hire_date_from)}</td>
         <td style="padding:10px 12px; color:#334155; white-space:nowrap;">${formatDisplayDate(employee.hire_date_to)}</td>
         <td style="padding:10px 12px; color:#334155; white-space:nowrap;">${employee.hired_by || '—'}</td>
-        <td style="padding:10px 12px;">
+        ${renderCompliancePrintCell(trainingInfo)}
+        ${renderCompliancePrintCell(medicalInfo)}
+        <td style="padding:8px 9px;">
           <span style="
             display:inline-flex;
             align-items:center;
@@ -279,7 +379,8 @@ export default function OperaiAssuntiPage() {
           </span>
         </td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
     return `
       <div style="
@@ -350,7 +451,7 @@ export default function OperaiAssuntiPage() {
           background:rgba(255,255,255,0.96);
           box-shadow:0 18px 40px rgba(31, 41, 55, 0.08);
         ">
-          <table style="width:100%; border-collapse:separate; border-spacing:0; font-size:12px;">
+          <table style="width:100%; border-collapse:separate; border-spacing:0; font-size:11px;">
             <thead>
               <tr>
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Operaio</th>
@@ -358,13 +459,15 @@ export default function OperaiAssuntiPage() {
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Data da</th>
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Data a</th>
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Assunto da</th>
+                <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Formazione</th>
+                <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Visita medica</th>
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Stato</th>
               </tr>
             </thead>
             <tbody>
               ${rows || `
                 <tr>
-                  <td colspan="6" style="padding:22px 14px; text-align:center; color:#64748b;">
+                  <td colspan="8" style="padding:22px 14px; text-align:center; color:#64748b;">
                     Nessun operaio disponibile per il filtro selezionato.
                   </td>
                 </tr>
@@ -386,6 +489,143 @@ export default function OperaiAssuntiPage() {
     return sanitizeFileName(`${parts.join(' - ')}.pdf`);
   }
 
+  function getTeamNames(employee) {
+    return (employee?.team_history || [])
+      .map((team) => team.name)
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  function buildEarlyClosurePdfHtml(list, closureDate, notes) {
+    const printDate = new Date().toLocaleDateString('it-IT');
+    const closureDateLabel = formatDisplayDate(closureDate);
+    const sortedList = [...list].sort((a, b) => {
+      const last = String(a.last_name || '').localeCompare(String(b.last_name || ''), 'it', { sensitivity: 'base' });
+      if (last !== 0) return last;
+      return String(a.first_name || '').localeCompare(String(b.first_name || ''), 'it', { sensitivity: 'base' });
+    });
+
+    const rows = sortedList.map((employee) => `
+      <tr>
+        <td style="padding:9px 10px; font-weight:800; color:#111827;">${escapeHtml(`${employee.last_name || ''} ${employee.first_name || ''}`.trim() || '—')}</td>
+        <td style="padding:9px 10px; color:#334155; font-family:ui-monospace, SFMono-Regular, monospace;">${escapeHtml(employee.fiscal_code || '—')}</td>
+        <td style="padding:9px 10px; color:#334155;">${escapeHtml(employee.role || '—')}</td>
+        <td style="padding:9px 10px; color:#334155;">${escapeHtml(getTeamNames(employee) || '—')}</td>
+        <td style="padding:9px 10px; color:#334155; white-space:nowrap;">${escapeHtml(formatDisplayDate(employee.hire_date_from))}</td>
+        <td style="padding:9px 10px; color:#334155; white-space:nowrap;">${escapeHtml(formatDisplayDate(employee.hire_date_to))}</td>
+        <td style="padding:9px 10px; color:#334155; white-space:nowrap;">${escapeHtml(employee.hired_by || '—')}</td>
+        <td style="padding:9px 10px; color:#111827; font-weight:800; white-space:nowrap;">${escapeHtml(closureDateLabel)}</td>
+      </tr>
+    `).join('');
+
+    return `
+      <div style="font-family:'Avenir Next','Segoe UI',sans-serif; color:#1f2937; padding:14px 16px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:18px; margin-bottom:18px;">
+          <div>
+            <div style="font-size:11px; font-weight:900; letter-spacing:0.08em; text-transform:uppercase; color:#14532d;">Richiesta consulente</div>
+            <div style="margin-top:8px; font-size:25px; line-height:1.12; font-weight:900;">Richiesta chiusura anticipata operai</div>
+            <div style="margin-top:6px; font-size:13px; color:#475569;">${escapeHtml(settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.4')}</div>
+          </div>
+          <div style="min-width:250px; border:1px solid #dbe4dd; border-radius:16px; padding:12px 14px; background:#f8fbf7;">
+            <div style="font-size:12px; color:#334155;">Data documento: <strong>${escapeHtml(printDate)}</strong></div>
+            <div style="margin-top:6px; font-size:12px; color:#334155;">Chiusura richiesta: <strong>${escapeHtml(closureDateLabel)}</strong></div>
+            <div style="margin-top:6px; font-size:12px; color:#334155;">Operai inclusi: <strong>${sortedList.length}</strong></div>
+          </div>
+        </div>
+
+        <div style="border:1px solid #dbe4dd; border-radius:18px; padding:14px 16px; background:#ffffff; margin-bottom:16px;">
+          <p style="margin:0; font-size:13px; line-height:1.55; color:#334155;">
+            Con la presente si richiede la chiusura anticipata dei rapporti di lavoro dei seguenti operai agricoli a decorrere dalla data indicata.
+          </p>
+        </div>
+
+        <div style="border:1px solid rgba(31,41,55,0.10); border-radius:18px; overflow:hidden; background:#fff;">
+          <table style="width:100%; border-collapse:collapse; font-size:10.5px;">
+            <thead>
+              <tr>
+                <th style="padding:10px; text-align:left; background:#edf4ee; color:#475569; text-transform:uppercase; letter-spacing:0.04em;">Cognome e nome</th>
+                <th style="padding:10px; text-align:left; background:#edf4ee; color:#475569; text-transform:uppercase; letter-spacing:0.04em;">Codice fiscale</th>
+                <th style="padding:10px; text-align:left; background:#edf4ee; color:#475569; text-transform:uppercase; letter-spacing:0.04em;">Mansione</th>
+                <th style="padding:10px; text-align:left; background:#edf4ee; color:#475569; text-transform:uppercase; letter-spacing:0.04em;">Squadra</th>
+                <th style="padding:10px; text-align:left; background:#edf4ee; color:#475569; text-transform:uppercase; letter-spacing:0.04em;">Data da</th>
+                <th style="padding:10px; text-align:left; background:#edf4ee; color:#475569; text-transform:uppercase; letter-spacing:0.04em;">Data a</th>
+                <th style="padding:10px; text-align:left; background:#edf4ee; color:#475569; text-transform:uppercase; letter-spacing:0.04em;">Assunto da</th>
+                <th style="padding:10px; text-align:left; background:#edf4ee; color:#475569; text-transform:uppercase; letter-spacing:0.04em;">Chiusura richiesta</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+
+        ${notes ? `
+          <div style="margin-top:14px; border:1px solid #e5e7eb; border-radius:14px; padding:12px 14px; background:#fff;">
+            <div style="font-size:11px; font-weight:900; text-transform:uppercase; letter-spacing:0.05em; color:#64748b;">Note</div>
+            <div style="margin-top:6px; font-size:12px; line-height:1.5; color:#334155;">${escapeHtml(notes)}</div>
+          </div>
+        ` : ''}
+
+        <div style="display:flex; justify-content:space-between; align-items:flex-end; gap:24px; margin-top:32px;">
+          <div style="font-size:12px; color:#334155;">
+            <strong>${escapeHtml(settings?.company?.name || settings?.company?.document_header || '')}</strong>
+          </div>
+          <div style="width:240px; border-top:1px solid #111827; padding-top:8px; text-align:center; font-size:12px; color:#334155;">
+            Firma
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function openEarlyClosureModal() {
+    if (!selectedIds.size) {
+      alert('Seleziona almeno un operaio.');
+      return;
+    }
+    setEarlyClosureDate('');
+    setEarlyClosureNotes('');
+    setEarlyClosureOpen(true);
+  }
+
+  async function handleGenerateEarlyClosurePdf(event) {
+    event.preventDefault();
+    const list = getSelectedEmployees();
+    if (!list.length) {
+      alert('Nessun operaio selezionato.');
+      return;
+    }
+    if (!earlyClosureDate) {
+      alert('Inserisci la data di chiusura anticipata.');
+      return;
+    }
+
+    const invalidEmployees = list.filter((employee) => {
+      if (!employee.hire_date_from) return false;
+      return String(earlyClosureDate) < String(employee.hire_date_from).slice(0, 10);
+    });
+    if (invalidEmployees.length) {
+      const names = invalidEmployees
+        .map((employee) => `${employee.last_name || ''} ${employee.first_name || ''}`.trim())
+        .join(', ');
+      alert(`La data di chiusura è precedente alla data di assunzione per: ${names}`);
+      return;
+    }
+
+    setEarlyClosureGenerating(true);
+    try {
+      await window.api.reports.savePdf({
+        fileName: `richiesta-chiusura-anticipata-operai-${earlyClosureDate}.pdf`,
+        html: buildEarlyClosurePdfHtml(list, earlyClosureDate, earlyClosureNotes),
+        landscape: true,
+      });
+      setEarlyClosureOpen(false);
+    } catch (err) {
+      console.error(err);
+      alert('Errore generazione PDF operai da chiudere');
+    } finally {
+      setEarlyClosureGenerating(false);
+    }
+  }
+
   async function handleSavePdf(mode) {
     const list = mode === 'selected' ? getSelectedEmployees() : filtered;
     if (!list.length) {
@@ -397,7 +637,7 @@ export default function OperaiAssuntiPage() {
       await window.api.reports.savePdf({
         fileName: buildPdfFileName(modeLabel),
         html: buildPrintHtml(list, modeLabel),
-        landscape: false,
+        landscape: true,
       });
     } catch (err) {
       console.error(err);
@@ -416,7 +656,7 @@ export default function OperaiAssuntiPage() {
       await window.api.reports.printHtml({
         fileName: buildPdfFileName(modeLabel),
         html: buildPrintHtml(list, modeLabel),
-        landscape: false,
+        landscape: true,
       });
     } catch (err) {
       console.error(err);
@@ -540,7 +780,7 @@ export default function OperaiAssuntiPage() {
             </p>
           </div>
 
-          <div className="page-actions">
+          <div className="page-actions hired-workers-page-actions">
             <button className="button-secondary" onClick={() => handlePrint('filtered')}>Stampa</button>
             <button className="button" onClick={() => handleSavePdf('filtered')}>Genera PDF</button>
             <button
@@ -550,6 +790,14 @@ export default function OperaiAssuntiPage() {
               title={hasSelection ? `Genera PDF dei ${selectedCount} selezionati` : 'Seleziona almeno un operaio'}
             >
               Genera PDF selezionati ({selectedCount})
+            </button>
+            <button
+              className="button-warning"
+              onClick={openEarlyClosureModal}
+              disabled={!hasSelection || earlyClosureGenerating}
+              title={hasSelection ? `Richiedi chiusura per ${selectedCount} operai` : 'Seleziona almeno un operaio'}
+            >
+              {earlyClosureGenerating ? 'Generazione...' : `Operai da chiudere (${selectedCount})`}
             </button>
           </div>
         </section>
@@ -572,18 +820,18 @@ export default function OperaiAssuntiPage() {
               placeholder="Cerca nominativo o mansione..."
               value={filters.search}
               onChange={(e) => updateFilter('search', e.target.value)}
-              style={{ minWidth: 280, width: 320, minHeight: 42 }}
+              style={{ minHeight: 42 }}
             />
             <select
               className="hired-workers-toolbar__select"
               value={filters.datore}
               onChange={(e) => updateFilter('datore', e.target.value)}
-              style={{ minWidth: 190, minHeight: 42 }}
+              style={{ minHeight: 42 }}
             >
               <option value="TUTTI">Tutti i datori</option>
               {employerOptions.map((option) => (
                 <option key={option.short_name} value={option.short_name}>
-                  {option.short_name} · {option.name}
+                  {option.short_name} - {option.name}
                 </option>
               ))}
               <option value="ENTRAMBE">ENTRAMBE</option>
@@ -592,7 +840,7 @@ export default function OperaiAssuntiPage() {
               className="hired-workers-toolbar__select"
               value={filters.team}
               onChange={(e) => updateFilter('team', e.target.value)}
-              style={{ minWidth: 190, minHeight: 42 }}
+              style={{ minHeight: 42 }}
             >
               <option value="TUTTI">Tutte le squadre</option>
               {teamOptions.map((team) => (
@@ -605,7 +853,7 @@ export default function OperaiAssuntiPage() {
               className="hired-workers-toolbar__select"
               value={filters.status}
               onChange={(e) => updateFilter('status', e.target.value)}
-              style={{ minWidth: 190, minHeight: 42 }}
+              style={{ minHeight: 42 }}
             >
               <option value="TUTTI">Tutti gli stati</option>
               {statusOptions.map((status) => (
@@ -613,6 +861,28 @@ export default function OperaiAssuntiPage() {
                   {status}
                 </option>
               ))}
+            </select>
+            <select
+              className="hired-workers-toolbar__select"
+              value={filters.training}
+              onChange={(e) => updateFilter('training', e.target.value)}
+              style={{ minHeight: 42 }}
+            >
+              <option value="TUTTI">Formazione: tutti</option>
+              <option value="VALIDO">Formazione: presenti/validi</option>
+              <option value="MANCANTE">Formazione: mancanti</option>
+              <option value="SCADUTO">Formazione: scaduti</option>
+            </select>
+            <select
+              className="hired-workers-toolbar__select"
+              value={filters.medical}
+              onChange={(e) => updateFilter('medical', e.target.value)}
+              style={{ minHeight: 42 }}
+            >
+              <option value="TUTTI">Visita: tutti</option>
+              <option value="VALIDO">Visita: presenti/validi</option>
+              <option value="MANCANTE">Visita: mancanti</option>
+              <option value="SCADUTO">Visita: scaduti</option>
             </select>
             <button
               type="button"
@@ -623,6 +893,8 @@ export default function OperaiAssuntiPage() {
                 filters.datore === INITIAL_FILTERS.datore &&
                 filters.team === INITIAL_FILTERS.team &&
                 filters.status === INITIAL_FILTERS.status &&
+                filters.training === INITIAL_FILTERS.training &&
+                filters.medical === INITIAL_FILTERS.medical &&
                 !filters.search
               }
             >
@@ -630,7 +902,7 @@ export default function OperaiAssuntiPage() {
             </button>
           </div>
 
-          <div className="toolbar-group hired-workers-toolbar__meta" style={{ gap: 8, flexWrap: 'nowrap', marginLeft: 'auto' }}>
+          <div className="toolbar-group hired-workers-toolbar__meta" style={{ gap: 8, flexWrap: 'wrap', marginLeft: 0 }}>
             <span
               className="soft-chip hired-workers-toolbar__badge"
               style={{
@@ -653,9 +925,9 @@ export default function OperaiAssuntiPage() {
       {loading ? (
         <div className="panel empty-state">Caricamento...</div>
       ) : (
-        <div className="panel table-shell">
-          <div className="table-scroll">
-            <table className="table">
+        <div className="panel table-shell hired-workers-table-shell">
+          <div className="table-scroll hired-workers-table-scroll">
+            <table className="table hired-workers-table">
               <thead>
                 <tr>
                   <th style={{ ...th, width: 44 }}>
@@ -677,13 +949,15 @@ export default function OperaiAssuntiPage() {
                   <th style={th}>Data a</th>
                   <th style={th}>Assunto da</th>
                   <th style={th}>Stato</th>
-                  <th style={th}>Documento assunzione</th>
+                  <th style={th}>Formazione</th>
+                  <th style={th}>Visita medica</th>
+                  <th style={{ ...th, width: 180 }}>Documento assunzione</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={9} style={{ ...td, textAlign: 'center', color: '#64748b' }}>
+                    <td colSpan={11} style={{ ...td, textAlign: 'center', color: '#64748b' }}>
                       Nessun operaio corrisponde ai filtri correnti.
                     </td>
                   </tr>
@@ -694,6 +968,8 @@ export default function OperaiAssuntiPage() {
                       .map((t) => t.name)
                       .filter(Boolean);
                     const docAvailable = hasAnyHireDocument(employee);
+                    const trainingInfo = getComplianceInfo(employee, 'training');
+                    const medicalInfo = getComplianceInfo(employee, 'medical');
                     return (
                       <tr key={employee.id} style={isSelected ? selectedRowStyle : undefined}>
                         <td style={{ ...td, width: 44 }}>
@@ -704,7 +980,7 @@ export default function OperaiAssuntiPage() {
                             onChange={(e) => toggleSelectOne(employee.id, e.target.checked)}
                           />
                         </td>
-                        <td style={td}>
+                        <td style={td} className="hired-workers-name-cell">
                           <button
                             type="button"
                             onClick={() => setDetailEmployeeId(employee.id)}
@@ -715,27 +991,33 @@ export default function OperaiAssuntiPage() {
                           </button>
                         </td>
                         <td style={td}>{employee.role || '—'}</td>
-                        <td style={td}>
+                        <td style={td} className="hired-workers-team-cell" title={teamNames.join(', ')}>
                           {teamNames.length ? teamNames.join(', ') : <span style={{ color: '#94a3b8' }}>—</span>}
                         </td>
                         <td style={td}>{formatDisplayDate(employee.hire_date_from)}</td>
                         <td style={td}>{formatDisplayDate(employee.hire_date_to)}</td>
                         <td style={td}>{employee.hired_by || '—'}</td>
                         <td style={td}>{employee.status || '—'}</td>
-                        <td style={{ ...td, minWidth: 220 }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <td style={td}>
+                          <ComplianceStatusBadge info={trainingInfo} />
+                        </td>
+                        <td style={td}>
+                          <ComplianceStatusBadge info={medicalInfo} />
+                        </td>
+                        <td style={{ ...td, width: 180 }}>
+                          <div className="hired-workers-doc-actions">
                             <button
                               type="button"
                               className={docAvailable ? 'button-secondary' : 'button'}
-                              style={{ minHeight: 34, padding: '0 12px', fontSize: 12 }}
+                              style={{ minHeight: 30, padding: '0 8px', fontSize: 11 }}
                               onClick={() => handleUpload(employee.id)}
                               disabled={busyId === employee.id}
                             >
                               {busyId === employee.id
-                                ? 'Caricamento...'
+                                ? '...'
                                 : docAvailable
-                                ? 'Sostituisci PDF'
-                                : 'Aggiungi PDF'}
+                                ? 'Sostituisci'
+                                : 'PDF'}
                             </button>
 
                             {docAvailable ? (
@@ -743,7 +1025,7 @@ export default function OperaiAssuntiPage() {
                                 <button
                                   type="button"
                                   className="button-secondary"
-                                  style={{ minHeight: 34, padding: '0 12px', fontSize: 12 }}
+                                  style={{ minHeight: 30, padding: '0 8px', fontSize: 11 }}
                                   onClick={() => handleOpen(employee)}
                                 >
                                   Apri
@@ -751,7 +1033,7 @@ export default function OperaiAssuntiPage() {
                                 <button
                                   type="button"
                                   className="button-danger"
-                                  style={{ minHeight: 34, padding: '0 12px', fontSize: 12 }}
+                                  style={{ minHeight: 30, padding: '0 8px', fontSize: 11 }}
                                   onClick={() => handleDelete(employee.id)}
                                 >
                                   Elimina
@@ -785,6 +1067,108 @@ export default function OperaiAssuntiPage() {
           onOpenArt37={() => handleOpenArt37(detailEmployee.id)}
           onOpenMedical={() => handleOpenMedicalVisit(detailEmployee.id)}
         />
+      ) : null}
+
+      {earlyClosureOpen ? (
+        <div className="modal-overlay" onClick={() => !earlyClosureGenerating && setEarlyClosureOpen(false)}>
+          <form
+            className="modal-dialog early-closure-modal"
+            onClick={(event) => event.stopPropagation()}
+            onSubmit={handleGenerateEarlyClosurePdf}
+          >
+            <div className="modal-header">
+              <div>
+                <h2>Operai da chiudere</h2>
+                <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 13 }}>
+                  Genera una richiesta PDF per {selectedCount} operai selezionati.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => setEarlyClosureOpen(false)}
+                disabled={earlyClosureGenerating}
+              >
+                x
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gap: 14 }}>
+              <label style={{ display: 'grid', gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 800 }}>Data chiusura anticipata *</span>
+                <input
+                  type="date"
+                  value={earlyClosureDate}
+                  onChange={(event) => setEarlyClosureDate(event.target.value)}
+                  required
+                  disabled={earlyClosureGenerating}
+                />
+              </label>
+
+              <label style={{ display: 'grid', gap: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 800 }}>Note opzionali</span>
+                <textarea
+                  value={earlyClosureNotes}
+                  onChange={(event) => setEarlyClosureNotes(event.target.value)}
+                  rows={4}
+                  placeholder="Eventuali indicazioni per il consulente..."
+                  disabled={earlyClosureGenerating}
+                />
+              </label>
+
+              <div className="soft-chip" style={{ justifySelf: 'start', background: 'rgba(245, 158, 11, 0.16)', color: '#92400e' }}>
+                Il PDF non modifica lo stato degli operai nel database.
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap', marginTop: 18 }}>
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => setEarlyClosureOpen(false)}
+                disabled={earlyClosureGenerating}
+              >
+                Annulla
+              </button>
+              <button type="submit" className="button" disabled={earlyClosureGenerating}>
+                {earlyClosureGenerating ? (
+                  <>
+                    <span
+                      style={{
+                        width: 14,
+                        height: 14,
+                        borderRadius: '50%',
+                        border: '2px solid rgba(255,255,255,0.45)',
+                        borderTopColor: '#fff',
+                        animation: 'spin 0.8s linear infinite',
+                      }}
+                      aria-hidden="true"
+                    />
+                    Generazione...
+                  </>
+                ) : (
+                  'Genera PDF'
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ComplianceStatusBadge({ info }) {
+  const toneStyle = complianceToneStyles[info?.tone || 'neutral'] || complianceToneStyles.neutral;
+  return (
+    <div style={{ display: 'grid', gap: 4, minWidth: 112 }}>
+      <span style={{ ...complianceBadgeStyle, ...toneStyle }}>
+        {info?.label || '-'}
+      </span>
+      {info?.detail ? (
+        <span style={{ fontSize: 11, color: '#64748b', lineHeight: 1.2 }}>
+          {info.detail}
+        </span>
       ) : null}
     </div>
   );
@@ -986,6 +1370,38 @@ const td = {
 
 const selectedRowStyle = {
   background: 'rgba(22, 163, 74, 0.06)',
+};
+
+const complianceBadgeStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 'fit-content',
+  minHeight: 24,
+  padding: '0 9px',
+  borderRadius: 999,
+  fontSize: 11,
+  fontWeight: 800,
+  whiteSpace: 'nowrap',
+};
+
+const complianceToneStyles = {
+  valid: {
+    background: 'rgba(22, 163, 74, 0.12)',
+    color: '#14532d',
+  },
+  missing: {
+    background: 'rgba(245, 158, 11, 0.16)',
+    color: '#92400e',
+  },
+  expired: {
+    background: 'rgba(220, 38, 38, 0.12)',
+    color: '#991b1b',
+  },
+  neutral: {
+    background: 'rgba(100, 116, 139, 0.12)',
+    color: '#475569',
+  },
 };
 
 const drawerBackdropStyle = {

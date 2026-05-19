@@ -47,6 +47,55 @@ function formatDateLabel(value) {
   return `${day}/${month}/${year}`;
 }
 
+function formatShortDateLabel(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) {
+    return '-';
+  }
+
+  const [, month, day] = value.split('-');
+  return `${day}/${month}`;
+}
+
+function normalizeDateList(dates = []) {
+  return [...new Set(
+    (Array.isArray(dates) ? dates : [])
+      .map((date) => String(date || '').trim())
+      .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+  )].sort();
+}
+
+function normalizeEmployeeDatesMap(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([employeeId, dates]) => [String(Number(employeeId)), normalizeDateList(dates)])
+      .filter(([employeeId, dates]) => employeeId !== 'NaN' && dates.length)
+  );
+}
+
+function formatEmployeeName(employee) {
+  return `${employee?.last_name || ''} ${employee?.first_name || ''}`.trim();
+}
+
+function compareEmployeesByName(a, b) {
+  const lastCompare = String(a?.last_name || '').localeCompare(String(b?.last_name || ''), 'it', { sensitivity: 'base' });
+  if (lastCompare !== 0) return lastCompare;
+  return String(a?.first_name || '').localeCompare(String(b?.first_name || ''), 'it', { sensitivity: 'base' });
+}
+
+function employeeMatchesSearch(employee, label, search) {
+  const needle = String(search || '').trim().toLowerCase();
+  if (!needle) return true;
+  const haystack = [
+    label,
+    employee?.last_name,
+    employee?.first_name,
+    employee?.role,
+    ...(employee?.team_history || []).map((team) => team.name),
+  ].filter(Boolean).join(' ').toLowerCase();
+  return haystack.includes(needle);
+}
+
 function formatPeriodLabel(start, end) {
   if (!start || !end) return 'Periodo non definito';
   if (start === end) return formatDateLabel(start);
@@ -211,6 +260,7 @@ function blankDraft(employees, settings = null) {
     recipient_email: '',
     show_compensation_in_pdf: true,
     selected_employee_ids: rows.map((row) => row.employee_id).filter(Boolean),
+    employee_dates: {},
     notes: '',
     employer_labels: employerOptions,
     period_mode: 'monthly',
@@ -257,6 +307,12 @@ export default function CommunicationPage() {
   const [saving, setSaving] = useState(false);
   const [emailing, setEmailing] = useState(false);
   const [historySearch, setHistorySearch] = useState('');
+  const [employeeSearch, setEmployeeSearch] = useState('');
+  const [selectedTeamId, setSelectedTeamId] = useState('');
+  const [dateModal, setDateModal] = useState(null);
+  const [dateModalDates, setDateModalDates] = useState([]);
+  const [dateModalInput, setDateModalInput] = useState('');
+  const [dateModalError, setDateModalError] = useState('');
   const [historyOffset, setHistoryOffset] = useState(0);
   const [includeExcelInEmail, setIncludeExcelInEmail] = useState(true);
   const [draft, setDraft] = useState(blankDraft([]));
@@ -269,6 +325,7 @@ export default function CommunicationPage() {
   const [compensationPopoverPosition, setCompensationPopoverPosition] = useState({ left: 12, top: 12 });
   const compensationCloseTimerRef = useRef(null);
   const deferredHistorySearch = useDeferredValue(historySearch);
+  const deferredEmployeeSearch = useDeferredValue(employeeSearch);
 
   async function loadData() {
     setLoading(true);
@@ -276,7 +333,7 @@ export default function CommunicationPage() {
     const __t0 = __nowMs();
     try {
       const __empT0 = __nowMs();
-      const employeesPromise = window.api.employees.listBasic({ includePeriods: true });
+      const employeesPromise = window.api.employees.listBasic({ includePeriods: true, includeTeamHistory: true });
       const communicationsPromise = window.api.communications.list({
         year: selectedYear,
         search: deferredHistorySearch,
@@ -342,6 +399,12 @@ export default function CommunicationPage() {
   }, [selectedYear, deferredHistorySearch]);
 
   useEffect(() => {
+    if (dateModal) {
+      console.info('[communication-dates] modal rendered', { employeeId: dateModal.employeeId, label: dateModal.employeeLabel });
+    }
+  }, [dateModal]);
+
+  useEffect(() => {
     setDraft((current) => {
       if (current.id || current.period_mode !== 'monthly') {
         return current;
@@ -403,6 +466,52 @@ export default function CommunicationPage() {
     () => employees.filter((employee) => employeeIsActiveInYear(employee, communicationYear)),
     [employees, communicationYear]
   );
+  const employeeById = useMemo(
+    () => new Map(visibleEmployees.map((employee) => [Number(employee.id), employee])),
+    [visibleEmployees]
+  );
+  const teamOptions = useMemo(() => {
+    const teams = new Map();
+    visibleEmployees.forEach((employee) => {
+      (employee.team_history || []).forEach((team) => {
+        if (!team?.team_id || team.is_archived) return;
+        teams.set(String(team.team_id), {
+          id: String(team.team_id),
+          name: team.name || `Squadra ${team.team_id}`,
+        });
+      });
+    });
+    return [...teams.values()].sort((a, b) =>
+      String(a.name || '').localeCompare(String(b.name || ''), 'it', { sensitivity: 'base' })
+    );
+  }, [visibleEmployees]);
+  const filteredDetailEntries = useMemo(() =>
+    draft.details
+      .map((row, index) => ({
+        row,
+        index,
+        employee: employeeById.get(Number(row.employee_id)) || null,
+      }))
+      .filter(({ row, employee }) => {
+        const matchesTeam = !selectedTeamId || (employee?.team_history || []).some(
+          (team) => String(team.team_id) === String(selectedTeamId) && !team.is_archived
+        );
+        return matchesTeam && employeeMatchesSearch(employee, row.employee_label, deferredEmployeeSearch);
+      }),
+    [deferredEmployeeSearch, draft.details, employeeById, selectedTeamId]
+  );
+  const filteredEmployeeIds = useMemo(
+    () => filteredDetailEntries.map(({ row }) => row.employee_id).filter(Boolean),
+    [filteredDetailEntries]
+  );
+  const selectedTeamEmployees = useMemo(() => {
+    if (!selectedTeamId) return [];
+    return visibleEmployees
+      .filter((employee) =>
+        (employee.team_history || []).some((team) => String(team.team_id) === String(selectedTeamId) && !team.is_archived)
+      )
+      .sort(compareEmployeesByName);
+  }, [selectedTeamId, visibleEmployees]);
   const visibleCommunications = communications;
   const communicationCurrentPage = Math.floor(historyOffset / COMMUNICATION_PAGE_SIZE) + 1;
   const communicationTotalPages = Math.max(1, Math.ceil(communicationTotal / COMMUNICATION_PAGE_SIZE));
@@ -523,6 +632,7 @@ export default function CommunicationPage() {
       title: draft.title,
       recipient_email: draft.recipient_email,
       selected_employee_ids: draft.selected_employee_ids || [],
+      employee_dates: normalizeEmployeeDatesMap(draft.employee_dates || {}),
       show_compensation_in_pdf: draft.show_compensation_in_pdf !== false,
       notes: draft.notes,
       employer_labels: employerOptions,
@@ -648,6 +758,7 @@ export default function CommunicationPage() {
       selected_employee_ids: communication.selected_employee_ids?.length
         ? communication.selected_employee_ids
         : (communication.details || []).map((detail) => detail.employee_id).filter(Boolean),
+      employee_dates: normalizeEmployeeDatesMap(communication.employee_dates || {}),
       notes: communication.notes || '',
       employer_labels: communication.employer_labels || employerOptions,
       period_mode: communication.period_mode || 'monthly',
@@ -691,6 +802,87 @@ export default function CommunicationPage() {
       ...current,
       selected_employee_ids: [],
     }));
+  }
+
+  function selectFilteredPdfEmployees(employeeIds) {
+    const ids = employeeIds.map(Number).filter(Number.isFinite);
+    setDraft((current) => ({
+      ...current,
+      selected_employee_ids: [...new Set([...(current.selected_employee_ids || []), ...ids])],
+    }));
+  }
+
+  function clearFilteredPdfEmployees(employeeIds) {
+    const ids = new Set(employeeIds.map(Number).filter(Number.isFinite));
+    setDraft((current) => ({
+      ...current,
+      selected_employee_ids: (current.selected_employee_ids || []).filter((id) => !ids.has(Number(id))),
+    }));
+  }
+
+  function openEmployeeDatesModal(employee) {
+    console.info('[communication-dates] click Inserisci date', employee?.id);
+    if (!employee?.id) {
+      console.warn('[communication-dates] employee.id non trovato');
+      return;
+    }
+    const modalState = {
+      employeeId: Number(employee.id),
+      employeeLabel: formatEmployeeName(employee),
+      role: employee.role || '',
+    };
+    console.info('[communication-dates] open modal', modalState);
+    setDateModal(modalState);
+    setDateModalDates(normalizeDateList(draft.employee_dates?.[String(employee.id)] || []));
+    setDateModalInput(effectivePeriod.start || todayIso());
+    setDateModalError('');
+  }
+
+  function addDateToModal() {
+    const normalized = String(dateModalInput || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+      setDateModalError('Inserisci una data valida.');
+      return;
+    }
+    setDateModalDates((current) => normalizeDateList([...current, normalized]));
+    setDateModalInput('');
+    setDateModalError('');
+  }
+
+  function removeDateFromModal(dateValue) {
+    setDateModalDates((current) => current.filter((date) => date !== dateValue));
+    setDateModalError('');
+  }
+
+  function saveEmployeeDates() {
+    if (!dateModal?.employeeId) return;
+    const nextDates = normalizeDateList(dateModalDates);
+    if (!nextDates.length) {
+      setDateModalError('Inserisci almeno una data oppure usa "Cancella date".');
+      return;
+    }
+    console.info('[communication-dates] save dates', { employeeId: dateModal.employeeId, count: nextDates.length });
+    setDraft((current) => ({
+      ...current,
+      employee_dates: {
+        ...(current.employee_dates || {}),
+        [String(dateModal.employeeId)]: nextDates,
+      },
+    }));
+    setDateModal(null);
+  }
+
+  function clearEmployeeDates() {
+    if (!dateModal?.employeeId) return;
+    setDraft((current) => {
+      const nextDates = { ...(current.employee_dates || {}) };
+      delete nextDates[String(dateModal.employeeId)];
+      return {
+        ...current,
+        employee_dates: nextDates,
+      };
+    });
+    setDateModal(null);
   }
 
   function updateDetailRow(index, field, value) {
@@ -1031,23 +1223,101 @@ export default function CommunicationPage() {
             </div>
           </div>
 
-          <div style={pdfSelectionPanelStyle}>
-            <div style={pdfSelectionHeaderStyle}>
-              <div>
-                <div className="communication-field-label">Dipendenti inclusi nel PDF</div>
+          <div className="communication-selection-panel">
+            <div className="communication-selection-toolbar">
+              <label className="communication-search-field">
+                <span className="communication-field-label">Cerca dipendente</span>
+                <input
+                  className="search-input"
+                  value={employeeSearch}
+                  onChange={(event) => setEmployeeSearch(event.target.value)}
+                  placeholder="Cerca per nome, mansione o squadra..."
+                />
+              </label>
+
+              <label className="communication-team-field">
+                <span className="communication-field-label">Squadra</span>
+                <select value={selectedTeamId} onChange={(event) => setSelectedTeamId(event.target.value)}>
+                  <option value="">Tutte le squadre</option>
+                  {teamOptions.map((team) => (
+                    <option key={team.id} value={team.id}>{team.name}</option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="communication-selection-counter">
+                <span className="communication-field-label">Selezionati</span>
                 <strong>
-                  {(draft.selected_employee_ids || []).length} su {draft.details.filter((r) => r.employee_id).length} selezionati
+                  {(draft.selected_employee_ids || []).length} / {draft.details.filter((r) => r.employee_id).length}
                 </strong>
               </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button type="button" className="button-secondary" onClick={selectAllPdfEmployees}>
-                  Seleziona tutti
+
+              <div className="communication-selection-actions">
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={() => selectFilteredPdfEmployees(filteredEmployeeIds)}
+                  disabled={!filteredEmployeeIds.length}
+                >
+                  Seleziona filtrati
                 </button>
-                <button type="button" className="button-secondary" onClick={clearAllPdfEmployees}>
-                  Deseleziona tutti
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={() => clearFilteredPdfEmployees(filteredEmployeeIds)}
+                  disabled={!filteredEmployeeIds.length}
+                >
+                  Deseleziona filtrati
                 </button>
               </div>
             </div>
+
+            {selectedTeamId ? (
+              <div className="communication-team-members">
+                <div className="communication-team-members-title">
+                  <strong>{selectedTeamEmployees.length} dipendenti nella squadra</strong>
+                  <span>Inserisci date specifiche per ogni operaio, se servono nella comunicazione.</span>
+                </div>
+
+                {selectedTeamEmployees.length ? selectedTeamEmployees.map((employee) => {
+                  const dates = normalizeDateList(draft.employee_dates?.[String(employee.id)] || []);
+                  return (
+                    <div className="communication-team-member-row" key={employee.id}>
+                      <label className="communication-team-member-name">
+                        <input
+                          type="checkbox"
+                          checked={(draft.selected_employee_ids || []).includes(employee.id)}
+                          onChange={() => togglePdfEmployee(employee.id)}
+                        />
+                        <span>
+                          <strong>{formatEmployeeName(employee)}</strong>
+                          <small>{employee.role || 'Mansione non indicata'}</small>
+                        </span>
+                      </label>
+                      <div className="communication-date-box">
+                        {dates.length ? (
+                          <>
+                            <span>{dates.map(formatShortDateLabel).join(', ')}</span>
+                            <strong>Totale: {dates.length}</strong>
+                          </>
+                        ) : (
+                          <span>Nessuna data inserita</span>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        onClick={() => openEmployeeDatesModal(employee)}
+                      >
+                        Inserisci date
+                      </button>
+                    </div>
+                  );
+                }) : (
+                  <div className="empty-state" style={{ padding: 12 }}>Nessun dipendente in questa squadra.</div>
+                )}
+              </div>
+            ) : null}
           </div>
 
           {loading ? (
@@ -1064,18 +1334,21 @@ export default function CommunicationPage() {
                         type="checkbox"
                         aria-label="Seleziona tutti"
                         checked={
-                          draft.details.filter((r) => r.employee_id).length > 0 &&
-                          (draft.selected_employee_ids || []).length ===
-                            draft.details.filter((r) => r.employee_id).length
+                          filteredEmployeeIds.length > 0 &&
+                          filteredEmployeeIds.every((id) => (draft.selected_employee_ids || []).includes(id))
                         }
                         ref={(el) => {
                           if (el) {
-                            const total = draft.details.filter((r) => r.employee_id).length;
-                            const sel = (draft.selected_employee_ids || []).length;
+                            const total = filteredEmployeeIds.length;
+                            const sel = filteredEmployeeIds.filter((id) => (draft.selected_employee_ids || []).includes(id)).length;
                             el.indeterminate = sel > 0 && sel < total;
                           }
                         }}
-                        onChange={(e) => (e.target.checked ? selectAllPdfEmployees() : clearAllPdfEmployees())}
+                        onChange={(e) => (
+                          e.target.checked
+                            ? selectFilteredPdfEmployees(filteredEmployeeIds)
+                            : clearFilteredPdfEmployees(filteredEmployeeIds)
+                        )}
                       />
                 </div>
                 <div className="communication-name-cell">Nome dipendente</div>
@@ -1085,7 +1358,12 @@ export default function CommunicationPage() {
                 <div>Note</div>
               </div>
               <div className="communication-days-grid-body">
-                  {draft.details.map((row, index) => {
+                  {!filteredDetailEntries.length ? (
+                    <div className="empty-state" style={{ padding: 18 }}>
+                      Nessun dipendente trovato con i filtri correnti.
+                    </div>
+                  ) : null}
+                  {filteredDetailEntries.map(({ row, index }) => {
                     const rowKey = `${row.employee_id || 'manual'}_${index}`;
                     const compensation = buildCompensationSummary(payrollByEmployee[String(row.employee_id)], communicationMonth);
                     const isCompensationOpen = activeCompensationKey === rowKey || lockedCompensationKey === rowKey;
@@ -1401,6 +1679,81 @@ export default function CommunicationPage() {
           </div>
         )}
       </section>
+
+      {dateModal ? createPortal(
+        <div className="modal-backdrop">
+          <div className="communication-date-modal">
+            <div className="modal-header">
+              <div>
+                <h2>Inserisci date</h2>
+                <p>
+                  {dateModal.employeeLabel}
+                  {dateModal.role ? ` - ${dateModal.role}` : ''}
+                </p>
+              </div>
+              <button type="button" className="modal-close" onClick={() => setDateModal(null)}>
+                ×
+              </button>
+            </div>
+
+            <div className="communication-date-modal-body">
+              <div className="communication-date-add-row">
+                <input
+                  type="date"
+                  value={dateModalInput}
+                  onChange={(event) => setDateModalInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      addDateToModal();
+                    }
+                  }}
+                />
+                <button type="button" className="button-secondary" onClick={addDateToModal}>
+                  Aggiungi data
+                </button>
+              </div>
+
+              {dateModalError ? <div className="form-error">{dateModalError}</div> : null}
+
+              <div className="communication-date-chip-list">
+                {dateModalDates.length ? dateModalDates.map((date) => (
+                  <span className="communication-date-chip" key={date}>
+                    {formatShortDateLabel(date)}
+                    <button type="button" onClick={() => removeDateFromModal(date)} aria-label={`Rimuovi ${formatDateLabel(date)}`}>
+                      ×
+                    </button>
+                  </span>
+                )) : (
+                  <div className="empty-state" style={{ padding: 12 }}>Nessuna data inserita.</div>
+                )}
+              </div>
+
+              <div className="communication-date-total">
+                Totale date: <strong>{dateModalDates.length}</strong>
+              </div>
+            </div>
+
+            <div className="modal-actions">
+              <button type="button" className="button-secondary" onClick={() => setDateModal(null)}>
+                Annulla
+              </button>
+              <button
+                type="button"
+                className="button-danger"
+                onClick={clearEmployeeDates}
+                disabled={!normalizeDateList(draft.employee_dates?.[String(dateModal.employeeId)] || []).length}
+              >
+                Cancella date
+              </button>
+              <button type="button" className="button" onClick={saveEmployeeDates}>
+                Salva date
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      ) : null}
     </div>
   );
 }

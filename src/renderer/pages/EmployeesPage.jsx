@@ -610,6 +610,7 @@ export default function EmployeesPage() {
   const [sortDirection, setSortDirection] = useState('asc');
   const [busyEmployeeIds, setBusyEmployeeIds] = useState([]);
   const [busyTeamIds, setBusyTeamIds] = useState([]);
+  const searchInputRef = useRef(null);
   const pdfImportOperationRef = useRef({ id: 0, cancelled: false });
   const mountedRef = useRef(false);
   const requestedEmployeeId = searchParams.get('employee');
@@ -646,6 +647,32 @@ export default function EmployeesPage() {
         return current.includes(normalizedId) ? current : [...current, normalizedId];
       }
       return current.filter((id) => id !== normalizedId);
+    });
+  }
+
+  function logSearchEvent(eventName, details = {}) {
+    try {
+      const active = document.activeElement;
+      console.info(`[employees-search] ${eventName}`, {
+        disabled: !!searchInputRef.current?.disabled,
+        activeElement: active
+          ? `${active.tagName.toLowerCase()}${active.id ? `#${active.id}` : ''}${active.className ? `.${String(active.className).replace(/\s+/g, '.')}` : ''}`
+          : 'none',
+        ...details,
+      });
+    } catch {}
+  }
+
+  function focusSearchInput(reason) {
+    const input = searchInputRef.current;
+    if (!input || input.disabled) {
+      logSearchEvent('disabled state', { reason, hasInput: !!input });
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      input.focus({ preventScroll: true });
+      logSearchEvent('activeElement', { reason });
     });
   }
 
@@ -1182,6 +1209,18 @@ export default function EmployeesPage() {
     setPdfImportData(null);
   }
 
+  useEffect(() => {
+    if (showForm || showTeamForm || editing || editingTeam || showPdfImport) {
+      return;
+    }
+
+    const active = document.activeElement;
+    if (active && active.classList?.contains('modal-close')) {
+      active.blur();
+      logSearchEvent('activeElement', { reason: 'blur-hidden-modal-close' });
+    }
+  }, [showForm, showTeamForm, editing, editingTeam, showPdfImport]);
+
   function toggleSection(name) {
     setOpenSection(prev => (prev === name ? null : name));
   }
@@ -1425,12 +1464,25 @@ export default function EmployeesPage() {
           </div>
         </section>
 
-        <div className="toolbar" style={{ padding: '8px 10px', gap: 7 }}>
+        <div className="toolbar employees-search-toolbar" style={{ padding: '8px 10px', gap: 7 }}>
           <div className="toolbar-group">
             <input
+              ref={searchInputRef}
+              type="search"
               className="search-input"
               placeholder="Cerca per nome, mansione, contatto o datore..."
               value={search}
+              disabled={false}
+              onPointerDown={() => {
+                logSearchEvent('click', { phase: 'pointerdown' });
+                focusSearchInput('pointerdown');
+              }}
+              onClick={() => {
+                logSearchEvent('click', { phase: 'click' });
+                focusSearchInput('click');
+              }}
+              onFocus={() => logSearchEvent('focus')}
+              onBlur={() => logSearchEvent('blur')}
               onChange={e => setSearch(e.target.value)}
               style={{ maxWidth: 280, minHeight: 34, padding: '7px 12px' }}
             />

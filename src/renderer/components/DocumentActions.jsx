@@ -18,6 +18,8 @@ export default function DocumentActions({
   deleteLabel = 'Elimina file',
   emptyLabel = 'Nessun file allegato',
   missingLabel = 'File non trovato sul disco',
+  loading = false,
+  loadingLabel = 'Salvataggio in corso...',
   compact = false,
 }) {
   const hasDocument = !!document;
@@ -44,24 +46,40 @@ export default function DocumentActions({
         {hasDocument ? (
           <span style={{ fontSize: 12, color: exists ? '#667085' : '#b91c1c' }}>
             {exists ? 'File disponibile localmente' : missingLabel}
-            {sizeLabel ? ` · ${sizeLabel}` : ''}
+            {sizeLabel ? ` • ${sizeLabel}` : ''}
           </span>
         ) : (
           <span style={{ fontSize: 12, color: '#667085' }}>
             Supportati PDF e immagini.
           </span>
         )}
+        {loading ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#1d4ed8', fontWeight: 700 }}>
+            <span
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: '50%',
+                border: '2px solid rgba(37, 99, 235, 0.25)',
+                borderTopColor: '#2563eb',
+                animation: 'spin 0.8s linear infinite',
+              }}
+              aria-hidden="true"
+            />
+            {loadingLabel}
+          </span>
+        ) : null}
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button className="button-secondary" type="button" onClick={onUpload}>
-          {resolvedUploadLabel}
+        <button className="button-secondary" type="button" onClick={onUpload} disabled={loading}>
+          {loading ? 'Attendere...' : resolvedUploadLabel}
         </button>
         <button
           className="button"
           type="button"
           onClick={onOpen}
-          disabled={!hasDocument}
+          disabled={!hasDocument || loading}
         >
           {openLabel}
         </button>
@@ -69,7 +87,7 @@ export default function DocumentActions({
           className="button-danger"
           type="button"
           onClick={onDelete}
-          disabled={!hasDocument}
+          disabled={!hasDocument || loading}
         >
           {deleteLabel}
         </button>

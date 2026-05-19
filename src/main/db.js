@@ -343,6 +343,7 @@ function runCoreSchemaMigration(database) {
       employer_labels_json TEXT,
       recipient_email TEXT,
       selected_employee_ids_json TEXT DEFAULT '[]',
+      employee_dates_json TEXT DEFAULT '{}',
       show_compensation_in_pdf INTEGER DEFAULT 1,
       notes TEXT,
       pdf_relative_path TEXT,
@@ -443,6 +444,7 @@ function runCoreSchemaMigration(database) {
   ensureColumn(database, 'communications', 'excel_sha256', 'TEXT');
   ensureColumn(database, 'communications', 'excel_created_at', 'TEXT');
   ensureColumn(database, 'communications', 'selected_employee_ids_json', "TEXT DEFAULT '[]'");
+  ensureColumn(database, 'communications', 'employee_dates_json', "TEXT DEFAULT '{}'");
   ensureColumn(database, 'communications', 'show_compensation_in_pdf', 'INTEGER DEFAULT 1');
 
   ensureColumn(database, 'payroll_records', 'datore', 'TEXT');
@@ -573,6 +575,7 @@ function runDocumentArtifactMetadataMigration(database) {
     { name: 'excel_sha256', definition: 'TEXT' },
     { name: 'excel_created_at', definition: 'TEXT' },
     { name: 'selected_employee_ids_json', definition: "TEXT DEFAULT '[]'" },
+    { name: 'employee_dates_json', definition: "TEXT DEFAULT '{}'" },
   ]);
 }
 

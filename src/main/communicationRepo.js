@@ -65,6 +65,15 @@ function formatDateLabel(value) {
   return `${day}/${month}/${year}`;
 }
 
+function formatShortDateLabel(value) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return '-';
+  }
+
+  const [, month, day] = value.split('-');
+  return `${day}/${month}`;
+}
+
 function formatPeriodLabel(periodStart, periodEnd) {
   if (!periodStart || !periodEnd) {
     return 'Periodo non definito';
@@ -193,11 +202,42 @@ function parseJsonArray(value, fallback = []) {
   }
 }
 
+function parseJsonObject(value, fallback = {}) {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeEmployeeDatesMap(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(
+    Object.entries(source)
+      .map(([employeeId, dates]) => {
+        const normalizedId = String(Number(employeeId));
+        const normalizedDates = [...new Set(
+          (Array.isArray(dates) ? dates : [])
+            .map((date) => String(date || '').trim())
+            .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+        )].sort();
+        return [normalizedId, normalizedDates];
+      })
+      .filter(([employeeId, dates]) => employeeId !== 'NaN' && dates.length)
+  );
+}
+
 function ensureCommunicationsSchema(db) {
   const columns = db.prepare("PRAGMA table_info(communications)").all();
   const existingColumns = new Set(columns.map((column) => column.name));
   const requiredColumns = [
     { name: 'selected_employee_ids_json', definition: "TEXT DEFAULT '[]'" },
+    { name: 'employee_dates_json', definition: "TEXT DEFAULT '{}'" },
     { name: 'show_compensation_in_pdf', definition: 'INTEGER DEFAULT 1' },
     { name: 'period_mode', definition: "TEXT NOT NULL DEFAULT 'monthly'" },
     { name: 'period_start', definition: 'TEXT' },
@@ -225,12 +265,14 @@ function ensureCommunicationsSchema(db) {
 function mapCommunicationRow(row, details = []) {
   const employerLabels = parseJsonArray(row.employer_labels_json, []);
   const selectedEmployeeIds = parseJsonArray(row.selected_employee_ids_json, []);
+  const employeeDates = normalizeEmployeeDatesMap(parseJsonObject(row.employee_dates_json, {}));
 
   return {
     ...row,
     detail_count: Number(row.detail_count || details.length || 0),
     employer_labels: Array.isArray(employerLabels) ? employerLabels : [],
     selected_employee_ids: Array.isArray(selectedEmployeeIds) ? selectedEmployeeIds.map((value) => Number(value)).filter(Number.isFinite) : [],
+    employee_dates: employeeDates,
     show_compensation_in_pdf: row.show_compensation_in_pdf !== 0,
     details,
     pdf_file: row.pdf_relative_path
@@ -475,6 +517,7 @@ function normalizeCommunicationPayload(payload = {}) {
         .map((value) => Number(value))
         .filter(Number.isFinite)
     ),
+    employee_dates_json: JSON.stringify(normalizeEmployeeDatesMap(payload.employee_dates || payload.employee_dates_json || {})),
     show_compensation_in_pdf: payload.show_compensation_in_pdf !== false ? 1 : 0,
     notes: normalizeString(payload.notes),
     details: validDetails,
@@ -529,6 +572,7 @@ function saveCommunication(payload = {}) {
             employer_labels_json = @employer_labels_json,
             recipient_email = @recipient_email,
             selected_employee_ids_json = @selected_employee_ids_json,
+            employee_dates_json = @employee_dates_json,
             show_compensation_in_pdf = @show_compensation_in_pdf,
             notes = @notes,
             updated_at = CURRENT_TIMESTAMP
@@ -542,9 +586,9 @@ function saveCommunication(payload = {}) {
     } else {
       const result = db.prepare(`
         INSERT INTO communications (
-          period_mode, period_start, period_end, month_reference, company_name, title, employer_labels_json, recipient_email, selected_employee_ids_json, show_compensation_in_pdf, notes
+          period_mode, period_start, period_end, month_reference, company_name, title, employer_labels_json, recipient_email, selected_employee_ids_json, employee_dates_json, show_compensation_in_pdf, notes
         ) VALUES (
-          @period_mode, @period_start, @period_end, @month_reference, @company_name, @title, @employer_labels_json, @recipient_email, @selected_employee_ids_json, @show_compensation_in_pdf, @notes
+          @period_mode, @period_start, @period_end, @month_reference, @company_name, @title, @employer_labels_json, @recipient_email, @selected_employee_ids_json, @employee_dates_json, @show_compensation_in_pdf, @notes
         )
       `).run(input);
       communicationId = result.lastInsertRowid;
@@ -670,12 +714,17 @@ function buildCommunicationPdfHtml(communication) {
     ? communication.details.filter((detail) => selectedIds.includes(Number(detail.employee_id)))
     : communication.details;
   const showCompensationColumn = communication.show_compensation_in_pdf !== false;
+  const employeeDates = normalizeEmployeeDatesMap(communication.employee_dates || {});
+  const hasEmployeeDates = filteredDetails.some((detail) => employeeDates[String(detail.employee_id)]?.length);
   const rowsHtml = filteredDetails.map((detail) => {
     const compensation = getDetailCompensation(detail, communicationMonth);
+    const dates = employeeDates[String(detail.employee_id)] || [];
+    const datesLabel = dates.length ? dates.map(formatShortDateLabel).join(', ') : '';
 
     return `
       <tr>
         <td>${escapeHtml(detail.employee_label)}</td>
+        ${hasEmployeeDates ? `<td>${escapeHtml(datesLabel || '-')}</td><td style="text-align:center;">${dates.length || '-'}</td>` : ''}
         <td style="text-align:center;">${escapeHtml(formatDecimal(detail.giornate_primo))}</td>
         ${secondaryEmployer ? `<td style="text-align:center;">${escapeHtml(formatDecimal(detail.giornate_secondo))}</td>` : ''}
         ${showCompensationColumn ? `<td style="text-align:right; white-space:nowrap; font-weight:700;">${compensation ? escapeHtml(formatCurrency(compensation.totale)) : '&mdash;'}</td>` : ''}
@@ -704,6 +753,7 @@ function buildCommunicationPdfHtml(communication) {
         <thead>
           <tr>
             <th style="padding:10px 12px; text-align:left;">Nome dipendente</th>
+            ${hasEmployeeDates ? '<th style="padding:10px 12px; text-align:left;">Date</th><th style="padding:10px 12px; text-align:center;">Totale</th>' : ''}
             <th style="padding:10px 12px; text-align:center;">${escapeHtml(`${employerLabels[0]?.short_name || 'D1'} (${employerLabels[0]?.name || 'Datore 1'})`)}</th>
             ${secondaryEmployer ? `<th style="padding:10px 12px; text-align:center;">${escapeHtml(`${secondaryEmployer.short_name} (${secondaryEmployer.name})`)}</th>` : ''}
             ${showCompensationColumn ? '<th style="padding:10px 12px; text-align:right;">Compenso</th>' : ''}
@@ -731,13 +781,22 @@ function buildCommunicationExcelXml(communication) {
     : settingsService.getEmployerOptions(settings);
   const secondaryEmployer = employerLabels[1] || null;
   const communicationMonth = getCommunicationMonth(communication);
-  const mergeAcross = secondaryEmployer ? 4 : 3;
-  const rows = communication.details.map((detail) => {
+  const selectedIds = Array.isArray(communication.selected_employee_ids) ? communication.selected_employee_ids : [];
+  const filteredDetails = selectedIds.length
+    ? communication.details.filter((detail) => selectedIds.includes(Number(detail.employee_id)))
+    : communication.details;
+  const employeeDates = normalizeEmployeeDatesMap(communication.employee_dates || {});
+  const hasEmployeeDates = filteredDetails.some((detail) => employeeDates[String(detail.employee_id)]?.length);
+  const mergeAcross = (secondaryEmployer ? 4 : 3) + (hasEmployeeDates ? 2 : 0);
+  const rows = filteredDetails.map((detail) => {
     const compensation = getDetailCompensation(detail, communicationMonth);
+    const dates = employeeDates[String(detail.employee_id)] || [];
+    const datesLabel = dates.length ? dates.map(formatShortDateLabel).join(', ') : '';
 
     return `
         <Row>
           <Cell><Data ss:Type="String">${escapeXml(detail.employee_label)}</Data></Cell>
+          ${hasEmployeeDates ? `<Cell><Data ss:Type="String">${escapeXml(datesLabel || '-')}</Data></Cell><Cell><Data ss:Type="Number">${dates.length}</Data></Cell>` : ''}
           <Cell><Data ss:Type="Number">${normalizeNumber(detail.giornate_primo)}</Data></Cell>
           ${secondaryEmployer ? `<Cell><Data ss:Type="Number">${normalizeNumber(detail.giornate_secondo)}</Data></Cell>` : ''}
           ${compensation ? `<Cell ss:StyleID="Money"><Data ss:Type="Number">${normalizeNumber(compensation.totale)}</Data></Cell>` : '<Cell><Data ss:Type="String">-</Data></Cell>'}
@@ -771,6 +830,7 @@ function buildCommunicationExcelXml(communication) {
   <Worksheet ss:Name="Comunicazione">
     <Table>
       <Column ss:Width="220"/>
+      ${hasEmployeeDates ? '<Column ss:Width="220"/><Column ss:Width="70"/>' : ''}
       <Column ss:Width="120"/>
       ${secondaryEmployer ? '<Column ss:Width="120"/>' : ''}
       <Column ss:Width="130"/>
@@ -787,6 +847,7 @@ function buildCommunicationExcelXml(communication) {
       <Row/>
       <Row>
         <Cell ss:StyleID="Header"><Data ss:Type="String">Nome dipendente</Data></Cell>
+        ${hasEmployeeDates ? '<Cell ss:StyleID="Header"><Data ss:Type="String">Date</Data></Cell><Cell ss:StyleID="Header"><Data ss:Type="String">Totale date</Data></Cell>' : ''}
         <Cell ss:StyleID="Header"><Data ss:Type="String">${escapeXml(`${employerLabels[0]?.short_name || 'D1'} (${employerLabels[0]?.name || 'Datore 1'})`)}</Data></Cell>
         ${secondaryEmployer ? `<Cell ss:StyleID="Header"><Data ss:Type="String">${escapeXml(`${secondaryEmployer.short_name} (${secondaryEmployer.name})`)}</Data></Cell>` : ''}
         <Cell ss:StyleID="Header"><Data ss:Type="String">Compenso mese</Data></Cell>
