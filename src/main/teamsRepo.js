@@ -4,6 +4,11 @@ function normalizeAttendanceMode(value) {
   return value === 'headcount' ? 'headcount' : 'details';
 }
 
+function normalizeTeamDailyRate(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
 function normalizeMemberInput(member, index) {
   return {
     employee_id: Number(member.employee_id),
@@ -85,6 +90,7 @@ function attachTeamMembers(teamRows) {
   return teamRows.map((team) => ({
     ...team,
     attendance_mode: normalizeAttendanceMode(team.attendance_mode),
+    team_daily_rate: normalizeTeamDailyRate(team.team_daily_rate),
     is_archived: !!team.is_archived,
     members: membersByTeam.get(team.id) || [],
   }));
@@ -125,12 +131,13 @@ function createTeam(payload) {
 
   const tx = db.transaction(() => {
     const result = db.prepare(`
-      INSERT INTO teams (name, notes, attendance_mode, is_archived, archived_at)
-      VALUES (?, ?, ?, 0, NULL)
+      INSERT INTO teams (name, notes, attendance_mode, team_daily_rate, is_archived, archived_at)
+      VALUES (?, ?, ?, ?, 0, NULL)
     `).run(
       payload.name?.trim() || '',
       payload.notes || null,
-      normalizeAttendanceMode(payload.attendance_mode)
+      normalizeAttendanceMode(payload.attendance_mode),
+      normalizeTeamDailyRate(payload.team_daily_rate)
     );
 
     const teamId = result.lastInsertRowid;
@@ -167,12 +174,13 @@ function updateTeam(id, payload) {
   const tx = db.transaction(() => {
     db.prepare(`
       UPDATE teams
-      SET name = ?, notes = ?, attendance_mode = ?, updated_at = CURRENT_TIMESTAMP
+      SET name = ?, notes = ?, attendance_mode = ?, team_daily_rate = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `).run(
       payload.name?.trim() || '',
       payload.notes || null,
       normalizeAttendanceMode(payload.attendance_mode),
+      normalizeTeamDailyRate(payload.team_daily_rate),
       teamId
     );
 

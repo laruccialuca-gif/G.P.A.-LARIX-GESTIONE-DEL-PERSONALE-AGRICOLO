@@ -186,6 +186,20 @@ function getReportCellValue(att, hoursFormat = 'decimal') {
   return formatReportHoursValue(att.hours_worked);
 }
 
+function formatTeamAttendanceCell(record, defaultHours = 7) {
+  const headcount = Number(record?.headcount || 0);
+  if (headcount <= 0) return '';
+  const hoursPerPerson = Number(record?.hours_per_person || 0);
+  const safeHours = hoursPerPerson > 0 ? hoursPerPerson : defaultHours;
+  const headcountLabel = Number.isInteger(headcount)
+    ? String(headcount)
+    : headcount.toFixed(2).replace(/\.?0+$/, '');
+  const hoursLabel = Number.isInteger(safeHours)
+    ? String(safeHours)
+    : safeHours.toFixed(2).replace(/\.?0+$/, '');
+  return `${headcountLabel}\u00d7${hoursLabel}`;
+}
+
 function formatReportHoursValue(value) {
   const hours = Number(value || 0);
   if (!hours) return '';
@@ -624,6 +638,7 @@ export default function ReportPage() {
   const [employees, setEmployees] = useState([]);
   const [teams, setTeams] = useState([]);
   const [attendance, setAttendance] = useState([]);
+  const [teamAttendance, setTeamAttendance] = useState([]);
   const [settings, setSettings] = useState(null);
   const [selectedEntity, setSelectedEntity] = useState('');
   const [reportSearchTerm, setReportSearchTerm] = useState('');
@@ -900,15 +915,20 @@ export default function ReportPage() {
   }
 
   const reloadAttendanceData = useCallback(async () => {
-    const attendanceChunks = await Promise.all(
-      queryMonths.map((entry) => window.api.attendance.listByMonth(entry.year, entry.month))
-    );
+    const [attendanceChunks, teamAttendanceChunks] = await Promise.all([
+      Promise.all(queryMonths.map((entry) => window.api.attendance.listByMonth(entry.year, entry.month))),
+      isTeamMode
+        ? Promise.all(queryMonths.map((entry) => window.api.attendance.listTeamByMonth(entry.year, entry.month)))
+        : Promise.resolve([]),
+    ]);
     const flattenedAttendance = attendanceChunks.flat();
+    const flattenedTeamAttendance = teamAttendanceChunks.flat();
     if (mountedRef.current) {
       setAttendance(flattenedAttendance);
+      setTeamAttendance(flattenedTeamAttendance);
     }
-    return flattenedAttendance;
-  }, [queryMonths]);
+    return { attendance: flattenedAttendance, teamAttendance: flattenedTeamAttendance };
+  }, [isTeamMode, queryMonths]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1211,7 +1231,7 @@ export default function ReportPage() {
       }
 
       try {
-        const flattenedAttendance = await reloadAttendanceData();
+        const loadedAttendance = await reloadAttendanceData();
         if (cancelled || !mountedRef.current) {
           console.info('[route-lifecycle] async cancelled', {
             page: 'Report',
@@ -1222,7 +1242,8 @@ export default function ReportPage() {
         logReportPerf('page:attendance-load:end', {
           duration_ms: Date.now() - startedAt,
           months_count: queryMonths.length,
-          attendance_count: flattenedAttendance.length,
+          attendance_count: loadedAttendance.attendance.length,
+          team_attendance_count: loadedAttendance.teamAttendance.length,
         });
       } catch (err) {
         console.error(err);
@@ -2935,6 +2956,44 @@ export default function ReportPage() {
     [attendanceBaseHours, attendanceByEmployeeId, safeTeamEnd, safeTeamStart, selectedTeam, selectedYear, teamPayrollMap]
   );
 
+  const selectedTeamAttendanceRows = useMemo(
+    () =>
+      (teamAttendance || [])
+        .filter((record) =>
+          Number(record.team_id) === Number(selectedTeam?.id) &&
+          isDateWithinRange(record.date, safeTeamStart, safeTeamEnd)
+        )
+        .sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))),
+    [safeTeamEnd, safeTeamStart, selectedTeam?.id, teamAttendance]
+  );
+
+  const selectedTeamAttendanceByDate = useMemo(
+    () => new Map(selectedTeamAttendanceRows.map((record) => [record.date, record])),
+    [selectedTeamAttendanceRows]
+  );
+
+  const teamDailyRate = Number(selectedTeam?.team_daily_rate || 0);
+  const teamHeadcountTotals = useMemo(() => {
+    return selectedTeamAttendanceRows.reduce((acc, record) => {
+      const headcount = Number(record.headcount || 0);
+      const hoursPerPerson = Number(record.hours_per_person || attendanceBaseHours);
+      const safeHoursPerPerson = Number.isFinite(hoursPerPerson) && hoursPerPerson > 0
+        ? hoursPerPerson
+        : attendanceBaseHours;
+      const dayHours = headcount > 0 ? headcount * safeHoursPerPerson : 0;
+      const equivalentDays = attendanceBaseHours > 0 ? dayHours / attendanceBaseHours : 0;
+      return {
+        totalHeadcount: acc.totalHeadcount + headcount,
+        totalHours: acc.totalHours + dayHours,
+        equivalentDays: acc.equivalentDays + equivalentDays,
+      };
+    }, {
+      totalHeadcount: 0,
+      totalHours: 0,
+      equivalentDays: 0,
+    });
+  }, [attendanceBaseHours, selectedTeamAttendanceRows]);
+
   const teamTransportTotal = teamTransportEnabled ? normalizeCurrency(teamTransportAmount) : 0;
   const teamAdvancesTotal = filteredTeamAdvances.reduce((sum, advance) => sum + advance.amount, 0);
   const teamTotals = useMemo(
@@ -2958,7 +3017,8 @@ export default function ReportPage() {
     [teamRows]
   );
 
-  const teamFinalBalance = teamTotals.totalCompensation + teamTransportTotal - teamAdvancesTotal;
+  const teamGrossCompensation = teamHeadcountTotals.equivalentDays * teamDailyRate;
+  const teamFinalBalance = teamGrossCompensation;
 
   return (
     <div className="page report-page">
@@ -4084,6 +4144,11 @@ export default function ReportPage() {
           teamPeriodDays={teamPeriodDays}
           teamRows={teamRows}
           teamTotals={teamTotals}
+          teamAttendanceByDate={selectedTeamAttendanceByDate}
+          teamHeadcountTotals={teamHeadcountTotals}
+          teamDailyRate={teamDailyRate}
+          teamGrossCompensation={teamGrossCompensation}
+          attendanceBaseHours={attendanceBaseHours}
           hoursFormat={hoursFormat}
           teamTransportEnabled={teamTransportEnabled}
           teamTransportDescription={teamTransportDescription}
@@ -4995,6 +5060,11 @@ function TeamPrintArea({
   teamPeriodDays,
   teamRows,
   teamTotals,
+  teamAttendanceByDate,
+  teamHeadcountTotals,
+  teamDailyRate,
+  teamGrossCompensation,
+  attendanceBaseHours,
   hoursFormat,
   teamTransportEnabled,
   teamTransportDescription,
@@ -5004,21 +5074,23 @@ function TeamPrintArea({
   teamFinalBalance,
   teamNotes,
 }) {
+  const equivalentDaysLabel = formatReportHoursValue(teamHeadcountTotals.equivalentDays);
+
   return (
     <div className="print-area">
       <div style={{ display: 'block' }}>
         <div style={{ ...printCardStyle, marginBottom: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
             <div>
-              <div className="page-kicker" style={{ marginBottom: 6 }}>Riepilogo squadra</div>
+              <div className="page-kicker" style={{ marginBottom: 6 }}>Report squadra</div>
               <div style={{ fontSize: 28, fontWeight: 800 }}>{selectedTeam.name}</div>
               <div style={{ color: '#667085', marginTop: 6 }}>Periodo selezionato: {teamPeriodLabel}</div>
             </div>
 
             <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))' }}>
-              <SummaryMiniCard label="Componenti" value={String(teamRows.length)} />
-              <SummaryMiniCard label="Ore squadra" value={formatHoursValue(teamTotals.totalHours, hoursFormat)} />
-              <SummaryMiniCard label="Compenso stimato" value={formatCurrency(teamTotals.totalCompensation)} />
+              <SummaryMiniCard label="Giornate equivalenti" value={equivalentDaysLabel} />
+              <SummaryMiniCard label="Ore totali squadra" value={formatHoursValue(teamHeadcountTotals.totalHours, hoursFormat)} />
+              <SummaryMiniCard label="Compenso squadra" value={formatCurrency(teamGrossCompensation)} />
             </div>
           </div>
 
@@ -5029,172 +5101,72 @@ function TeamPrintArea({
         <div style={{ ...printCardStyle, marginBottom: 14 }}>
           <div style={printSectionTitleStyle}>Riepilogo generale squadra</div>
           <div style={statsGridStyle}>
-            <MetricCard label="Totale ore periodo" value={formatHoursValue(teamTotals.totalHours, hoursFormat)} />
-            <MetricCard label="Giornate registrate" value={String(teamTotals.totalWorkedDays)} />
-            <MetricCard label="Compenso stimato" value={formatCurrency(teamTotals.totalCompensation)} />
-            <MetricCard label="Acconti squadra" value={formatCurrency(teamAdvancesTotal)} />
-            <MetricCard label="Trasporto squadra" value={teamTransportEnabled ? formatCurrency(teamTransportTotal) : '—'} />
-            <MetricCard label="Saldo finale squadra" value={formatCurrency(teamFinalBalance)} strong />
+            <MetricCard label="Giornate equivalenti squadra" value={equivalentDaysLabel} />
+            <MetricCard label="Ore totali squadra" value={formatHoursValue(teamHeadcountTotals.totalHours, hoursFormat)} />
+            <MetricCard label="Compenso squadra" value={formatCurrency(teamGrossCompensation)} strong />
           </div>
         </div>
 
         <div style={{ ...printCardStyle, marginBottom: 14 }}>
-          <div style={printSectionTitleStyle}>Dettaglio economico squadra</div>
+          <div style={printSectionTitleStyle}>Compenso squadra</div>
           <table style={printTableStyle}>
             <tbody>
               <tr>
-                <td style={tdLabel}>Compenso stimato squadra</td>
-                <td style={tdCenter}>{formatCurrency(teamTotals.totalCompensation)}</td>
+                <td style={tdLabel}>Giornate equivalenti</td>
+                <td style={tdCenter}>{equivalentDaysLabel}</td>
               </tr>
               <tr>
-                <td style={tdLabel}>Trasporto squadra</td>
-                <td style={tdCenter}>
-                  {teamTransportEnabled ? `${formatCurrency(teamTransportTotal)}${teamTransportDescription ? ` • ${teamTransportDescription}` : ''}` : '—'}
-                </td>
+                <td style={tdLabel}>Tariffa giornaliera squadra</td>
+                <td style={tdCenter}>{formatCurrency(teamDailyRate)}</td>
               </tr>
               <tr>
-                <td style={tdLabel}>Acconti squadra</td>
-                <td style={tdCenter}>{filteredTeamAdvances.length ? formatCurrency(teamAdvancesTotal) : '-'}</td>
-              </tr>
-              <tr>
-                <td style={{ ...tdLabel, fontWeight: 800 }}>Saldo finale</td>
-                <td style={{ ...tdCenter, fontWeight: 800 }}>{formatCurrency(teamFinalBalance)}</td>
+                <td style={{ ...tdLabel, fontWeight: 800 }}>Totale compenso lordo</td>
+                <td style={{ ...tdCenter, fontWeight: 800 }}>{formatCurrency(teamGrossCompensation)}</td>
               </tr>
             </tbody>
           </table>
-
-          {filteredTeamAdvances.length ? (
-            <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
-              {filteredTeamAdvances.map((advance) => (
-                <div key={advance.id} style={summaryRow}>
-                  <span style={{ width: 220, fontWeight: 700 }}>
-                    Acconto squadra{advance.date ? ` del ${advance.date}` : ''}
-                  </span>
-                  <span style={{ flex: 1, color: '#667085' }}>{advance.description || 'Nessuna descrizione'}</span>
-                  <span style={{ fontWeight: 800 }}>{formatCurrency(advance.amount)}</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
         </div>
 
         <div style={{ ...printCardStyle, marginBottom: 14 }}>
-          <div style={printSectionTitleStyle}>Presenze componenti nel periodo</div>
+          <div style={printSectionTitleStyle}>Calendario presenze squadra</div>
           <table style={{ ...printTableStyle, fontSize: 9 }}>
             <thead>
               <tr>
-                <th style={thLeft}>Componente</th>
+                <th style={thLeft}>Squadra</th>
                 {teamPeriodDays.map((day) => (
                   <th key={formatLocalDate(day)} style={thCenter}>{day.getDate()}</th>
                 ))}
                 <th style={thCenter}>Ore</th>
-                <th style={thCenter}>Riepilogo</th>
-                <th style={thCenter}>Compenso stimato</th>
+                <th style={thCenter}>Giornate eq.</th>
+                <th style={thCenter}>Compenso</th>
               </tr>
             </thead>
             <tbody>
-              {teamRows.map((row) => {
-                const attendanceMap = Object.fromEntries(row.records.map((record) => [record.date, record]));
-                return (
-                  <tr key={row.member.employee_id}>
-                    <td style={tdLeftCompact}>
-                      <div style={{ fontWeight: 700 }}>
-                        {row.member.employee.first_name} {row.member.employee.last_name}
-                      </div>
-                      <div style={{ color: '#6b7280' }}>
-                        {row.member.employee.role || '-'}
-                        {row.member.manage_by_days ? ' - gestione a giornate' : ''}
-                      </div>
+              <tr>
+                <td style={tdLeftCompact}>
+                  <div style={{ fontWeight: 700 }}>{selectedTeam.name}</div>
+                  <div style={{ color: '#6b7280' }}>Numero presenti x ore per persona</div>
+                </td>
+                {teamPeriodDays.map((day) => {
+                  const dateKey = formatLocalDate(day);
+                  return (
+                    <td key={dateKey} style={tdCenter}>
+                      {formatTeamAttendanceCell(teamAttendanceByDate.get(dateKey), attendanceBaseHours)}
                     </td>
-                    {teamPeriodDays.map((day) => (
-                      <td key={formatLocalDate(day)} style={tdCenter}>
-                        {getReportCellValue(attendanceMap[formatLocalDate(day)], hoursFormat)}
-                      </td>
-                    ))}
-                    <td style={tdCenter}>{formatHoursValue(row.totals.totalHours, hoursFormat)}</td>
-                    <td style={tdCenter}>{formatWorkedSummary(row.totals.totalHours, row.member.employee.standard_hours, hoursFormat)}</td>
-                    <td style={tdCenter}>{formatCurrency(row.estimatedCompensation)}</td>
-                  </tr>
-                );
-              })}
+                  );
+                })}
+                <td style={tdCenter}>{formatHoursValue(teamHeadcountTotals.totalHours, hoursFormat)}</td>
+                <td style={tdCenter}>{equivalentDaysLabel}</td>
+                <td style={tdCenter}>{formatCurrency(teamGrossCompensation)}</td>
+              </tr>
             </tbody>
           </table>
-        </div>
-
-        <div style={printCardStyle}>
-          <div style={printSectionTitleStyle}>Dettaglio componenti e busta paga individuale</div>
-          <div style={{ display: 'block' }}>
-            {teamRows.map((row) => (
-              <div key={`component-sheet-${row.member.employee_id}`} style={{ ...memberSheetStyle, marginBottom: 14 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
-                  <div>
-                    <div style={{ fontSize: 18, fontWeight: 800 }}>
-                      {row.member.employee.first_name} {row.member.employee.last_name}
-                    </div>
-                    <div style={{ color: '#667085', marginTop: 4 }}>
-                      {row.member.employee.role || 'Nessuna mansione'} - Periodo {teamPeriodLabel}
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'grid', gap: 6, minWidth: 240 }}>
-                    <SummaryLine label="Ore totali" value={formatHoursValue(row.totals.totalHours, hoursFormat)} />
-                    <SummaryLine label="Giornate / residui" value={formatWorkedSummary(row.totals.totalHours, row.member.employee.standard_hours, hoursFormat)} />
-                    <SummaryLine label="Compenso stimato" value={formatCurrency(row.estimatedCompensation)} />
-                    <SummaryLine label="Acconti personali" value={row.personalAdvancesTotal ? formatCurrency(row.personalAdvancesTotal) : '—'} />
-                    <SummaryLine label="Saldo individuale" value={formatCurrency(row.individualNet)} strong />
-                  </div>
-                </div>
-
-                <table style={{ ...printTableStyle, marginTop: 12 }}>
-                  <tbody>
-                    <tr>
-                      <td style={tdLabel}>Presenze del periodo</td>
-                      <td style={tdCenter}>{row.workedDays}</td>
-                    </tr>
-                    <tr>
-                      <td style={tdLabel}>Ore lavorate</td>
-                      <td style={tdCenter}>{formatHoursValue(row.totals.totalHours, hoursFormat)}</td>
-                    </tr>
-                    <tr>
-                      <td style={tdLabel}>Giornate calcolate</td>
-                      <td style={tdCenter}>{row.totals.completeDaysTotal}</td>
-                    </tr>
-                    <tr>
-                      <td style={tdLabel}>Ore residue</td>
-                      <td style={tdCenter}>{formatHoursValue(row.totals.remainingTotalHours, hoursFormat)}</td>
-                    </tr>
-                    <tr>
-                      <td style={tdLabel}>Compenso / giornata</td>
-                      <td style={tdCenter}>{formatCurrency(row.compensationRate)}</td>
-                    </tr>
-                  </tbody>
-                </table>
-
-                {row.personalAdvances.length ? (
-                  <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
-                    <div style={{ fontSize: 12, fontWeight: 800 }}>Acconti personali registrati nel periodo</div>
-                    {row.personalAdvances.map((advance, index) => (
-                      <div key={`personal-advance-${row.member.employee_id}-${index}`} style={summaryRow}>
-                        <span style={{ width: 220, fontWeight: 700 }}>
-                          {advance.date ? `Acconto del ${advance.date}` : `Acconto mese ${advance.sourceMonth}`}
-                        </span>
-                        <span style={{ flex: 1, color: '#667085' }}>Registrato nello storico personale</span>
-                        <span style={{ fontWeight: 800 }}>{formatCurrency(advance.amount)}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 12, color: '#667085' }}>
-                    Nessun acconto personale registrato nel periodo selezionato.
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
         </div>
       </div>
     </div>
   );
+
+
 }
 
 function MetricCard({ label, value, strong }) {

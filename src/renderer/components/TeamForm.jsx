@@ -24,6 +24,7 @@ const emptyForm = {
   name: '',
   notes: '',
   attendance_mode: 'details',
+  team_daily_rate: '',
   members: [],
 };
 
@@ -32,6 +33,9 @@ function normalizeTeamFormForDirtyCheck(form) {
     name: form.name || '',
     notes: form.notes || '',
     attendance_mode: form.attendance_mode === 'headcount' ? 'headcount' : 'details',
+    team_daily_rate: form.team_daily_rate === '' || form.team_daily_rate === null || form.team_daily_rate === undefined
+      ? ''
+      : String(form.team_daily_rate),
     members: (form.members || []).map((member) => ({
       employee_id: Number(member.employee_id),
       compensation: member.compensation === '' || member.compensation === null || member.compensation === undefined
@@ -61,6 +65,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
             name: team.name || '',
             notes: team.notes || '',
             attendance_mode: team.attendance_mode === 'headcount' ? 'headcount' : 'details',
+            team_daily_rate: team.team_daily_rate ?? '',
             members: (team.members || []).map((member) => ({
               employee_id: member.employee_id,
               compensation: member.compensation ?? '',
@@ -83,6 +88,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
             name: team.name || '',
             notes: team.notes || '',
             attendance_mode: team.attendance_mode === 'headcount' ? 'headcount' : 'details',
+            team_daily_rate: team.team_daily_rate ?? '',
             members: (team.members || []).map((member) => ({
               employee_id: member.employee_id,
               compensation: member.compensation ?? '',
@@ -149,6 +155,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
         name: form.name.trim(),
         notes: form.notes.trim(),
         attendance_mode: form.attendance_mode === 'headcount' ? 'headcount' : 'details',
+        team_daily_rate: form.team_daily_rate === '' ? 0 : Number(form.team_daily_rate),
         members: form.members.map((member) => ({
           employee_id: Number(member.employee_id),
           compensation: member.compensation === '' ? null : Number(member.compensation),
@@ -206,7 +213,7 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
               </Field>
             </div>
 
-            <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'minmax(260px, 320px) minmax(0, 1fr)' }}>
+            <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'minmax(220px, 300px) minmax(220px, 300px) minmax(0, 1fr)' }}>
               <Field label="Modalita gestione presenze">
                 <select
                   value={form.attendance_mode}
@@ -221,6 +228,18 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
                   <option value="details">Dettaglio dipendenti</option>
                   <option value="headcount">Numero presenti</option>
                 </select>
+              </Field>
+
+              <Field label="Tariffa giornaliera squadra">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={form.team_daily_rate}
+                  disabled={saving}
+                  onChange={(event) => setForm((current) => ({ ...current, team_daily_rate: event.target.value }))}
+                  placeholder="es. 55"
+                />
               </Field>
 
               <div

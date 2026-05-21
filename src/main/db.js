@@ -290,6 +290,7 @@ function runCoreSchemaMigration(database) {
       name TEXT NOT NULL,
       notes TEXT,
       attendance_mode TEXT NOT NULL DEFAULT 'details',
+      team_daily_rate REAL DEFAULT 0,
       is_archived INTEGER DEFAULT 0,
       archived_at TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -434,6 +435,7 @@ function runCoreSchemaMigration(database) {
   ensureColumn(database, 'attendance', 'entry_code', 'TEXT');
   ensureColumn(database, 'teams', 'is_archived', 'INTEGER DEFAULT 0');
   ensureColumn(database, 'teams', 'archived_at', 'TEXT');
+  ensureColumn(database, 'teams', 'team_daily_rate', 'REAL DEFAULT 0');
   ensureColumn(database, 'employee_employment_periods', 'source_document_id', 'TEXT');
   ensureColumn(database, 'employee_documents', 'sha256', 'TEXT');
   ensureColumn(database, 'employee_documents', 'file_created_at', 'TEXT');
@@ -703,6 +705,7 @@ function runEmployeeFinancialMovementsMigration(database) {
 
 function runTeamAttendanceModeMigration(database) {
   ensureColumn(database, 'teams', 'attendance_mode', "TEXT NOT NULL DEFAULT 'details'");
+  ensureColumn(database, 'teams', 'team_daily_rate', 'REAL DEFAULT 0');
 
   database.exec(`
     CREATE TABLE IF NOT EXISTS team_attendance (
