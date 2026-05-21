@@ -1905,6 +1905,21 @@ app.whenReady().then(async () => {
     requireWritableLicense('La modifica delle squadre');
     return teamPayrollRepo.deleteTeamAdvance(id);
   });
+  ipcMain.handle('teamPayroll:listPayrollComponents', async (_, teamId, month) => {
+    return teamPayrollRepo.listPayrollComponents(teamId, month);
+  });
+  ipcMain.handle('teamPayroll:createPayrollComponent', async (_, payload) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamPayrollRepo.createPayrollComponent(payload);
+  });
+  ipcMain.handle('teamPayroll:updatePayrollComponent', async (_, id, payload) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamPayrollRepo.updatePayrollComponent(id, payload);
+  });
+  ipcMain.handle('teamPayroll:deletePayrollComponent', async (_, id) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamPayrollRepo.deletePayrollComponent(id);
+  });
   ipcMain.handle('employees:deletePermanently', async (_, id) => {
     requireWritableLicense('La modifica dei dipendenti');
     const result = employeeRepo.deleteEmployeePermanently(id);

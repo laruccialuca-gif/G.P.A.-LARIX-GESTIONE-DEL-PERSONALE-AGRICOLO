@@ -144,6 +144,10 @@ contextBridge.exposeInMainWorld('api', {
     createAdvance: (payload) => ipcRenderer.invoke('teamPayroll:createAdvance', payload),
     updateAdvance: (id, payload) => ipcRenderer.invoke('teamPayroll:updateAdvance', id, payload),
     deleteAdvance: (id) => ipcRenderer.invoke('teamPayroll:deleteAdvance', id),
+    listPayrollComponents: (teamId, month) => ipcRenderer.invoke('teamPayroll:listPayrollComponents', teamId, month),
+    createPayrollComponent: (payload) => ipcRenderer.invoke('teamPayroll:createPayrollComponent', payload),
+    updatePayrollComponent: (id, payload) => ipcRenderer.invoke('teamPayroll:updatePayrollComponent', id, payload),
+    deletePayrollComponent: (id) => ipcRenderer.invoke('teamPayroll:deletePayrollComponent', id),
   },
 
   communications: {

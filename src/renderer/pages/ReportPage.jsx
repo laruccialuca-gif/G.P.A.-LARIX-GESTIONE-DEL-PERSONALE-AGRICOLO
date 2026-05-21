@@ -256,6 +256,18 @@ function createEmptyTeamAdvance() {
   };
 }
 
+function createEmptyTeamPayrollComponent() {
+  return {
+    id: null,
+    client_key: createLocalDraftKey('team-payroll-component'),
+    employee_id: '',
+    employee_label: '',
+    days: '',
+    amount: '',
+    notes: '',
+  };
+}
+
 function createEmptyDebtInstallment() {
   return {
     client_key: createLocalDraftKey('debt-installment'),
@@ -714,6 +726,8 @@ export default function ReportPage() {
   const [teamTransportAmount, setTeamTransportAmount] = useState('');
   const [teamAdvances, setTeamAdvances] = useState([createEmptyTeamAdvance()]);
   const [teamAdvanceBusyKey, setTeamAdvanceBusyKey] = useState('');
+  const [teamPayrollComponents, setTeamPayrollComponents] = useState([createEmptyTeamPayrollComponent()]);
+  const [teamPayrollComponentBusyKey, setTeamPayrollComponentBusyKey] = useState('');
   const [teamNotes, setTeamNotes] = useState('');
   const [teamPayrollMap, setTeamPayrollMap] = useState({});
   const [processedEmployeeIdsForMonth, setProcessedEmployeeIdsForMonth] = useState(() => new Set());
@@ -1603,6 +1617,49 @@ export default function ReportPage() {
   useEffect(() => {
     let cancelled = false;
 
+    async function loadTeamPayrollComponents() {
+      if (!isTeamMode || !selectedTeam?.id) {
+        if (mountedRef.current) {
+          setTeamPayrollComponents([createEmptyTeamPayrollComponent()]);
+        }
+        return;
+      }
+
+      try {
+        const rows = await window.api.teamPayroll.listPayrollComponents(selectedTeam.id, selectedReportMonthKey);
+        if (cancelled || !mountedRef.current) {
+          return;
+        }
+
+        const nextRows = Array.isArray(rows) && rows.length
+          ? rows.map((row) => ({
+              id: row.id,
+              client_key: createLocalDraftKey(`team-payroll-component-${row.id}`),
+              employee_id: row.employee_id ? String(row.employee_id) : '',
+              employee_label: row.employee_label || '',
+              days: row.days === null || row.days === undefined ? '' : String(row.days),
+              amount: row.amount === null || row.amount === undefined ? '' : String(row.amount),
+              notes: row.notes || '',
+            }))
+          : [createEmptyTeamPayrollComponent()];
+        setTeamPayrollComponents(nextRows);
+      } catch (err) {
+        console.error(err);
+        if (!cancelled && mountedRef.current) {
+          setTeamPayrollComponents([createEmptyTeamPayrollComponent()]);
+        }
+      }
+    }
+
+    loadTeamPayrollComponents();
+    return () => {
+      cancelled = true;
+    };
+  }, [isTeamMode, selectedReportMonthKey, selectedTeam?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+
     async function checkPreviousBalanceConsistency() {
       if (!isEmployeeMode || !employee || !currentPayrollRecord?.processed_at) {
         setPreviousBalanceWarning('');
@@ -2374,6 +2431,100 @@ export default function ReportPage() {
     }
   }
 
+  function updateTeamPayrollComponent(index, field, value) {
+    setTeamPayrollComponents((current) =>
+      current.map((component, currentIndex) => {
+        if (currentIndex !== index) return component;
+        const next = { ...component, [field]: value };
+        if (field === 'employee_id') {
+          const selectedMember = teamRows.find((row) => String(row.member.employee_id) === String(value));
+          if (selectedMember) {
+            next.employee_label = `${selectedMember.member.employee.first_name} ${selectedMember.member.employee.last_name}`.trim();
+          }
+        }
+        return next;
+      })
+    );
+  }
+
+  function addTeamPayrollComponent() {
+    setTeamPayrollComponents((current) => [...current, createEmptyTeamPayrollComponent()]);
+  }
+
+  async function saveTeamPayrollComponent(index) {
+    const component = teamPayrollComponents[index];
+    if (!selectedTeam?.id || !component) return;
+
+    const payload = {
+      team_id: selectedTeam.id,
+      month: selectedReportMonthKey,
+      employee_id: component.employee_id ? Number(component.employee_id) : null,
+      employee_label: component.employee_label || '',
+      days: component.days,
+      amount: component.amount,
+      notes: component.notes || '',
+      sort_order: index,
+    };
+
+    setTeamPayrollComponentBusyKey(String(component.id || component.client_key || index));
+    try {
+      const saved = component.id
+        ? await window.api.teamPayroll.updatePayrollComponent(component.id, payload)
+        : await window.api.teamPayroll.createPayrollComponent(payload);
+
+      setTeamPayrollComponents((current) =>
+        current.map((item, currentIndex) =>
+          currentIndex === index
+            ? {
+                id: saved.id,
+                client_key: item.client_key || createLocalDraftKey(`team-payroll-component-${saved.id}`),
+                employee_id: saved.employee_id ? String(saved.employee_id) : '',
+                employee_label: saved.employee_label || '',
+                days: String(saved.days ?? ''),
+                amount: String(saved.amount ?? ''),
+                notes: saved.notes || '',
+              }
+            : item
+        )
+      );
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || 'Errore salvataggio busta componente');
+    } finally {
+      setTeamPayrollComponentBusyKey('');
+    }
+  }
+
+  async function removeTeamPayrollComponent(index) {
+    const component = teamPayrollComponents[index];
+    if (!component) return;
+
+    if (!component.id) {
+      setTeamPayrollComponents((current) => {
+        const next = current.filter((_, currentIndex) => currentIndex !== index);
+        return next.length ? next : [createEmptyTeamPayrollComponent()];
+      });
+      return;
+    }
+
+    const confirmed = window.confirm('Vuoi eliminare questa busta componente?');
+    if (!confirmed) return;
+
+    setTeamPayrollComponentBusyKey(String(component.id));
+    try {
+      await window.api.teamPayroll.deletePayrollComponent(component.id);
+      setTeamPayrollComponents((current) => {
+        const next = current.filter((_, currentIndex) => currentIndex !== index);
+        return next.length ? next : [createEmptyTeamPayrollComponent()];
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Errore eliminazione busta componente');
+    } finally {
+      setTeamPayrollComponentBusyKey('');
+    }
+  }
+
   async function removeTeamAdvance(index) {
     const advance = teamAdvances[index];
     if (!advance) return;
@@ -3029,6 +3180,17 @@ export default function ReportPage() {
     }))
     .filter((advance) => advance.amount > 0);
 
+  const filteredTeamPayrollComponents = teamPayrollComponents
+    .map((component, index) => ({
+      id: component.id || `team-payroll-component-${index}`,
+      employee_id: component.employee_id ? Number(component.employee_id) : null,
+      employee_label: component.employee_label || '',
+      days: Number(component.days || 0),
+      amount: Number(component.amount || 0),
+      notes: component.notes || '',
+    }))
+    .filter((component) => component.amount > 0 || component.employee_label);
+
   const teamRows = useMemo(
     () =>
       getTeamRows(selectedTeam, selectedYear).map((member) => {
@@ -3102,6 +3264,7 @@ export default function ReportPage() {
 
   const teamTransportTotal = teamTransportEnabled ? normalizeCurrency(teamTransportAmount) : 0;
   const teamAdvancesTotal = filteredTeamAdvances.reduce((sum, advance) => sum + advance.amount, 0);
+  const teamPayrollComponentsTotal = filteredTeamPayrollComponents.reduce((sum, component) => sum + component.amount, 0);
   const teamTotals = useMemo(
     () =>
       teamRows.reduce(
@@ -3124,7 +3287,7 @@ export default function ReportPage() {
   );
 
   const teamGrossCompensation = teamHeadcountTotals.equivalentDays * teamDailyRate;
-  const teamFinalBalance = teamGrossCompensation - teamAdvancesTotal;
+  const teamFinalBalance = teamGrossCompensation - teamAdvancesTotal - teamPayrollComponentsTotal;
 
   return (
     <div className="page report-page">
@@ -4262,6 +4425,79 @@ export default function ReportPage() {
           </div>
 
           <div style={teamEditorCardStyle}>
+            <div style={sectionToolbarStyle}>
+              <div style={editorSectionTitleStyle}>Buste paga componenti</div>
+              <button type="button" className="button-secondary" onClick={addTeamPayrollComponent}>
+                Aggiungi busta componente
+              </button>
+            </div>
+            <div style={{ display: 'grid', gap: 10 }}>
+              {teamPayrollComponents.map((component, index) => (
+                <div key={component.id || component.client_key || `team-payroll-component-${index}`} style={teamAdvanceRowStyle}>
+                  <select
+                    value={component.employee_id}
+                    onChange={(e) => updateTeamPayrollComponent(index, 'employee_id', e.target.value)}
+                    disabled={!!teamPayrollComponentBusyKey}
+                  >
+                    <option value="">Nome manuale</option>
+                    {teamRows.map((row) => (
+                      <option key={row.member.employee_id} value={row.member.employee_id}>
+                        {row.member.employee.first_name} {row.member.employee.last_name}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    value={component.employee_label}
+                    onChange={(e) => updateTeamPayrollComponent(index, 'employee_label', e.target.value)}
+                    placeholder="Dipendente / nome manuale"
+                    disabled={!!teamPayrollComponentBusyKey}
+                  />
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={component.days}
+                    onChange={(e) => updateTeamPayrollComponent(index, 'days', e.target.value)}
+                    placeholder="Giornate"
+                    disabled={!!teamPayrollComponentBusyKey}
+                  />
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={component.amount}
+                    onChange={(e) => updateTeamPayrollComponent(index, 'amount', e.target.value)}
+                    placeholder="Importo (€)"
+                    disabled={!!teamPayrollComponentBusyKey}
+                  />
+                  <input
+                    value={component.notes}
+                    onChange={(e) => updateTeamPayrollComponent(index, 'notes', e.target.value)}
+                    placeholder="Note"
+                    disabled={!!teamPayrollComponentBusyKey}
+                  />
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={() => saveTeamPayrollComponent(index)}
+                    disabled={!!teamPayrollComponentBusyKey}
+                  >
+                    {teamPayrollComponentBusyKey === String(component.id || component.client_key || index) ? 'Salvataggio...' : component.id ? 'Modifica' : 'Salva'}
+                  </button>
+                  <button
+                    type="button"
+                    className="button-danger"
+                    onClick={() => removeTeamPayrollComponent(index)}
+                    disabled={!!teamPayrollComponentBusyKey}
+                  >
+                    Elimina
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={teamEditorCardStyle}>
             <div style={editorSectionTitleStyle}>Note del report squadra</div>
             <textarea rows={3} value={teamNotes} onChange={(e) => setTeamNotes(e.target.value)} placeholder="Note per il titolare o dettagli del pagamento..." />
           </div>
@@ -4292,6 +4528,8 @@ export default function ReportPage() {
           teamTransportTotal={teamTransportTotal}
           filteredTeamAdvances={filteredTeamAdvances}
           teamAdvancesTotal={teamAdvancesTotal}
+          filteredTeamPayrollComponents={filteredTeamPayrollComponents}
+          teamPayrollComponentsTotal={teamPayrollComponentsTotal}
           teamFinalBalance={teamFinalBalance}
           teamNotes={teamNotes}
         />
@@ -5258,6 +5496,8 @@ function TeamPrintArea({
   teamGrossCompensation,
   filteredTeamAdvances,
   teamAdvancesTotal,
+  filteredTeamPayrollComponents,
+  teamPayrollComponentsTotal,
   teamFinalBalance,
   attendanceBaseHours,
   hoursFormat,
@@ -5385,11 +5625,41 @@ function TeamPrintArea({
           </div>
         </div>
 
+        <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
+          <div style={rp2SectionLabelStyle}>Buste paga componenti</div>
+          <div style={rp2EconomicTableStyle}>
+            {filteredTeamPayrollComponents.length ? filteredTeamPayrollComponents.map((component) => (
+              <div key={component.id} style={rp2EconRowStyle()}>
+                <div>
+                  <div style={rp2EconLabelStyle()}>{component.employee_label || 'Componente squadra'}</div>
+                  <div style={rp2EconSubStyle}>
+                    {component.days > 0 ? `${formatReportHoursValue(component.days)} gg` : 'Giornate non indicate'}
+                    {component.notes ? ` - ${component.notes}` : ''}
+                  </div>
+                </div>
+                <div style={rp2EconAmountStyle('negative')}>- {formatCurrency(component.amount)}</div>
+              </div>
+            )) : (
+              <div style={rp2EconRowStyle()}>
+                <div>
+                  <div style={rp2EconLabelStyle()}>Nessuna busta componente</div>
+                  <div style={rp2EconSubStyle}>Nessun importo registrato per i componenti nel mese selezionato.</div>
+                </div>
+                <div style={rp2EconAmountStyle('base')}>€ 0,00</div>
+              </div>
+            )}
+            <div style={rp2DeductionBoxStyle}>
+              <span>Totale buste paga componenti</span>
+              <span>- {formatCurrency(teamPayrollComponentsTotal)}</span>
+            </div>
+          </div>
+        </div>
+
         <div className="print-block employee-print-section" style={rp2ResultCardStyle(teamFinalBalance)}>
           <div>
             <div style={rp2ResultLabelStyle}>Totale finale squadra</div>
             <div style={rp2ResultFormulaStyle}>
-              {formatCurrency(teamGrossCompensation)} - {formatCurrency(teamAdvancesTotal)}
+              {formatCurrency(teamGrossCompensation)} - {formatCurrency(teamAdvancesTotal)} - {formatCurrency(teamPayrollComponentsTotal)}
             </div>
           </div>
           <div style={rp2ResultValueStyle(teamFinalBalance)}>{formatCurrency(teamFinalBalance)}</div>

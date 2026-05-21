@@ -324,6 +324,22 @@ function runCoreSchemaMigration(database) {
       FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS team_payroll_components (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      employee_id INTEGER,
+      employee_label TEXT,
+      days REAL DEFAULT 0,
+      amount REAL DEFAULT 0,
+      notes TEXT,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      FOREIGN KEY (employee_id) REFERENCES employees(id)
+    );
+
     CREATE TABLE IF NOT EXISTS employee_employment_periods (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       employee_id INTEGER NOT NULL,
@@ -498,6 +514,7 @@ function runCoreSchemaMigration(database) {
     CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id, sort_order, id);
     CREATE INDEX IF NOT EXISTS idx_team_members_employee ON team_members(employee_id);
     CREATE INDEX IF NOT EXISTS idx_team_advances_lookup ON team_advances(team_id, month, advance_date, id);
+    CREATE INDEX IF NOT EXISTS idx_team_payroll_components_lookup ON team_payroll_components(team_id, month, sort_order, id);
     CREATE INDEX IF NOT EXISTS idx_team_attendance_lookup ON team_attendance(team_id, date, id);
     CREATE INDEX IF NOT EXISTS idx_teams_archived ON teams(is_archived, name);
     CREATE INDEX IF NOT EXISTS idx_employee_periods_employee ON employee_employment_periods(employee_id, is_current, id);
@@ -741,6 +758,28 @@ function runTeamAttendanceHoursPerPersonMigration(database) {
   ensureColumn(database, 'team_attendance', 'hours_per_person', 'REAL DEFAULT NULL');
 }
 
+function runTeamsTeamDailyRateMigration(database) {
+  const columns = database.prepare('PRAGMA table_info(teams)').all();
+  const exists = columns.some((column) => column.name === 'team_daily_rate');
+
+  if (exists) {
+    console.info('[db-migration] teams.team_daily_rate already exists');
+    logDbEvent('schema-migration-skipped', {
+      table_name: 'teams',
+      reason: 'column-already-present',
+      checked_columns: ['team_daily_rate'],
+    });
+    return;
+  }
+
+  database.exec('ALTER TABLE teams ADD COLUMN team_daily_rate REAL DEFAULT 0;');
+  console.info('[db-migration] teams.team_daily_rate added');
+  logDbEvent('schema-table-updated', {
+    table_name: 'teams',
+    columns_added: ['team_daily_rate'],
+  });
+}
+
 const MIGRATIONS = [
   {
     id: '2026-04-20-core-schema',
@@ -793,6 +832,10 @@ const MIGRATIONS = [
   {
     id: '2026-05-14-team-attendance-hours-per-person',
     run: runTeamAttendanceHoursPerPersonMigration,
+  },
+  {
+    id: '2026-05-21-teams-team-daily-rate',
+    run: runTeamsTeamDailyRateMigration,
   },
 ];
 
