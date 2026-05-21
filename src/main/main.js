@@ -287,6 +287,7 @@ const attendanceRepo = require('./attendanceRepo');
 const payrollRepo = require('./payrollRepo');
 const financialMovementsRepo = require('./financialMovementsRepo');
 const dashboardRepo = require('./dashboardRepo');
+const teamPayrollRepo = require('./teamPayrollRepo');
 const teamsRepo = require('./teamsRepo');
 const communicationRepo = require('./communicationRepo');
 const occupationRepo = require('./occupationRepo');
@@ -1888,6 +1889,21 @@ app.whenReady().then(async () => {
   ipcMain.handle('teams:restore', async (_, id) => {
     requireWritableLicense('La modifica delle squadre');
     return teamsRepo.restoreTeam(id);
+  });
+  ipcMain.handle('teamPayroll:listAdvances', async (_, teamId, month) => {
+    return teamPayrollRepo.listTeamAdvances(teamId, month);
+  });
+  ipcMain.handle('teamPayroll:createAdvance', async (_, payload) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamPayrollRepo.createTeamAdvance(payload);
+  });
+  ipcMain.handle('teamPayroll:updateAdvance', async (_, id, payload) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamPayrollRepo.updateTeamAdvance(id, payload);
+  });
+  ipcMain.handle('teamPayroll:deleteAdvance', async (_, id) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamPayrollRepo.deleteTeamAdvance(id);
   });
   ipcMain.handle('employees:deletePermanently', async (_, id) => {
     requireWritableLicense('La modifica dei dipendenti');

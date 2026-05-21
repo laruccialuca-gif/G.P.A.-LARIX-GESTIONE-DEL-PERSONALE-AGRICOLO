@@ -139,6 +139,13 @@ contextBridge.exposeInMainWorld('api', {
     deletePermanently: (id) => ipcRenderer.invoke('teams:deletePermanently', id),
   },
 
+  teamPayroll: {
+    listAdvances: (teamId, month) => ipcRenderer.invoke('teamPayroll:listAdvances', teamId, month),
+    createAdvance: (payload) => ipcRenderer.invoke('teamPayroll:createAdvance', payload),
+    updateAdvance: (id, payload) => ipcRenderer.invoke('teamPayroll:updateAdvance', id, payload),
+    deleteAdvance: (id) => ipcRenderer.invoke('teamPayroll:deleteAdvance', id),
+  },
+
   communications: {
     list: (options) => ipcRenderer.invoke('communications:list', options),
     save: (payload) => ipcRenderer.invoke('communications:save', payload),

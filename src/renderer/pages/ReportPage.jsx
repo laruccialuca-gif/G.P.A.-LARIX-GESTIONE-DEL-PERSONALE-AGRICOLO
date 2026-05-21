@@ -248,9 +248,11 @@ function createEmptyAdvance() {
 
 function createEmptyTeamAdvance() {
   return {
+    id: null,
+    client_key: createLocalDraftKey('team-advance'),
     amount: '',
     date: '',
-    description: '',
+    notes: '',
   };
 }
 
@@ -711,6 +713,7 @@ export default function ReportPage() {
   const [teamTransportDescription, setTeamTransportDescription] = useState('');
   const [teamTransportAmount, setTeamTransportAmount] = useState('');
   const [teamAdvances, setTeamAdvances] = useState([createEmptyTeamAdvance()]);
+  const [teamAdvanceBusyKey, setTeamAdvanceBusyKey] = useState('');
   const [teamNotes, setTeamNotes] = useState('');
   const [teamPayrollMap, setTeamPayrollMap] = useState({});
   const [processedEmployeeIdsForMonth, setProcessedEmployeeIdsForMonth] = useState(() => new Set());
@@ -977,7 +980,6 @@ export default function ReportPage() {
     setTeamTransportEnabled(false);
     setTeamTransportDescription('');
     setTeamTransportAmount('');
-    setTeamAdvances([createEmptyTeamAdvance()]);
     setTeamNotes('');
   }, [selectedTeam?.id, currentMonth, isTeamMode]);
 
@@ -1556,6 +1558,47 @@ export default function ReportPage() {
       cancelled = true;
     };
   }, [isTeamMode, selectedTeam, currentMonth, selectedYear]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTeamAdvances() {
+      if (!isTeamMode || !selectedTeam?.id) {
+        if (mountedRef.current) {
+          setTeamAdvances([createEmptyTeamAdvance()]);
+        }
+        return;
+      }
+
+      try {
+        const rows = await window.api.teamPayroll.listAdvances(selectedTeam.id, selectedReportMonthKey);
+        if (cancelled || !mountedRef.current) {
+          return;
+        }
+
+        const nextRows = Array.isArray(rows) && rows.length
+          ? rows.map((row) => ({
+              id: row.id,
+              client_key: createLocalDraftKey(`team-advance-${row.id}`),
+              amount: row.amount === null || row.amount === undefined ? '' : String(row.amount),
+              date: row.advance_date || '',
+              notes: row.notes || '',
+            }))
+          : [createEmptyTeamAdvance()];
+        setTeamAdvances(nextRows);
+      } catch (err) {
+        console.error(err);
+        if (!cancelled && mountedRef.current) {
+          setTeamAdvances([createEmptyTeamAdvance()]);
+        }
+      }
+    }
+
+    loadTeamAdvances();
+    return () => {
+      cancelled = true;
+    };
+  }, [isTeamMode, selectedReportMonthKey, selectedTeam?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2291,13 +2334,76 @@ export default function ReportPage() {
     setTeamAdvances((current) => [...current, createEmptyTeamAdvance()]);
   }
 
-  function removeTeamAdvance(index) {
-    setTeamAdvances((current) => {
-      if (current.length === 1) {
-        return [createEmptyTeamAdvance()];
-      }
-      return current.filter((_, currentIndex) => currentIndex !== index);
-    });
+  async function saveTeamAdvance(index) {
+    const advance = teamAdvances[index];
+    if (!selectedTeam?.id || !advance) return;
+
+    const payload = {
+      team_id: selectedTeam.id,
+      month: selectedReportMonthKey,
+      advance_date: advance.date,
+      amount: advance.amount,
+      notes: advance.notes || '',
+    };
+
+    setTeamAdvanceBusyKey(String(advance.id || advance.client_key || index));
+    try {
+      const saved = advance.id
+        ? await window.api.teamPayroll.updateAdvance(advance.id, payload)
+        : await window.api.teamPayroll.createAdvance(payload);
+
+      setTeamAdvances((current) => {
+        const next = current.map((item, currentIndex) =>
+          currentIndex === index
+            ? {
+                id: saved.id,
+                client_key: item.client_key || createLocalDraftKey(`team-advance-${saved.id}`),
+                amount: String(saved.amount ?? ''),
+                date: saved.advance_date || '',
+                notes: saved.notes || '',
+              }
+            : item
+        );
+        return next;
+      });
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || 'Errore salvataggio acconto squadra');
+    } finally {
+      setTeamAdvanceBusyKey('');
+    }
+  }
+
+  async function removeTeamAdvance(index) {
+    const advance = teamAdvances[index];
+    if (!advance) return;
+
+    if (!advance.id) {
+      setTeamAdvances((current) => {
+        if (current.length === 1) {
+          return [createEmptyTeamAdvance()];
+        }
+        return current.filter((_, currentIndex) => currentIndex !== index);
+      });
+      return;
+    }
+
+    const confirmed = window.confirm('Vuoi eliminare questo acconto squadra?');
+    if (!confirmed) return;
+
+    setTeamAdvanceBusyKey(String(advance.id));
+    try {
+      await window.api.teamPayroll.deleteAdvance(advance.id);
+      setTeamAdvances((current) => {
+        const next = current.filter((_, currentIndex) => currentIndex !== index);
+        return next.length ? next : [createEmptyTeamAdvance()];
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Errore eliminazione acconto squadra');
+    } finally {
+      setTeamAdvanceBusyKey('');
+    }
   }
 
   const attendanceBaseHours = useMemo(
@@ -2916,10 +3022,10 @@ export default function ReportPage() {
 
   const filteredTeamAdvances = teamAdvances
     .map((advance, index) => ({
-      id: `team-advance-${index}`,
+      id: advance.id || `team-advance-${index}`,
       amount: Number(advance.amount || 0),
       date: advance.date || '',
-      description: advance.description || '',
+      notes: advance.notes || '',
     }))
     .filter((advance) => advance.amount > 0);
 
@@ -3018,7 +3124,7 @@ export default function ReportPage() {
   );
 
   const teamGrossCompensation = teamHeadcountTotals.equivalentDays * teamDailyRate;
-  const teamFinalBalance = teamGrossCompensation;
+  const teamFinalBalance = teamGrossCompensation - teamAdvancesTotal;
 
   return (
     <div className="page report-page">
@@ -4111,11 +4217,42 @@ export default function ReportPage() {
               </div>
               <div style={{ display: 'grid', gap: 10 }}>
                 {teamAdvances.map((advance, index) => (
-                  <div key={`team-advance-${index}`} style={teamAdvanceRowStyle}>
-                    <input type="number" step="0.01" min="0" value={advance.amount} onChange={(e) => updateTeamAdvance(index, 'amount', e.target.value)} placeholder="Importo (€)" />
-                    <input type="date" value={advance.date} onChange={(e) => updateTeamAdvance(index, 'date', e.target.value)} />
-                    <input value={advance.description} onChange={(e) => updateTeamAdvance(index, 'description', e.target.value)} placeholder="Descrizione / nota" />
-                    <button type="button" className="button-danger" onClick={() => removeTeamAdvance(index)}>
+                  <div key={advance.id || advance.client_key || `team-advance-${index}`} style={teamAdvanceRowStyle}>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={advance.amount}
+                      onChange={(e) => updateTeamAdvance(index, 'amount', e.target.value)}
+                      placeholder="Importo (€)"
+                      disabled={!!teamAdvanceBusyKey}
+                    />
+                    <input
+                      type="date"
+                      value={advance.date}
+                      onChange={(e) => updateTeamAdvance(index, 'date', e.target.value)}
+                      disabled={!!teamAdvanceBusyKey}
+                    />
+                    <input
+                      value={advance.notes}
+                      onChange={(e) => updateTeamAdvance(index, 'notes', e.target.value)}
+                      placeholder="Descrizione / nota"
+                      disabled={!!teamAdvanceBusyKey}
+                    />
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={() => saveTeamAdvance(index)}
+                      disabled={!!teamAdvanceBusyKey}
+                    >
+                      {teamAdvanceBusyKey === String(advance.id || advance.client_key || index) ? 'Salvataggio...' : advance.id ? 'Modifica' : 'Salva'}
+                    </button>
+                    <button
+                      type="button"
+                      className="button-danger"
+                      onClick={() => removeTeamAdvance(index)}
+                      disabled={!!teamAdvanceBusyKey}
+                    >
                       Elimina
                     </button>
                   </div>
@@ -4642,6 +4779,63 @@ function WeekGrid({ week, attendanceMap, hoursFormat, dayMarkers, showOvertimeIn
   );
 }
 
+function TeamWeekGrid({ week, teamAttendanceByDate, attendanceBaseHours }) {
+  return (
+    <div style={rp2WeekGridStyle}>
+      {week.map((day, colIndex) => {
+        const isSunday = colIndex === 6;
+        if (!day) {
+          return (
+            <div key={colIndex} style={{ ...rp2DayCellStyle(isSunday), opacity: 0 }}>
+              <div style={rp2DayHeaderTopStyle}>
+                <span style={rp2DayHeaderLabelStyle}>-</span>
+                <span style={rp2DayHeaderNumberStyle}>-</span>
+              </div>
+              <div style={rp2DayIndicatorSlotStyle}>
+                <div style={rp2TeamDayValueStyle(false)}>-</div>
+              </div>
+              <div style={rp2DayMetaMutedStyle}> </div>
+              <div style={rp2DayDetailStyle(false)}> </div>
+            </div>
+          );
+        }
+
+        const dateStr = formatLocalDate(day);
+        const record = teamAttendanceByDate.get(dateStr);
+        const cellValue = formatTeamAttendanceCell(record, attendanceBaseHours);
+        const hasPresence = !!cellValue;
+        const headcount = Number(record?.headcount || 0);
+        const hoursPerPerson = Number(record?.hours_per_person || attendanceBaseHours);
+        const safeHoursPerPerson = Number.isFinite(hoursPerPerson) && hoursPerPerson > 0
+          ? hoursPerPerson
+          : attendanceBaseHours;
+        const totalHours = headcount > 0 ? headcount * safeHoursPerPerson : 0;
+        const equivalentDays = attendanceBaseHours > 0 ? totalHours / attendanceBaseHours : 0;
+
+        return (
+          <div key={dateStr} style={rp2DayCellStyle(isSunday, hasPresence)}>
+            <div style={rp2DayHeaderTopStyle}>
+              <span style={rp2DayHeaderLabelStyle}>{DAY_ABBR_SHORT[colIndex]}</span>
+              <span style={rp2DayHeaderNumberStyle}>{day.getDate()}</span>
+            </div>
+            <div style={rp2DayIndicatorSlotStyle}>
+              <div style={rp2TeamDayValueStyle(hasPresence)}>
+                {cellValue || <span style={rp2IndicatorDotStyle(isSunday ? 'neutral' : 'empty')} />}
+              </div>
+            </div>
+            <div style={rp2DayMetaMutedStyle}>
+              {hasPresence ? `${formatReportHoursValue(equivalentDays)} gg eq.` : ' '}
+            </div>
+            <div style={rp2DayDetailStyle(false)}>
+              {hasPresence ? `${formatReportHoursValue(totalHours)} h` : isSunday ? 'Riposo' : ' '}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function EmployeePrintArea({
   employee,
   currentMonth,
@@ -5058,115 +5252,159 @@ function TeamPrintArea({
   selectedTeam,
   teamPeriodLabel,
   teamPeriodDays,
-  teamRows,
-  teamTotals,
   teamAttendanceByDate,
   teamHeadcountTotals,
   teamDailyRate,
   teamGrossCompensation,
-  attendanceBaseHours,
-  hoursFormat,
-  teamTransportEnabled,
-  teamTransportDescription,
-  teamTransportTotal,
   filteredTeamAdvances,
   teamAdvancesTotal,
   teamFinalBalance,
+  attendanceBaseHours,
+  hoursFormat,
   teamNotes,
 }) {
+  const weekGroups = groupDaysByWeek(teamPeriodDays);
   const equivalentDaysLabel = formatReportHoursValue(teamHeadcountTotals.equivalentDays);
+  const hasTeamRate = teamDailyRate > 0;
+  const rateWarning = !hasTeamRate ? 'Tariffa squadra non impostata' : '';
 
   return (
-    <div className="print-area">
-      <div style={{ display: 'block' }}>
-        <div style={{ ...printCardStyle, marginBottom: 14 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
-            <div>
-              <div className="page-kicker" style={{ marginBottom: 6 }}>Report squadra</div>
-              <div style={{ fontSize: 28, fontWeight: 800 }}>{selectedTeam.name}</div>
-              <div style={{ color: '#667085', marginTop: 6 }}>Periodo selezionato: {teamPeriodLabel}</div>
-            </div>
+    <div className="print-area employee-print-area">
+      <div className="print-sheet employee-print-sheet" style={employeePrintSheetStyle}>
+        <div style={rp2HeaderStyle}>
+          <div>
+            <div style={rp2NameStyle}>{selectedTeam.name}</div>
+            <div style={rp2SubtitleStyle}>Report squadra - {teamPeriodLabel}</div>
+          </div>
+          <div style={rp2BadgeStyle(hasTeamRate)}>{hasTeamRate ? 'SQUADRA' : 'TARIFFA MANCANTE'}</div>
+        </div>
 
-            <div style={{ display: 'grid', gap: 10, gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))' }}>
-              <SummaryMiniCard label="Giornate equivalenti" value={equivalentDaysLabel} />
-              <SummaryMiniCard label="Ore totali squadra" value={formatHoursValue(teamHeadcountTotals.totalHours, hoursFormat)} />
-              <SummaryMiniCard label="Compenso squadra" value={formatCurrency(teamGrossCompensation)} />
+        <div style={rp2SummaryRowStyle}>
+          <div style={rp2SummaryCardStyle}>
+            <div style={rp2CardLabelStyle}>Giornate equivalenti squadra</div>
+            <div style={rp2CardValueStyle}>{equivalentDaysLabel || '0'}</div>
+            <div style={rp2CardSubStyle}>Ore squadra / ore giornata standard</div>
+          </div>
+          <div style={rp2SummaryCardStyle}>
+            <div style={rp2CardLabelStyle}>Ore totali squadra</div>
+            <div style={rp2CardValueStyle}>{formatHoursValue(teamHeadcountTotals.totalHours, hoursFormat)}</div>
+            <div style={rp2CardSubStyle}>Numero presenti x ore per persona</div>
+          </div>
+          <div style={rp2SummaryCardStyle}>
+            <div style={rp2CardLabelStyle}>Compenso squadra</div>
+            <div style={rp2CardValueStyle}>{formatCurrency(teamGrossCompensation)}</div>
+            <div style={rp2CardSubStyle}>
+              {hasTeamRate ? 'Compenso lordo del periodo' : rateWarning}
             </div>
           </div>
-
-          {selectedTeam.notes ? <div className="muted-box" style={{ marginTop: 12 }}>{selectedTeam.notes}</div> : null}
-          {teamNotes ? <div className="muted-box" style={{ marginTop: 12 }}>{teamNotes}</div> : null}
         </div>
 
-        <div style={{ ...printCardStyle, marginBottom: 14 }}>
-          <div style={printSectionTitleStyle}>Riepilogo generale squadra</div>
-          <div style={statsGridStyle}>
-            <MetricCard label="Giornate equivalenti squadra" value={equivalentDaysLabel} />
-            <MetricCard label="Ore totali squadra" value={formatHoursValue(teamHeadcountTotals.totalHours, hoursFormat)} />
-            <MetricCard label="Compenso squadra" value={formatCurrency(teamGrossCompensation)} strong />
+        <div style={rp2TariffRowStyle}>
+          <div style={rp2TariffPillStyle}>
+            <span style={rp2TariffLabelStyle}>Tariffa giornaliera squadra</span>
+            <strong>{formatCurrency(teamDailyRate)}</strong>
+          </div>
+          {!hasTeamRate ? (
+            <div style={rp2WarningPillStyle}>{rateWarning}</div>
+          ) : null}
+        </div>
+
+        <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
+          <div style={rp2SectionLabelStyle}>Presenze squadra</div>
+          {weekGroups.map((week, index) => (
+            <div key={`team-week-${index}`} style={rp2WeekBlockStyle}>
+              <div style={rp2WeekLabelStyle}>Settimana {index + 1}</div>
+              <TeamWeekGrid
+                week={week}
+                teamAttendanceByDate={teamAttendanceByDate}
+                attendanceBaseHours={attendanceBaseHours}
+              />
+            </div>
+          ))}
+          <div style={rp2AttendanceLegendStyle}>
+            <span style={rp2LegendItemStyle}><span style={rp2LegendDotStyle('worked')} /> Presenza squadra</span>
+            <span style={rp2LegendItemStyle}>Formato: numero presenti x ore per persona</span>
           </div>
         </div>
 
-        <div style={{ ...printCardStyle, marginBottom: 14 }}>
-          <div style={printSectionTitleStyle}>Compenso squadra</div>
-          <table style={printTableStyle}>
-            <tbody>
-              <tr>
-                <td style={tdLabel}>Giornate equivalenti</td>
-                <td style={tdCenter}>{equivalentDaysLabel}</td>
-              </tr>
-              <tr>
-                <td style={tdLabel}>Tariffa giornaliera squadra</td>
-                <td style={tdCenter}>{formatCurrency(teamDailyRate)}</td>
-              </tr>
-              <tr>
-                <td style={{ ...tdLabel, fontWeight: 800 }}>Totale compenso lordo</td>
-                <td style={{ ...tdCenter, fontWeight: 800 }}>{formatCurrency(teamGrossCompensation)}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
+          <div style={rp2SectionLabelStyle}>Compenso squadra</div>
+          <div style={rp2EconomicTableStyle}>
+            <div style={rp2EconRowStyle()}>
+              <div>
+                <div style={rp2EconLabelStyle()}>Giornate equivalenti</div>
+                <div style={rp2EconSubStyle}>
+                  {formatHoursValue(teamHeadcountTotals.totalHours, hoursFormat)} / {formatReportHoursValue(attendanceBaseHours)} h giornata standard
+                </div>
+              </div>
+              <div style={rp2EconAmountStyle('base')}>{equivalentDaysLabel || '0'} gg</div>
+            </div>
+            <div style={rp2EconRowStyle()}>
+              <div>
+                <div style={rp2EconLabelStyle()}>Tariffa giornaliera squadra</div>
+                <div style={rp2EconSubStyle}>{hasTeamRate ? 'Tariffa impostata in Dipendenti/Squadre' : rateWarning}</div>
+              </div>
+              <div style={rp2EconAmountStyle(hasTeamRate ? 'base' : 'negative')}>{formatCurrency(teamDailyRate)}</div>
+            </div>
+            <div style={rp2EconRowStyle(true)}>
+              <div>
+                <div style={rp2EconLabelStyle(true)}>Totale compenso lordo</div>
+                <div style={rp2EconSubStyle}>
+                  {equivalentDaysLabel || '0'} gg x {formatCurrency(teamDailyRate)}
+                </div>
+              </div>
+              <div style={rp2EconAmountStyle('positive', true)}>{formatCurrency(teamGrossCompensation)}</div>
+            </div>
+          </div>
         </div>
 
-        <div style={{ ...printCardStyle, marginBottom: 14 }}>
-          <div style={printSectionTitleStyle}>Calendario presenze squadra</div>
-          <table style={{ ...printTableStyle, fontSize: 9 }}>
-            <thead>
-              <tr>
-                <th style={thLeft}>Squadra</th>
-                {teamPeriodDays.map((day) => (
-                  <th key={formatLocalDate(day)} style={thCenter}>{day.getDate()}</th>
-                ))}
-                <th style={thCenter}>Ore</th>
-                <th style={thCenter}>Giornate eq.</th>
-                <th style={thCenter}>Compenso</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td style={tdLeftCompact}>
-                  <div style={{ fontWeight: 700 }}>{selectedTeam.name}</div>
-                  <div style={{ color: '#6b7280' }}>Numero presenti x ore per persona</div>
-                </td>
-                {teamPeriodDays.map((day) => {
-                  const dateKey = formatLocalDate(day);
-                  return (
-                    <td key={dateKey} style={tdCenter}>
-                      {formatTeamAttendanceCell(teamAttendanceByDate.get(dateKey), attendanceBaseHours)}
-                    </td>
-                  );
-                })}
-                <td style={tdCenter}>{formatHoursValue(teamHeadcountTotals.totalHours, hoursFormat)}</td>
-                <td style={tdCenter}>{equivalentDaysLabel}</td>
-                <td style={tdCenter}>{formatCurrency(teamGrossCompensation)}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
+          <div style={rp2SectionLabelStyle}>Acconti squadra</div>
+          <div style={rp2EconomicTableStyle}>
+            {filteredTeamAdvances.length ? filteredTeamAdvances.map((advance) => (
+              <div key={advance.id} style={rp2EconRowStyle()}>
+                <div>
+                  <div style={rp2EconLabelStyle()}>{formatDateLabel(advance.date)}</div>
+                  <div style={rp2EconSubStyle}>{advance.notes || 'Acconto squadra'}</div>
+                </div>
+                <div style={rp2EconAmountStyle('negative')}>- {formatCurrency(advance.amount)}</div>
+              </div>
+            )) : (
+              <div style={rp2EconRowStyle()}>
+                <div>
+                  <div style={rp2EconLabelStyle()}>Nessun acconto squadra</div>
+                  <div style={rp2EconSubStyle}>Nessun importo registrato per il mese selezionato.</div>
+                </div>
+                <div style={rp2EconAmountStyle('base')}>€ 0,00</div>
+              </div>
+            )}
+            <div style={rp2DeductionBoxStyle}>
+              <span>Totale acconti squadra</span>
+              <span>- {formatCurrency(teamAdvancesTotal)}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="print-block employee-print-section" style={rp2ResultCardStyle(teamFinalBalance)}>
+          <div>
+            <div style={rp2ResultLabelStyle}>Totale finale squadra</div>
+            <div style={rp2ResultFormulaStyle}>
+              {formatCurrency(teamGrossCompensation)} - {formatCurrency(teamAdvancesTotal)}
+            </div>
+          </div>
+          <div style={rp2ResultValueStyle(teamFinalBalance)}>{formatCurrency(teamFinalBalance)}</div>
+        </div>
+
+        {selectedTeam.notes || teamNotes ? (
+          <div style={rp2NoteStyle}>{[selectedTeam.notes, teamNotes].filter(Boolean).join(' - ')}</div>
+        ) : null}
+
+        <div style={rp2FooterStyle}>
+          <span>GPA 1.0.4</span>
         </div>
       </div>
     </div>
   );
-
-
 }
 
 function MetricCard({ label, value, strong }) {
@@ -5947,6 +6185,18 @@ const rp2TariffPillStyle = {
   fontSize: 12,
 };
 const rp2TariffLabelStyle = { color: '#111827' };
+const rp2WarningPillStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '8px 12px',
+  borderRadius: 999,
+  border: '1.25px solid #b45309',
+  background: '#fffbeb',
+  color: '#92400e',
+  fontSize: 12,
+  fontWeight: 800,
+};
 const rp2WeekBlockStyle = { display: 'grid', gap: 2, marginTop: 4 };
 const rp2WeekLabelStyle = { fontSize: 10, fontWeight: 800, color: '#111827', textTransform: 'uppercase', letterSpacing: '0.08em' };
 const rp2WeekGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 3 };
@@ -5994,6 +6244,21 @@ const rp2DayIndicatorStyle = (tone, markerColor) => {
     border: `${palette.borderWidth}px solid ${palette.border}`,
   };
 };
+const rp2TeamDayValueStyle = (active) => ({
+  minWidth: active ? 38 : 24,
+  minHeight: 24,
+  padding: active ? '0 5px' : 0,
+  borderRadius: active ? 7 : 999,
+  display: 'inline-grid',
+  placeItems: 'center',
+  fontSize: active ? 11 : 11.5,
+  fontWeight: 900,
+  lineHeight: 1,
+  background: '#ffffff',
+  color: active ? '#000000' : '#9ca3af',
+  border: active ? '2px solid #000000' : '1px solid #d1d5db',
+  whiteSpace: 'nowrap',
+});
 const rp2IndicatorDotStyle = (tone) => ({
   width: tone === 'empty' ? 3 : 4,
   height: tone === 'empty' ? 3 : 4,

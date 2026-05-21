@@ -28,6 +28,19 @@ const emptyForm = {
   members: [],
 };
 
+function normalizeDecimalInput(value) {
+  return String(value ?? '')
+    .replace(',', '.')
+    .trim();
+}
+
+function parseTeamDailyRateInput(value) {
+  const normalized = normalizeDecimalInput(value);
+  if (!normalized) return 0;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
 function normalizeTeamFormForDirtyCheck(form) {
   return JSON.stringify({
     name: form.name || '',
@@ -82,6 +95,8 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
 
   useEffect(() => {
     if (!open) return;
+    const nextRateValue = team?.team_daily_rate ?? '';
+    console.info('[team-rate-debug] loaded team_daily_rate =', nextRateValue);
     setForm(
       team
         ? {
@@ -151,18 +166,20 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
     if (saving) return;
     setSaving(true);
     try {
-      await onSubmit({
+      const payload = {
         name: form.name.trim(),
         notes: form.notes.trim(),
         attendance_mode: form.attendance_mode === 'headcount' ? 'headcount' : 'details',
-        team_daily_rate: form.team_daily_rate === '' ? 0 : Number(form.team_daily_rate),
+        team_daily_rate: parseTeamDailyRateInput(form.team_daily_rate),
         members: form.members.map((member) => ({
           employee_id: Number(member.employee_id),
           compensation: member.compensation === '' ? null : Number(member.compensation),
           manage_by_days: !!member.manage_by_days,
           notes: member.notes || '',
         })),
-      });
+      };
+      console.info('[team-rate-debug] payload =', payload);
+      await onSubmit(payload);
     } finally {
       setSaving(false);
     }
@@ -232,12 +249,15 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
 
               <Field label="Tariffa giornaliera squadra">
                 <input
-                  type="number"
-                  step="0.01"
-                  min="0"
+                  type="text"
+                  inputMode="decimal"
                   value={form.team_daily_rate}
                   disabled={saving}
-                  onChange={(event) => setForm((current) => ({ ...current, team_daily_rate: event.target.value }))}
+                  onChange={(event) => {
+                    const rawValue = event.target.value;
+                    console.info('[team-rate-debug] form value =', rawValue);
+                    setForm((current) => ({ ...current, team_daily_rate: rawValue }));
+                  }}
                   placeholder="es. 55"
                 />
               </Field>

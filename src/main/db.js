@@ -312,6 +312,18 @@ function runCoreSchemaMigration(database) {
       UNIQUE(team_id, employee_id)
     );
 
+    CREATE TABLE IF NOT EXISTS team_advances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      advance_date TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS employee_employment_periods (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       employee_id INTEGER NOT NULL,
@@ -485,6 +497,7 @@ function runCoreSchemaMigration(database) {
     CREATE INDEX IF NOT EXISTS idx_payroll_debt_installments_employee_month ON payroll_debt_installments(employee_id, target_month, is_paid, sort_order, id);
     CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id, sort_order, id);
     CREATE INDEX IF NOT EXISTS idx_team_members_employee ON team_members(employee_id);
+    CREATE INDEX IF NOT EXISTS idx_team_advances_lookup ON team_advances(team_id, month, advance_date, id);
     CREATE INDEX IF NOT EXISTS idx_team_attendance_lookup ON team_attendance(team_id, date, id);
     CREATE INDEX IF NOT EXISTS idx_teams_archived ON teams(is_archived, name);
     CREATE INDEX IF NOT EXISTS idx_employee_periods_employee ON employee_employment_periods(employee_id, is_current, id);

@@ -5,7 +5,11 @@ function normalizeAttendanceMode(value) {
 }
 
 function normalizeTeamDailyRate(value) {
-  const parsed = Number(value);
+  const normalized = String(value ?? '')
+    .replace(',', '.')
+    .trim();
+  if (!normalized) return 0;
+  const parsed = Number(normalized);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
@@ -93,7 +97,14 @@ function attachTeamMembers(teamRows) {
     team_daily_rate: normalizeTeamDailyRate(team.team_daily_rate),
     is_archived: !!team.is_archived,
     members: membersByTeam.get(team.id) || [],
-  }));
+  })).map((team) => {
+    console.info('[team-rate-debug] loaded team_daily_rate =', {
+      teamId: team.id,
+      name: team.name,
+      team_daily_rate: team.team_daily_rate,
+    });
+    return team;
+  });
 }
 
 function listTeams(options = {}) {
@@ -130,6 +141,12 @@ function createTeam(payload) {
   const members = Array.isArray(payload.members) ? payload.members : [];
 
   const tx = db.transaction(() => {
+    const normalizedRate = normalizeTeamDailyRate(payload.team_daily_rate);
+    console.info('[team-rate-debug] repo save team_daily_rate =', {
+      mode: 'create',
+      name: payload.name?.trim() || '',
+      team_daily_rate: normalizedRate,
+    });
     const result = db.prepare(`
       INSERT INTO teams (name, notes, attendance_mode, team_daily_rate, is_archived, archived_at)
       VALUES (?, ?, ?, ?, 0, NULL)
@@ -137,7 +154,7 @@ function createTeam(payload) {
       payload.name?.trim() || '',
       payload.notes || null,
       normalizeAttendanceMode(payload.attendance_mode),
-      normalizeTeamDailyRate(payload.team_daily_rate)
+      normalizedRate
     );
 
     const teamId = result.lastInsertRowid;
@@ -172,6 +189,13 @@ function updateTeam(id, payload) {
   const members = Array.isArray(payload.members) ? payload.members : [];
 
   const tx = db.transaction(() => {
+    const normalizedRate = normalizeTeamDailyRate(payload.team_daily_rate);
+    console.info('[team-rate-debug] repo save team_daily_rate =', {
+      mode: 'update',
+      teamId,
+      name: payload.name?.trim() || '',
+      team_daily_rate: normalizedRate,
+    });
     db.prepare(`
       UPDATE teams
       SET name = ?, notes = ?, attendance_mode = ?, team_daily_rate = ?, updated_at = CURRENT_TIMESTAMP
@@ -180,7 +204,7 @@ function updateTeam(id, payload) {
       payload.name?.trim() || '',
       payload.notes || null,
       normalizeAttendanceMode(payload.attendance_mode),
-      normalizeTeamDailyRate(payload.team_daily_rate),
+      normalizedRate,
       teamId
     );
 
