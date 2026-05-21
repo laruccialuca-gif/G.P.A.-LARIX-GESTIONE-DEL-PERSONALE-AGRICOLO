@@ -62,6 +62,8 @@ function AttendanceTable(props) {
   dayInfoMap,
   todayKey,
   attendanceRowsData,
+  expandedTeamIds,
+  toggleExpandedTeam,
   dailySubtotals,
   formatAttendanceSubtotalValue,
   selectedEmployeeIds,
@@ -105,6 +107,10 @@ function AttendanceTable(props) {
   onCellDoubleClick,
   } = props;
   const isTeamHeadcountView = selectedMeta.type === 'team' && attendanceRowsData.some((row) => row.headcountMode);
+  const expandedTeamIdSet = React.useMemo(
+    () => new Set((expandedTeamIds || []).map((id) => Number(id))),
+    [expandedTeamIds]
+  );
   countAttendanceDiag('AttendanceTable render');
   console.count('[attendance-diag] AttendanceTable render');
   resetEqStats();
@@ -157,6 +163,34 @@ function AttendanceTable(props) {
       <td style={tdStyleRightSummaryCurrent}>gg</td>
     </tr>
   );
+
+  const getTeamMismatchByDate = React.useCallback((teamId) => {
+    const normalizedTeamId = Number(teamId);
+    if (!Number.isFinite(normalizedTeamId)) return {};
+    const teamRow = attendanceRowsData.find((row) => row.headcountMode && Number(row.team?.id) === normalizedTeamId);
+    if (!teamRow) return {};
+    const childRows = attendanceRowsData.filter((row) => row.isTeamChildRow && Number(row.parentTeamId) === normalizedTeamId);
+    if (!childRows.length) return {};
+
+    return Object.fromEntries(
+      dayKeys
+        .map((dateStr) => {
+        const declared = Number(teamRow.effectiveAttendance?.[dateStr]?.hours_worked || 0);
+        if (declared <= 0) return [dateStr, null];
+        const filled = childRows.reduce((count, row) => {
+          const entry = row.effectiveAttendance?.[dateStr];
+          const isPresent =
+            Number(entry?.hours_worked || 0) > 0 ||
+            Number(entry?.overtime_hours || 0) > 0;
+          return count + (isPresent ? 1 : 0);
+        }, 0);
+        return declared !== filled
+          ? [dateStr, { declared, filled }]
+          : [dateStr, null];
+      })
+        .filter(([, mismatch]) => mismatch)
+    );
+  }, [attendanceRowsData, dayKeys]);
 
   return (
     <div className={`attendance-table-region ${isCompactLayout ? 'attendance-table-region--compact' : ''}`}>
@@ -229,10 +263,13 @@ function AttendanceTable(props) {
             const hasEmployeeRows = attendanceRowsData.some((row) => !row.headcountMode);
             const hasTeamRows = attendanceRowsData.some((row) => row.headcountMode);
             for (const rowData of attendanceRowsData) {
-              const { employee, teamMember, effectiveAttendance, totals, headcountMode } = rowData;
+              const { employee, teamMember, effectiveAttendance, totals, headcountMode, isTeamChildRow } = rowData;
               const employeeId = employee.id;
               const isHCTeam = !!headcountMode;
+              const rowKey = isTeamChildRow ? `team-child-${rowData.parentTeamId}-${employeeId}` : employeeId;
               const movableRowIndex = movableRowIndexById.get(Number(employeeId)) ?? -1;
+              const teamMismatchByDate = isHCTeam ? getTeamMismatchByDate(rowData.team?.id) : {};
+              const teamMismatchCount = Object.keys(teamMismatchByDate).length;
 
               // Inserire sezione header prima del primo headcount team (solo in modo "Tutti")
               if (isHCTeam && !headcountSectionShown && selectedMeta.type === 'all') {
@@ -283,6 +320,7 @@ function AttendanceTable(props) {
                   markerMenuKey, overtimeEditorKey,
                   isEditingMarker, isEditingCompactOvertime,
                   mainInputValue, overtimeInputValue, mainInputTone, overtimeHasValue,
+                  teamMismatch: teamMismatchByDate[dateStr] || null,
                 };
               });
               __cellsTotalMs += __nowMs() - __cellsT0;
@@ -298,9 +336,14 @@ function AttendanceTable(props) {
 
               items.push(
                 <AttendanceRow
-                  key={employeeId}
+                  key={rowKey}
                   employee={employee}
                   teamMember={teamMember}
+                  team={rowData.team}
+                  isTeamChildRow={!!isTeamChildRow}
+                  isTeamExpanded={isHCTeam && expandedTeamIdSet.has(Number(rowData.team?.id))}
+                  onToggleTeamExpanded={isHCTeam ? toggleExpandedTeam : null}
+                  teamMismatchCount={teamMismatchCount}
                   isSelected={isSelected}
                   cells={cells}
                   totalHoursLabel={totalHoursLabel}
@@ -328,8 +371,8 @@ function AttendanceTable(props) {
                   handleOvertimeValueBlur={handleOvertimeValueBlur}
                   onCellSingleClick={onCellSingleClick}
                   onCellDoubleClick={onCellDoubleClick}
-                  canMoveUp={!isHCTeam && movableRowIndex > 0}
-                  canMoveDown={!isHCTeam && movableRowIndex >= 0 && movableRowIndex < movableRows.length - 1}
+                  canMoveUp={!isHCTeam && !isTeamChildRow && movableRowIndex > 0}
+                  canMoveDown={!isHCTeam && !isTeamChildRow && movableRowIndex >= 0 && movableRowIndex < movableRows.length - 1}
                   moveVisibleEmployeeRow={moveVisibleEmployeeRow}
                 />
               );

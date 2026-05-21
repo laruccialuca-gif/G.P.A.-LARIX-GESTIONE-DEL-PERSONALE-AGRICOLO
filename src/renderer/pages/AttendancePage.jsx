@@ -408,6 +408,23 @@ function buildTeamRows(team, year) {
     }));
 }
 
+function buildTeamChildRows(team, year) {
+  return (team?.members || [])
+    .filter((member) =>
+      member.employee &&
+      !member.employee.is_deleted &&
+      employeeIsActiveInYear(member.employee, year)
+    )
+    .map((member) => ({
+      employee: member.employee,
+      teamMember: member,
+      team,
+      parentTeamId: Number(team.id),
+      parentHeadcountRowId: getTeamHeadcountRowId(team.id),
+      isTeamChildRow: true,
+    }));
+}
+
 function buildTeamMemberEmployeeIdsSet(teams = [], year) {
   const employeeIds = new Set();
   for (const team of teams || []) {
@@ -780,6 +797,7 @@ export default function AttendancePage() {
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
   const [employeeFilterIds, setEmployeeFilterIds] = useState(() => readStoredEmployeeFilter());
   const [employeeDisplayOrder, setEmployeeDisplayOrder] = useState(() => readStoredEmployeeOrder());
+  const [expandedTeamIds, setExpandedTeamIds] = useState([]);
   const [bulkHoursValue, setBulkHoursValue] = useState('');
   const [bulkMarkerValue, setBulkMarkerValue] = useState('');
   const [bulkOvertimeValue, setBulkOvertimeValue] = useState('');
@@ -1216,6 +1234,21 @@ export default function AttendancePage() {
       : null,
     [selectedMeta.type, selectedMeta.id, visibleTeams]
   );
+  const expandedTeamIdSet = useMemo(
+    () => new Set(expandedTeamIds.map((id) => Number(id))),
+    [expandedTeamIds]
+  );
+  const toggleExpandedTeam = useStableCallback((teamId) => {
+    const normalizedTeamId = Number(teamId);
+    if (!Number.isFinite(normalizedTeamId)) {
+      return;
+    }
+    setExpandedTeamIds((current) => (
+      current.some((id) => Number(id) === normalizedTeamId)
+        ? current.filter((id) => Number(id) !== normalizedTeamId)
+        : [...current, normalizedTeamId]
+    ));
+  });
 
   const entityRows = useMemo(() => {
     const diagToken = diagStart('entityRows useMemo');
@@ -1365,8 +1398,16 @@ export default function AttendancePage() {
         headcountRowIds: headcountRows.map(row => row.employee.id),
       });
     }
-    return rows;
-  }, [employeeDisplayOrder, employeeFilterSet, entityRows]);
+    const expandedRows = [];
+    for (const row of rows) {
+      expandedRows.push(row);
+      if (row.headcountMode && row.team?.id && expandedTeamIdSet.has(Number(row.team.id))) {
+        expandedRows.push(...buildTeamChildRows(row.team, selectedYear));
+      }
+    }
+
+    return expandedRows;
+  }, [employeeDisplayOrder, employeeFilterSet, entityRows, expandedTeamIdSet, selectedYear]);
 
   const filterAvailableEmployees = useMemo(
     () => entityRows.map(({ employee }) => employee),
@@ -1827,8 +1868,9 @@ export default function AttendancePage() {
       const startedAt = getPerfNow();
       const previousCache = attendanceRowsCacheRef.current;
       const nextCache = new Map();
-      let rows = displayRows.map(({ employee, teamMember, headcountMode, team, activeMemberCount }) => {
+      let rows = displayRows.map(({ employee, teamMember, headcountMode, team, activeMemberCount, isTeamChildRow, parentTeamId, parentHeadcountRowId }) => {
         const employeeId = Number(employee.id);
+        const rowCacheKey = isTeamChildRow ? `${parentTeamId || 'team'}:${employeeId}` : String(employeeId);
         const baseAttendance = attendanceByEmployeeId.get(employeeId) || EMPTY_ROW_ATTENDANCE;
         const pendingAttendance = pendingChangesByEmployeeId.get(employeeId) || EMPTY_ROW_ATTENDANCE;
         const memberRecords = dayKeys.map((dateStr) =>
@@ -1840,19 +1882,21 @@ export default function AttendancePage() {
         const totals = headcountMode
           ? calculateHeadcountTotals(memberRecords, attendanceSettings.baseHours)
           : calculateAttendanceTotals(memberRecords, attendanceSettings.baseHours);
-        const previousRow = previousCache.get(employeeId);
+        const previousRow = previousCache.get(rowCacheKey);
 
         if (
           previousRow &&
           previousRow.employee === employee &&
           previousRow.teamMember === teamMember &&
           previousRow.headcountMode === !!headcountMode &&
+          previousRow.isTeamChildRow === !!isTeamChildRow &&
+          previousRow.parentTeamId === (parentTeamId || null) &&
           previousRow.effectiveAttendance === effectiveAttendance &&
           previousRow.totals?.totalHours === totals.totalHours &&
           previousRow.totals?.standardHours === totals.standardHours &&
           previousRow.totals?.totalHeadcount === totals.totalHeadcount
         ) {
-          nextCache.set(employeeId, previousRow);
+          nextCache.set(rowCacheKey, previousRow);
           return previousRow;
         }
 
@@ -1862,10 +1906,13 @@ export default function AttendancePage() {
           headcountMode: !!headcountMode,
           team,
           activeMemberCount,
+          isTeamChildRow: !!isTeamChildRow,
+          parentTeamId: parentTeamId || null,
+          parentHeadcountRowId: parentHeadcountRowId || null,
           effectiveAttendance,
           totals,
         };
-        nextCache.set(employeeId, nextRow);
+        nextCache.set(rowCacheKey, nextRow);
         return nextRow;
       });
 
@@ -1889,7 +1936,7 @@ export default function AttendancePage() {
   );
 
   const dailySubtotals = useMemo(() => {
-    const employeeRows = attendanceRowsData.filter((row) => !row.headcountMode);
+    const employeeRows = attendanceRowsData.filter((row) => !row.headcountMode && !row.isTeamChildRow);
     const teamRows = attendanceRowsData.filter((row) => row.headcountMode);
     const employeesByDay = dayKeys.map((dateStr) =>
       employeeRows.reduce((sum, row) => {
@@ -3658,6 +3705,8 @@ export default function AttendancePage() {
             dayInfoMap={dayInfoMap}
             todayKey={todayKey}
             attendanceRowsData={attendanceRowsData}
+            expandedTeamIds={expandedTeamIds}
+            toggleExpandedTeam={toggleExpandedTeam}
             dailySubtotals={dailySubtotals}
             formatAttendanceSubtotalValue={formatAttendanceSubtotalValue}
             selectedEmployeeIds={selectedEmployeeIds}

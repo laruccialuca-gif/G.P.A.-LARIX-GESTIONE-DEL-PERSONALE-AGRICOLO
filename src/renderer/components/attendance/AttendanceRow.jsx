@@ -13,6 +13,11 @@ function getAttendanceEmployeeDisplayName(employee) {
 function AttendanceRow({
   employee,
   teamMember,
+  team,
+  isTeamChildRow,
+  isTeamExpanded,
+  onToggleTeamExpanded,
+  teamMismatchCount,
   isSelected,
   cells,
   totalHoursLabel,
@@ -59,23 +64,45 @@ function AttendanceRow({
     }
   }, []);
   return (
-    <tr>
+    <tr className={`${employee.is_headcount_team_row ? 'attendance-team-parent-row' : ''} ${isTeamChildRow ? 'attendance-team-child-row' : ''} ${teamMismatchCount ? 'attendance-team-row--mismatch' : ''}`}>
       <td style={tdStyleLeftCurrent}>
-        <div className="attendance-left-cell">
+        <div className={`attendance-left-cell ${isTeamChildRow ? 'attendance-left-cell--team-child' : ''}`}>
           <input
             type="checkbox"
             checked={isSelected}
             onChange={(event) => toggleEmployeeSelection(employee.id, event.target.checked)}
             aria-label={`Seleziona ${getAttendanceEmployeeDisplayName(employee)}`}
           />
+          {employee.is_headcount_team_row ? (
+            <button
+              type="button"
+              className="attendance-team-expand-button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleTeamExpanded?.(team?.id || employee.team_id);
+              }}
+              aria-label={`${isTeamExpanded ? 'Chiudi' : 'Apri'} componenti ${getAttendanceEmployeeDisplayName(employee)}`}
+              title={`${isTeamExpanded ? 'Chiudi' : 'Apri'} componenti squadra`}
+            >
+              {isTeamExpanded ? '▾' : '▸'}
+            </button>
+          ) : isTeamChildRow ? (
+            <span className="attendance-team-child-indent" aria-hidden="true" />
+          ) : null}
           <div>
             <div className="attendance-employee-name">{getAttendanceEmployeeDisplayName(employee)}</div>
             <div style={{ fontSize: isCompactLayout ? 9 : 10, color: '#6b7280' }}>
               {employee.role || ''}
               {teamMember?.manage_by_days ? ' - gestione a giornate' : ''}
+              {isTeamChildRow && team?.name ? ` - ${team.name}` : ''}
             </div>
+            {teamMismatchCount ? (
+              <div className="attendance-team-warning">
+                {teamMismatchCount} incongruenze componenti
+              </div>
+            ) : null}
           </div>
-          {!employee.is_headcount_team_row ? (
+          {!employee.is_headcount_team_row && !isTeamChildRow ? (
             <div className="attendance-row-order-actions">
               <button
                 type="button"
@@ -117,6 +144,9 @@ function AttendanceRow({
         const displayedCellValue = isTeamHeadcountCell && cell.att && teamHoursPerPerson > 0
           ? `${cell.att.hours_worked}\u00d7${teamHoursPerPersonLabel}`
           : (cell.mainInputValue || '');
+        const mismatchTitle = cell.teamMismatch
+          ? `Dichiarati ${cell.teamMismatch.declared} presenti, compilati ${cell.teamMismatch.filled} componenti`
+          : '';
 
         return (
           <td
@@ -130,7 +160,7 @@ function AttendanceRow({
           >
             <button
               type="button"
-              className={`attendance-compact-cell ${cell.mainInputValue ? 'attendance-compact-cell--filled' : ''} ${cell.isSpecial ? 'attendance-compact-cell--special' : ''} ${hasSecondaryDetails ? 'attendance-compact-cell--detailed' : ''}`}
+              className={`attendance-compact-cell ${cell.mainInputValue ? 'attendance-compact-cell--filled' : ''} ${cell.isSpecial ? 'attendance-compact-cell--special' : ''} ${hasSecondaryDetails ? 'attendance-compact-cell--detailed' : ''} ${cell.teamMismatch ? 'attendance-compact-cell--mismatch' : ''}`}
               onClick={() => {
                 if (isWriteBlocked) return;
                 if (clickTimeoutRef.current) {
@@ -149,7 +179,7 @@ function AttendanceRow({
                 }
                 onCellDoubleClick(Number(employee.id), cell.dateStr);
               }}
-              title={`${cell.dateStr} • Click: inserisci/rimuovi giornata • Doppio click: dettagli`}
+              title={mismatchTitle || `${cell.dateStr} • Click: inserisci/rimuovi giornata • Doppio click: dettagli`}
               style={{ cursor: isWriteBlocked ? 'default' : 'pointer' }}
               disabled={isWriteBlocked}
               aria-label={`Modifica presenza del ${cell.dateStr} per ${getAttendanceEmployeeDisplayName(employee)}`}
@@ -161,6 +191,7 @@ function AttendanceRow({
                 </span>
               ) : null}
               {hasNonOvertimeDetails ? <span className="attendance-compact-cell__dot" aria-hidden="true" /> : null}
+              {cell.teamMismatch ? <span className="attendance-compact-cell__warning" aria-hidden="true">!</span> : null}
             </button>
           </td>
         );
@@ -188,6 +219,7 @@ const CELL_FIELDS = [
   'overtimeInputValue',
   'mainInputTone',
   'overtimeHasValue',
+  'teamMismatch',
 ];
 
 function areCellsEqual(prev, next) {
@@ -228,6 +260,11 @@ function __eqNow() {
 function arePropsEqualImpl(prev, next) {
   if (prev.employee !== next.employee) return false;
   if (prev.teamMember !== next.teamMember) return false;
+  if (prev.team !== next.team) return false;
+  if (prev.isTeamChildRow !== next.isTeamChildRow) return false;
+  if (prev.isTeamExpanded !== next.isTeamExpanded) return false;
+  if (prev.onToggleTeamExpanded !== next.onToggleTeamExpanded) return false;
+  if (prev.teamMismatchCount !== next.teamMismatchCount) return false;
   if (prev.isSelected !== next.isSelected) return false;
   if (prev.totalHoursLabel !== next.totalHoursLabel) return false;
   if (prev.summaryLabel !== next.summaryLabel) return false;
