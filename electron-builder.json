@@ -1,6 +1,6 @@
 {
   "appId": "com.company.gestionaledipendentioffline",
-  "productName": "GPA 1.0.4",
+  "productName": "GPA 1.0.5",
   "directories": {
     "output": "release",
     "buildResources": "build/resources"
@@ -36,7 +36,7 @@
   },
   "artifactName": "${productName}-${version}-${arch}.${ext}",
   "win": {
-    "executableName": "GPA 1.0.4",
+    "executableName": "GPA 1.0.5",
     "target": [
       {
         "target": "nsis",
@@ -61,8 +61,8 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "GPA 1.0.4",
-    "uninstallDisplayName": "GPA 1.0.4",
+    "shortcutName": "GPA 1.0.5",
+    "uninstallDisplayName": "GPA 1.0.5",
     "deleteAppDataOnUninstall": false,
     "displayLanguageSelector": false
   }

@@ -328,7 +328,7 @@ function buildPrintHtml(preview, companyHeader) {
               <p class="print-hub__subtitle">${escapeHtml(preview.subtitle || '')}</p>
             </div>
             <div class="print-hub__meta">
-              <div class="print-hub__company">${escapeHtml(companyHeader || 'GPA 1.0.4')}</div>
+              <div class="print-hub__company">${escapeHtml(companyHeader || 'GPA 1.0.5')}</div>
               <div>Stampato il ${escapeHtml(formatDate(new Date().toISOString().slice(0, 10)))}</div>
             </div>
           </div>
@@ -1274,7 +1274,7 @@ export default function PrintDocumentsPage() {
 
   async function handlePrintOutput(mode) {
     if (!printPreview || printPreview.status !== 'ready') return;
-    const companyHeader = settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.4';
+    const companyHeader = settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.5';
     const html = buildPrintHtml(printPreview, companyHeader);
     const fileName = printPreview.fileName || 'stampa.pdf';
 

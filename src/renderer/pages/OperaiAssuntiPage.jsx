@@ -420,7 +420,7 @@ export default function OperaiAssuntiPage() {
               ${escapeHtml(displayTitle)}
             </div>
             <div style="margin-top:6px; font-size:13px; color:#475569;">
-              ${settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.4'}
+              ${settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.5'}
             </div>
           </div>
 
@@ -530,7 +530,7 @@ export default function OperaiAssuntiPage() {
           <div>
             <div style="font-size:11px; font-weight:900; letter-spacing:0.08em; text-transform:uppercase; color:#14532d;">Richiesta consulente</div>
             <div style="margin-top:8px; font-size:25px; line-height:1.12; font-weight:900;">Richiesta chiusura anticipata operai</div>
-            <div style="margin-top:6px; font-size:13px; color:#475569;">${escapeHtml(settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.4')}</div>
+            <div style="margin-top:6px; font-size:13px; color:#475569;">${escapeHtml(settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.5')}</div>
           </div>
           <div style="min-width:250px; border:1px solid #dbe4dd; border-radius:16px; padding:12px 14px; background:#f8fbf7;">
             <div style="font-size:12px; color:#334155;">Data documento: <strong>${escapeHtml(printDate)}</strong></div>

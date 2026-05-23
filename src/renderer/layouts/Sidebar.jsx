@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import larixLogo from '../../assets/larix-logo.png';
+import { getSoftwareBrandingLabel } from '../config/branding';
 import { useAuth } from '../context/AuthContext';
 import { dispatchNavigationStart } from '../utils/navigationPerf';
 
@@ -174,9 +175,13 @@ export default function Sidebar() {
             >
               Esci
             </button>
+            <span style={{ marginTop: 6, fontSize: 11, color: '#9ca3af' }}>{getSoftwareBrandingLabel()}</span>
           </div>
         ) : (
-          <span>Vista ottimizzata per desktop e tablet</span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span>Vista ottimizzata per desktop e tablet</span>
+            <span style={{ fontSize: 11, color: '#9ca3af' }}>{getSoftwareBrandingLabel()}</span>
+          </div>
         )}
       </div>
     </aside>

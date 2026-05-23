@@ -893,7 +893,7 @@ function buildCommunicationExcelXml(communication) {
  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
  xmlns:html="http://www.w3.org/TR/REC-html40">
   <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
-    <Author>GPA 1.0.4</Author>
+    <Author>GPA 1.0.5</Author>
     <Created>${new Date().toISOString()}</Created>
   </DocumentProperties>
   <Styles>
