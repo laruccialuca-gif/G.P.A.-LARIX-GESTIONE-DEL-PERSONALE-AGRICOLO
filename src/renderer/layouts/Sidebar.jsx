@@ -74,6 +74,7 @@ const links = [
   { path: '/acconti-rate', label: 'Acconti e Rate', icon: <MoneyIcon /> },
   { path: '/report', label: 'Report', icon: '\u25ea' },
   { path: '/storico-operaio', label: 'Storico', icon: '\u25ce' },
+  { path: '/stampa-documenti', label: 'Stampa e Documenti', icon: '\u{1F4C4}' },
   { path: '/buste-paga', label: 'Buste paga', icon: '\u25a4' },
   { path: '/comunicazione', label: 'Comunicazione', icon: '\u2709' },
   { path: '/dpi', label: 'DPI', icon: '\u{1F97E}' },

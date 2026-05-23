@@ -292,6 +292,7 @@ const teamsRepo = require('./teamsRepo');
 const dpiRepo = require('./dpiRepo');
 const communicationRepo = require('./communicationRepo');
 const occupationRepo = require('./occupationRepo');
+const printDocumentsRepo = require('./printDocumentsRepo');
 const settingsService = require('./settingsService');
 const backupService = require('./backupService');
 const diagnosticsService = require('./diagnosticsService');
@@ -2550,6 +2551,19 @@ app.whenReady().then(async () => {
     requireWritableLicense('La modifica della rubrica comunicazioni');
     return settingsService.deleteCommunicationEmailContact(id);
   });
+
+  ipcMain.handle('printDocuments:listDocuments', async (_, filters) =>
+    printDocumentsRepo.listPrintableDocuments(filters)
+  );
+  ipcMain.handle('printDocuments:openDocument', async (_, relativePath) =>
+    printDocumentsRepo.openPrintableDocument(relativePath)
+  );
+  ipcMain.handle('printDocuments:printDocument', async (_, relativePath) =>
+    printDocumentsRepo.printPrintableDocument(relativePath)
+  );
+  ipcMain.handle('printDocuments:exportDocument', async (_, relativePath, suggestedFileName) =>
+    printDocumentsRepo.exportPrintableDocument(mainWindow, relativePath, suggestedFileName)
+  );
 
   ipcMain.handle('attendance:save', async (_, payload) => {
     requireWritableLicense("L'inserimento di nuove presenze");

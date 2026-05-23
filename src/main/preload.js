@@ -232,4 +232,12 @@ contextBridge.exposeInMainWorld('api', {
     savePdfToFolder: (payload) => ipcRenderer.invoke('reports:savePdfToFolder', payload),
     printHtml: (payload) => ipcRenderer.invoke('reports:printHtml', payload),
   },
+
+  printDocuments: {
+    listDocuments: (filters) => ipcRenderer.invoke('printDocuments:listDocuments', filters),
+    openDocument: (relativePath) => ipcRenderer.invoke('printDocuments:openDocument', relativePath),
+    printDocument: (relativePath) => ipcRenderer.invoke('printDocuments:printDocument', relativePath),
+    exportDocument: (relativePath, suggestedFileName) =>
+      ipcRenderer.invoke('printDocuments:exportDocument', relativePath, suggestedFileName),
+  },
 });
