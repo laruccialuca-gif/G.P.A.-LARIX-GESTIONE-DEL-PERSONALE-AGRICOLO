@@ -2,6 +2,7 @@ import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'r
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { useYearContext } from '../context/YearContext';
+import { dispatchRouteReady } from '../utils/navigationPerf';
 import { employeeIsActiveInYear, isDateRangeActiveInYear } from '../utils/yearScope';
 
 function todayIso() {
@@ -296,7 +297,7 @@ function getDraftReferenceYear(draft, effectivePeriod, fallbackYear) {
 }
 
 export default function CommunicationPage() {
-  const COMMUNICATION_PAGE_SIZE = 24;
+  const COMMUNICATION_PAGE_SIZE = 50;
   const navigate = useNavigate();
   const { selectedYear } = useYearContext();
   const [employees, setEmployees] = useState([]);
@@ -304,6 +305,8 @@ export default function CommunicationPage() {
   const [communicationTotal, setCommunicationTotal] = useState(0);
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyEnabled, setHistoryEnabled] = useState(false);
   const [saving, setSaving] = useState(false);
   const [emailing, setEmailing] = useState(false);
   const [historySearch, setHistorySearch] = useState('');
@@ -320,6 +323,8 @@ export default function CommunicationPage() {
   const [showAddressBook, setShowAddressBook] = useState(false);
   const [contactForm, setContactForm] = useState({ id: '', name: '', email: '' });
   const [payrollByEmployee, setPayrollByEmployee] = useState({});
+  const [historyById, setHistoryById] = useState({});
+  const [historyDetailsLoadingIds, setHistoryDetailsLoadingIds] = useState([]);
   const [activeCompensationKey, setActiveCompensationKey] = useState(null);
   const [lockedCompensationKey, setLockedCompensationKey] = useState(null);
   const [compensationPopoverPosition, setCompensationPopoverPosition] = useState({ left: 12, top: 12 });
@@ -327,40 +332,27 @@ export default function CommunicationPage() {
   const deferredHistorySearch = useDeferredValue(historySearch);
   const deferredEmployeeSearch = useDeferredValue(employeeSearch);
 
-  async function loadData() {
+  async function loadBaseData() {
     setLoading(true);
     const __nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
     const __t0 = __nowMs();
     try {
       const __empT0 = __nowMs();
       const employeesPromise = window.api.employees.listBasic({ includePeriods: true, includeTeamHistory: true });
-      const communicationsPromise = window.api.communications.list({
-        year: selectedYear,
-        search: deferredHistorySearch,
-        limit: COMMUNICATION_PAGE_SIZE,
-        offset: historyOffset,
-      });
       const settingsPromise = window.api.settings.get();
+      const contactsPromise = window.api.communications.listContacts();
       const employeeData = await employeesPromise;
       const __empMs = __nowMs() - __empT0;
       console.info('[page-perf] communication:employees-load:end', {
         count: Array.isArray(employeeData) ? employeeData.length : 0,
         duration_ms: Math.round(__empMs),
       });
-      const [communicationData, settingsData] = await Promise.all([communicationsPromise, settingsPromise]);
-      const contacts = await window.api.communications.listContacts();
+      const [settingsData, contacts] = await Promise.all([settingsPromise, contactsPromise]);
 
       const employeeList = employeeData || [];
       setSettings(settingsData || null);
       setEmailContacts(contacts || []);
       setEmployees(employeeList);
-      if (Array.isArray(communicationData)) {
-        setCommunications(communicationData || []);
-        setCommunicationTotal((communicationData || []).length);
-      } else {
-        setCommunications(communicationData?.items || []);
-        setCommunicationTotal(Number(communicationData?.total || 0));
-      }
       setDraft((current) => ({
         ...(() => {
           const rebuiltRows = current.id
@@ -391,11 +383,57 @@ export default function CommunicationPage() {
   }
 
   useEffect(() => {
-    loadData();
-  }, [selectedYear, deferredHistorySearch, historyOffset]);
+    loadBaseData();
+  }, [selectedYear]);
+
+  async function loadHistory() {
+    if (!historyEnabled) {
+      return;
+    }
+
+    setHistoryLoading(true);
+    try {
+      const result = await window.api.communications.list({
+        year: selectedYear,
+        search: deferredHistorySearch,
+        limit: COMMUNICATION_PAGE_SIZE,
+        offset: historyOffset,
+        includeDetails: false,
+      });
+      const items = Array.isArray(result) ? (result || []) : (result?.items || []);
+      setCommunications(items);
+      setCommunicationTotal(Array.isArray(result) ? items.length : Number(result?.total || 0));
+      setHistoryById((current) => {
+        const next = { ...current };
+        items.forEach((item) => {
+          if (item?.id && current[item.id]) {
+            next[item.id] = current[item.id];
+          }
+        });
+        return next;
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Errore caricamento storico comunicazioni');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
 
   useEffect(() => {
-    setHistoryOffset(0);
+    loadHistory();
+  }, [historyEnabled, selectedYear, deferredHistorySearch, historyOffset]);
+
+  useEffect(() => {
+    if (!loading) {
+      dispatchRouteReady('/comunicazione');
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    if (historyEnabled) {
+      setHistoryOffset(0);
+    }
   }, [selectedYear, deferredHistorySearch]);
 
   useEffect(() => {
@@ -675,7 +713,10 @@ export default function CommunicationPage() {
         ...current,
         id: saved.id,
       }));
-      await loadData();
+      await loadBaseData();
+      if (historyEnabled) {
+        await loadHistory();
+      }
       return saved;
     } catch (err) {
       console.error(err);
@@ -747,7 +788,38 @@ export default function CommunicationPage() {
     });
   }
 
-  function loadHistoryCommunication(communication) {
+  async function ensureHistoryCommunicationLoaded(communicationId) {
+    const existing = historyById[communicationId];
+    if (existing?.details?.length) {
+      return existing;
+    }
+
+    setHistoryDetailsLoadingIds((current) =>
+      current.includes(communicationId) ? current : [...current, communicationId],
+    );
+    try {
+      const fullCommunication = await window.api.communications.getById(communicationId);
+      if (fullCommunication) {
+        setHistoryById((current) => ({
+          ...current,
+          [communicationId]: fullCommunication,
+        }));
+      }
+      return fullCommunication;
+    } catch (err) {
+      console.error(err);
+      alert('Errore caricamento dettaglio comunicazione');
+      return null;
+    } finally {
+      setHistoryDetailsLoadingIds((current) => current.filter((id) => id !== communicationId));
+    }
+  }
+
+  async function loadHistoryCommunication(communicationSummary) {
+    const communication =
+      historyById[communicationSummary.id] ||
+      (await ensureHistoryCommunicationLoaded(communicationSummary.id)) ||
+      communicationSummary;
     const communicationRange = getCommunicationReferenceRange(communication);
     setDraft({
       id: communication.id,
@@ -972,7 +1044,14 @@ export default function CommunicationPage() {
       if (draft.id === communication.id) {
         resetDraft();
       }
-      await loadData();
+      setHistoryById((current) => {
+        const next = { ...current };
+        delete next[communication.id];
+        return next;
+      });
+      if (historyEnabled) {
+        await loadHistory();
+      }
     } catch (err) {
       console.error(err);
       alert('Errore eliminazione comunicazione');
@@ -1531,16 +1610,26 @@ export default function CommunicationPage() {
               placeholder="Cerca per oggetto, azienda, periodo, file..."
               value={historySearch}
               onChange={(event) => setHistorySearch(event.target.value)}
+              disabled={!historyEnabled}
             />
           </div>
           <div className="toolbar-group">
             <span className="soft-chip" style={softInfoStyle}>
               Pagina {communicationCurrentPage} / {communicationTotalPages}
             </span>
+            {!historyEnabled ? (
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => setHistoryEnabled(true)}
+              >
+                Mostra storico
+              </button>
+            ) : null}
             <button
               type="button"
               className="button-secondary"
-              disabled={historyOffset === 0 || loading}
+              disabled={!historyEnabled || historyOffset === 0 || historyLoading}
               onClick={() => setHistoryOffset((current) => Math.max(0, current - COMMUNICATION_PAGE_SIZE))}
             >
               Pagina precedente
@@ -1548,7 +1637,7 @@ export default function CommunicationPage() {
             <button
               type="button"
               className="button-secondary"
-              disabled={historyOffset + COMMUNICATION_PAGE_SIZE >= communicationTotal || loading}
+              disabled={!historyEnabled || historyOffset + COMMUNICATION_PAGE_SIZE >= communicationTotal || historyLoading}
               onClick={() => setHistoryOffset((current) => current + COMMUNICATION_PAGE_SIZE)}
             >
               Pagina successiva
@@ -1556,14 +1645,30 @@ export default function CommunicationPage() {
           </div>
         </div>
 
-        {!visibleCommunications.length ? (
+        {!historyEnabled ? (
+          <div className="empty-state">
+            Lo storico non viene caricato all'apertura pagina. Usa &quot;Mostra storico&quot; per caricare gli ultimi {COMMUNICATION_PAGE_SIZE} documenti.
+          </div>
+        ) : historyLoading ? (
+          <div className="empty-state">
+            Caricamento storico comunicazioni...
+          </div>
+        ) : !visibleCommunications.length ? (
           <div className="empty-state">
             Nessuna comunicazione salvata per l'anno {selectedYear}. Compila la tabella e usa "Salva nello storico".
           </div>
         ) : (
           <div className="communication-history-list">
             {visibleCommunications.map((communication) => (
-              <details className="communication-history-card" key={communication.id}>
+              <details
+                className="communication-history-card"
+                key={communication.id}
+                onToggle={(event) => {
+                  if (event.currentTarget.open) {
+                    ensureHistoryCommunicationLoaded(communication.id);
+                  }
+                }}
+              >
                 <summary className="communication-history-summary">
                   <div>
                     <div className="communication-history-title">{communication.title}</div>
@@ -1591,10 +1696,10 @@ export default function CommunicationPage() {
                     <button
                       type="button"
                       className="button-secondary"
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        loadHistoryCommunication(communication);
+                        await loadHistoryCommunication(communication);
                       }}
                     >
                       Usa come base
@@ -1636,6 +1741,11 @@ export default function CommunicationPage() {
                 </summary>
 
                 <div className="communication-history-body">
+                  {historyDetailsLoadingIds.includes(communication.id) ? (
+                    <div className="empty-state" style={{ marginBottom: 12 }}>
+                      Caricamento dettagli comunicazione...
+                    </div>
+                  ) : null}
                   <div className="communication-history-info">
                     <div>
                       <span className="communication-field-label">Periodo</span>
@@ -1662,7 +1772,7 @@ export default function CommunicationPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {(communication.details || []).map((detail) => (
+                        {((historyById[communication.id]?.details || communication.details) || []).map((detail) => (
                           <tr key={detail.id}>
                             <td>{detail.employee_label}</td>
                             <td>{detail.giornate_primo}</td>

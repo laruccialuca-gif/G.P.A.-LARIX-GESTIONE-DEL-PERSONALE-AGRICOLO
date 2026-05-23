@@ -40,6 +40,7 @@ function statusLabel(status) {
 
 const emptyForm = {
   id: null,
+  source: 'financial',
   type: 'advance',
   movement_date: formatLocalDate(),
   amount: '',
@@ -81,8 +82,6 @@ export default function FinancialMovementsPage() {
   );
 
   const selectedTeam = teams.find((team) => String(team.id) === String(form.team_id));
-  const selectedTeamMembers = selectedTeam?.members || [];
-
   async function loadBaseData() {
     setLoading(true);
     const __t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -113,15 +112,48 @@ export default function FinancialMovementsPage() {
 
   async function loadMovements() {
     try {
-      const rows = await window.api.financialMovements.list({
-        month: filters.month || undefined,
-        employee_id: filters.employee_id || undefined,
-        team_id: filters.team_id || undefined,
-        type: filters.type || undefined,
-        status: filters.status || undefined,
-        employer_key: filters.employer_key || undefined,
+      const [employeeRows, teamAdvanceRows] = await Promise.all([
+        window.api.financialMovements.list({
+          month: filters.month || undefined,
+          employee_id: filters.employee_id || undefined,
+          team_id: filters.team_id || undefined,
+          type: filters.type || undefined,
+          status: filters.status || undefined,
+          employer_key: filters.employer_key || undefined,
+        }),
+        filters.employee_id || (filters.type && filters.type !== 'advance')
+          ? Promise.resolve([])
+          : window.api.teamPayroll.listAllAdvances({
+              month: filters.month || undefined,
+              team_id: filters.team_id || undefined,
+              employer_key: filters.employer_key || undefined,
+              status: filters.status || undefined,
+            }),
+      ]);
+
+      const normalizedTeamRows = (teamAdvanceRows || []).map((row) => ({
+        id: `team-advance-${row.id}`,
+        record_id: row.id,
+        source: 'team_advance',
+        type: 'advance',
+        employee_id: null,
+        team_id: row.team_id,
+        employer_key: row.employer_key || '',
+        movement_date: row.advance_date,
+        amount: Number(row.amount || 0),
+        notes: row.notes || '',
+        status: row.include_in_report ? 'inserted' : 'pending',
+        inserted_month: row.include_in_report ? row.month : '',
+        employee_name: 'Acconto squadra',
+        team_name: row.team_name || '',
+      }));
+
+      const combinedRows = [...(employeeRows || []), ...normalizedTeamRows].sort((a, b) => {
+        const dateCompare = String(b.movement_date || '').localeCompare(String(a.movement_date || ''));
+        if (dateCompare !== 0) return dateCompare;
+        return String(b.id || '').localeCompare(String(a.id || ''));
       });
-      setMovements(rows || []);
+      setMovements(combinedRows);
     } catch (error) {
       console.error(error);
       alert('Errore caricamento storico acconti e rate');
@@ -151,18 +183,19 @@ export default function FinancialMovementsPage() {
 
   function resetForm() {
     const defaultEmployer = employerOptions[0]?.short_name || employerOptions[0]?.value || 'LC';
-    setForm({ ...emptyForm, movement_date: formatLocalDate(), employer_key: defaultEmployer });
+    setForm({ ...emptyForm, source: 'financial', movement_date: formatLocalDate(), employer_key: defaultEmployer });
   }
 
   function editMovement(movement) {
     setForm({
       id: movement.id,
+      source: movement.source || 'financial',
       type: movement.type,
       movement_date: movement.movement_date,
       amount: String(movement.amount || ''),
       employer_key: movement.employer_key || employerOptions[0]?.short_name || employerOptions[0]?.value || 'LC',
       assignment: movement.team_id ? 'team' : 'employee',
-      employee_id: String(movement.employee_id || ''),
+      employee_id: movement.employee_id ? String(movement.employee_id) : '',
       team_id: movement.team_id ? String(movement.team_id) : '',
       notes: movement.notes || '',
       status: movement.status || 'pending',
@@ -183,17 +216,31 @@ export default function FinancialMovementsPage() {
         status: form.status,
       };
 
-      if (form.assignment === 'team' && form.team_id && !form.id) {
-        const employeeIds = selectedTeamMembers.map((member) => member.employee_id).filter(Boolean);
-        if (!employeeIds.length) {
-          alert('La squadra selezionata non ha dipendenti.');
+      if (form.assignment === 'team' && form.team_id) {
+        if (form.type !== 'advance') {
+          alert('Per le squadre è disponibile solo la registrazione di acconti.');
           return;
         }
-        await window.api.financialMovements.createManyForEmployees({
-          ...payload,
+
+        const teamAdvancePayload = {
           team_id: Number(form.team_id),
-          employee_ids: employeeIds,
-        });
+          month: String(form.movement_date || '').slice(0, 7),
+          advance_date: form.movement_date,
+          amount: parseAmountInput(form.amount),
+          employer_key: form.employer_key,
+          notes: form.notes,
+          include_in_report: form.status === 'inserted',
+          source_type: 'financial_movement',
+        };
+
+        if (form.source === 'team_advance' && form.id) {
+          await window.api.teamPayroll.updateAdvance(
+            Number(String(form.id).replace('team-advance-', '')),
+            teamAdvancePayload
+          );
+        } else {
+          await window.api.teamPayroll.createAdvance(teamAdvancePayload);
+        }
       } else {
         await window.api.financialMovements.save({
           ...payload,
@@ -215,7 +262,11 @@ export default function FinancialMovementsPage() {
   async function deleteMovement(id) {
     if (!window.confirm('Eliminare questo movimento dallo storico?')) return;
     try {
-      await window.api.financialMovements.delete(id);
+      if (String(id).startsWith('team-advance-')) {
+        await window.api.teamPayroll.deleteAdvance(Number(String(id).replace('team-advance-', '')));
+      } else {
+        await window.api.financialMovements.delete(id);
+      }
       await loadMovements();
     } catch (error) {
       console.error(error);
@@ -239,7 +290,7 @@ export default function FinancialMovementsPage() {
         <div style={formHeaderStyle}>
           <div>
             <div style={sectionTitleStyle}>{form.id ? 'Modifica movimento' : 'Nuovo movimento'}</div>
-            <div style={hintStyle}>Le squadre generano un movimento separato per ogni componente.</div>
+            <div style={hintStyle}>Le squadre registrano un solo acconto intestato alla squadra.</div>
           </div>
           {form.id ? (
             <button type="button" className="button-secondary" onClick={resetForm}>
@@ -291,7 +342,7 @@ export default function FinancialMovementsPage() {
               <option value="team">Squadra</option>
             </select>
           </label>
-          {form.assignment === 'employee' || form.id ? (
+          {form.assignment === 'employee' ? (
             <label>
               <span style={fieldLabelStyle}>Dipendente</span>
               <select value={form.employee_id} onChange={(event) => updateForm('employee_id', event.target.value)} required>
@@ -331,12 +382,9 @@ export default function FinancialMovementsPage() {
 
         {form.assignment === 'team' && selectedTeam ? (
           <div style={teamPreviewStyle}>
-            <strong>{selectedTeam.name}</strong>
-            <span>
-              {selectedTeamMembers.length
-                ? selectedTeamMembers.map((member) => `${member.employee.last_name} ${member.employee.first_name}`).join(', ')
-                : 'Nessun dipendente in squadra'}
-            </span>
+            <strong>Acconto squadra</strong>
+            <span>{selectedTeam.name}</span>
+            <span>Il movimento verra registrato solo sulla squadra, non sui singoli componenti.</span>
           </div>
         ) : null}
 

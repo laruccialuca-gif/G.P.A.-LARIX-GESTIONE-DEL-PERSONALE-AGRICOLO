@@ -289,6 +289,7 @@ const financialMovementsRepo = require('./financialMovementsRepo');
 const dashboardRepo = require('./dashboardRepo');
 const teamPayrollRepo = require('./teamPayrollRepo');
 const teamsRepo = require('./teamsRepo');
+const dpiRepo = require('./dpiRepo');
 const communicationRepo = require('./communicationRepo');
 const occupationRepo = require('./occupationRepo');
 const settingsService = require('./settingsService');
@@ -1587,6 +1588,17 @@ app.whenReady().then(async () => {
     });
   });
 
+  ipcMain.handle('diagnostics:logRendererEvent', async (_, payload = {}) => {
+    if (payload.type === 'nav-perf') {
+      logMainProcessEvent('nav-perf', {
+        route: payload.route || '/',
+        loadMs: payload.loadMs || 0,
+        timestamp: payload.timestamp || new Date().toISOString(),
+      });
+    }
+    return { success: true };
+  });
+
   ipcMain.handle('backups:list', async () => backupService.listBackups());
   ipcMain.handle('backups:create', async (_, type) => {
     settingsService.requireAdmin();
@@ -1821,6 +1833,50 @@ app.whenReady().then(async () => {
     requireWritableLicense('La modifica dei dipendenti');
     return employeeRepo.deleteMedicalVisitDocument(employeeId);
   });
+  ipcMain.handle('employees:uploadDpiDeliveryDocument', async (_, employeeId) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.uploadDpiDeliveryDocument(mainWindow, employeeId);
+  });
+  ipcMain.handle('employees:openDpiDeliveryDocument', async (_, employeeId) =>
+    employeeRepo.openDpiDeliveryDocument(employeeId)
+  );
+  ipcMain.handle('employees:deleteDpiDeliveryDocument', async (_, employeeId) => {
+    requireWritableLicense('La modifica dei dipendenti');
+    return employeeRepo.deleteDpiDeliveryDocument(employeeId);
+  });
+  ipcMain.handle('dpi:listItems', async (_, options) => dpiRepo.listItems(options));
+  ipcMain.handle('dpi:createItem', async (_, payload) => {
+    requireWritableLicense('La modifica del magazzino DPI');
+    return dpiRepo.createItem(payload);
+  });
+  ipcMain.handle('dpi:updateItem', async (_, id, payload) => {
+    requireWritableLicense('La modifica del magazzino DPI');
+    return dpiRepo.updateItem(id, payload);
+  });
+  ipcMain.handle('dpi:archiveItem', async (_, id) => {
+    requireWritableLicense('La modifica del magazzino DPI');
+    return dpiRepo.archiveItem(id);
+  });
+  ipcMain.handle('dpi:deleteItem', async (_, id) => {
+    requireWritableLicense('La modifica del magazzino DPI');
+    return dpiRepo.deleteItem(id);
+  });
+  ipcMain.handle('dpi:listAssignments', async (_, options) => dpiRepo.listAssignments(options));
+  ipcMain.handle('dpi:createAssignment', async (_, payload) => {
+    requireWritableLicense('La modifica del magazzino DPI');
+    return dpiRepo.createAssignment(payload);
+  });
+  ipcMain.handle('dpi:updateAssignment', async (_, id, payload) => {
+    requireWritableLicense('La modifica del magazzino DPI');
+    return dpiRepo.updateAssignment(id, payload);
+  });
+  ipcMain.handle('dpi:deleteAssignment', async (_, id) => {
+    requireWritableLicense('La modifica del magazzino DPI');
+    return dpiRepo.deleteAssignment(id);
+  });
+  ipcMain.handle('dpi:getEmployeeAssignments', async (_, employeeId) =>
+    dpiRepo.getEmployeeAssignments(employeeId)
+  );
   ipcMain.handle('occupations:list', async () => occupationRepo.listOccupations());
   ipcMain.handle('occupations:create', async (_, name) => {
     requireWritableLicense('La modifica delle impostazioni operative');
@@ -1890,8 +1946,14 @@ app.whenReady().then(async () => {
     requireWritableLicense('La modifica delle squadre');
     return teamsRepo.restoreTeam(id);
   });
-  ipcMain.handle('teamPayroll:listAdvances', async (_, teamId, month) => {
-    return teamPayrollRepo.listTeamAdvances(teamId, month);
+  ipcMain.handle('teamPayroll:listAdvances', async (_, teamId, month, options) => {
+    return teamPayrollRepo.listTeamAdvances(teamId, month, options);
+  });
+  ipcMain.handle('teamPayroll:listAvailableAdvances', async (_, teamId, month) => {
+    return teamPayrollRepo.listAvailableTeamAdvances(teamId, month);
+  });
+  ipcMain.handle('teamPayroll:listAllAdvances', async (_, options) => {
+    return teamPayrollRepo.listAllTeamAdvances(options);
   });
   ipcMain.handle('teamPayroll:createAdvance', async (_, payload) => {
     requireWritableLicense('La modifica delle squadre');
@@ -1904,6 +1966,17 @@ app.whenReady().then(async () => {
   ipcMain.handle('teamPayroll:deleteAdvance', async (_, id) => {
     requireWritableLicense('La modifica delle squadre');
     return teamPayrollRepo.deleteTeamAdvance(id);
+  });
+  ipcMain.handle('teamPayroll:setAdvancesImported', async (_, ids, includeInReport) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamPayrollRepo.setTeamAdvancesImported(ids, includeInReport);
+  });
+  ipcMain.handle('teamPayroll:getReportRecord', async (_, teamId, month) => {
+    return teamPayrollRepo.getTeamReportRecord(teamId, month);
+  });
+  ipcMain.handle('teamPayroll:saveReportRecord', async (_, payload) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamPayrollRepo.saveTeamReportRecord(payload);
   });
   ipcMain.handle('teamPayroll:listPayrollComponents', async (_, teamId, month) => {
     return teamPayrollRepo.listPayrollComponents(teamId, month);
@@ -1919,6 +1992,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('teamPayroll:deletePayrollComponent', async (_, id) => {
     requireWritableLicense('La modifica delle squadre');
     return teamPayrollRepo.deletePayrollComponent(id);
+  });
+  ipcMain.handle('teamPayroll:replacePayrollComponents', async (_, teamId, month, items) => {
+    requireWritableLicense('La modifica delle squadre');
+    return teamPayrollRepo.replacePayrollComponents(teamId, month, items);
   });
   ipcMain.handle('employees:deletePermanently', async (_, id) => {
     requireWritableLicense('La modifica dei dipendenti');
@@ -2446,6 +2523,7 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('communications:list', async (_, options) => communicationRepo.listCommunications(options));
+  ipcMain.handle('communications:getById', async (_, id) => communicationRepo.getCommunicationById(id));
   ipcMain.handle('communications:save', async (_, payload) => {
     requireWritableLicense('La modifica delle comunicazioni operative');
     const communication = communicationRepo.saveCommunication(payload);
@@ -2575,9 +2653,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('payroll:getRecordById', async (_, id) =>
     payrollRepo.getPayrollRecordById(id)
   );
-  ipcMain.handle('payroll:updatePaymentStatus', async (_, id, paymentStatus, paymentDate) => {
+  ipcMain.handle('payroll:updatePaymentStatus', async (_, id, paymentStatus, paymentDate, partialPaidAmount, remainingBalance) => {
     requireWritableLicense('La modifica dello stato pagamento dei report storici');
-    return payrollRepo.updatePayrollReportPaymentStatus(id, paymentStatus, paymentDate);
+    return payrollRepo.updatePayrollReportPaymentStatus(id, paymentStatus, paymentDate, partialPaidAmount, remainingBalance);
   });
   ipcMain.handle('payroll:getPreviousBalance', async (_, employeeId, month) =>
     payrollRepo.getPreviousBalance(employeeId, month)

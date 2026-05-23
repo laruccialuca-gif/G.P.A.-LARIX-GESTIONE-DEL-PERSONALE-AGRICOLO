@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { dispatchRouteReady } from '../utils/navigationPerf';
 import {
   REPORT_LAYOUT_VERSIONS,
   DEFAULT_REPORT_LAYOUT_VERSION,
@@ -367,6 +368,10 @@ function emptySettings() {
     },
     general: {
       standard_day_hours: 7,
+      medical_visit_validity_value: 1,
+      medical_visit_validity_unit: 'years',
+      art37_validity_value: 5,
+      art37_validity_unit: 'years',
       attendance_entry_mode: 'hours_and_symbol',
       attendance_hours_format: 'decimal',
       overtime_enabled: false,
@@ -507,6 +512,10 @@ function normalizeSettingsPayload(input = {}) {
     general: {
       ...defaults.general,
       ...(input.general || {}),
+      medical_visit_validity_value: Math.max(1, Number(input.general?.medical_visit_validity_value || defaults.general.medical_visit_validity_value) || defaults.general.medical_visit_validity_value),
+      medical_visit_validity_unit: input.general?.medical_visit_validity_unit === 'months' ? 'months' : 'years',
+      art37_validity_value: Math.max(1, Number(input.general?.art37_validity_value || defaults.general.art37_validity_value) || defaults.general.art37_validity_value),
+      art37_validity_unit: input.general?.art37_validity_unit === 'months' ? 'months' : 'years',
       attendance_entry_mode: input.general?.attendance_entry_mode === 'hours_only'
         ? 'hours_only'
         : 'hours_and_symbol',
@@ -607,6 +616,12 @@ export default function SettingsPage() {
   useEffect(() => {
     loadData();
   }, [currentUser?.role]);
+
+  useEffect(() => {
+    if (!loading) {
+      dispatchRouteReady('/impostazioni');
+    }
+  }, [loading]);
 
   async function handleGenerateDiagnosticReport() {
     setGeneratingDiagnostics(true);
@@ -1277,6 +1292,61 @@ export default function SettingsPage() {
                 </div>
               </div>
             ))}
+          </div>
+        </SettingsBox>
+
+        <SettingsBox
+          title="Validita certificati e adempimenti"
+          subtitle="Definisci la durata automatica di visita medica e formazione. Le scadenze nella scheda dipendente vengono calcolate dalla data effettuata."
+        >
+          <div className="settings-form-grid">
+            <label>
+              <span className="communication-field-label">Validita visita medica</span>
+              <div className="settings-inline-grid">
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={settings.general.medical_visit_validity_value}
+                  disabled={!isAdmin}
+                  onChange={(e) => updateSection('general', { medical_visit_validity_value: e.target.value })}
+                />
+                <select
+                  value={settings.general.medical_visit_validity_unit || 'years'}
+                  disabled={!isAdmin}
+                  onChange={(e) => updateSection('general', { medical_visit_validity_unit: e.target.value })}
+                >
+                  <option value="years">anni</option>
+                  <option value="months">mesi</option>
+                </select>
+              </div>
+            </label>
+            <label>
+              <span className="communication-field-label">Validita formazione Art. 37</span>
+              <div className="settings-inline-grid">
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={settings.general.art37_validity_value}
+                  disabled={!isAdmin}
+                  onChange={(e) => updateSection('general', { art37_validity_value: e.target.value })}
+                />
+                <select
+                  value={settings.general.art37_validity_unit || 'years'}
+                  disabled={!isAdmin}
+                  onChange={(e) => updateSection('general', { art37_validity_unit: e.target.value })}
+                >
+                  <option value="years">anni</option>
+                  <option value="months">mesi</option>
+                </select>
+              </div>
+            </label>
+          </div>
+
+          <div className="muted-box" style={{ marginTop: 14 }}>
+            Esempio: visita effettuata il <strong>21/05/2026</strong> con validita di <strong>1 anno</strong> produce scadenza <strong>21/05/2027</strong>.
+            La stessa logica viene applicata automaticamente alla formazione Art. 37.
           </div>
         </SettingsBox>
 

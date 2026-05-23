@@ -5,6 +5,7 @@ import TeamForm from '../components/TeamForm';
 import PdfImportModal from '../components/PdfImportModal';
 import { ModalErrorBoundary } from '../components/ErrorBoundary';
 import { useYearContext } from '../context/YearContext';
+import { dispatchRouteReady } from '../utils/navigationPerf';
 import { employeeIsActiveInYear, getEmployeePeriodsActiveInYear, getEmployeePrimaryPeriodInYear } from '../utils/yearScope';
 
 const CONTRACT_LABELS = {
@@ -815,6 +816,12 @@ export default function EmployeesPage() {
   }
 
   useEffect(() => { loadData(); }, []);
+
+  useEffect(() => {
+    if (!loading) {
+      dispatchRouteReady('/dipendenti');
+    }
+  }, [loading]);
 
   useEffect(() => {
     if (!requestedEmployeeId || !employees.length) return;
@@ -1899,6 +1906,7 @@ export default function EmployeesPage() {
           onClose={() => setShowTeamForm(false)}
           onSubmit={handleCreateTeam}
           employees={employees.filter(e => !e.is_deleted)}
+          teams={teams}
         />
       )}
 
@@ -1918,6 +1926,7 @@ export default function EmployeesPage() {
           onSubmit={handleUpdateTeam}
           team={editingTeam}
           employees={employees.filter(e => !e.is_deleted)}
+          teams={teams}
         />
       )}
 

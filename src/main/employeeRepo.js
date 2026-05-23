@@ -12,6 +12,7 @@ const DOCUMENT_CATEGORIES = {
   hire: 'hire_attachment',
   art37: 'art37_attachment',
   medicalVisit: 'medical_visit_attachment',
+  dpiDelivery: 'dpi_delivery_attachment',
 };
 const HIRE_PERIOD_CATEGORY_PREFIX = `${DOCUMENT_CATEGORIES.hire}__period__`;
 
@@ -33,6 +34,12 @@ const EMPLOYEE_DOCUMENT_META = {
     dialogTitle: 'Seleziona allegato visita medica',
     subdir: 'medical-visit-documents',
     nameSuffix: 'visita-medica',
+  },
+  [DOCUMENT_CATEGORIES.dpiDelivery]: {
+    key: 'dpi_delivery_document',
+    dialogTitle: 'Seleziona allegato consegna DPI',
+    subdir: 'dpi-delivery-documents',
+    nameSuffix: 'consegna-dpi',
   },
 };
 
@@ -378,6 +385,7 @@ function attachEmployeeRelations(rows) {
       legacy_hire_document: legacyHireDocument,
       art37_document: buildDocumentFromRow(row, 'art37_document'),
       medical_visit_document: buildDocumentFromRow(row, 'medical_visit_document'),
+      dpi_delivery_document: buildDocumentFromRow(row, 'dpi_delivery_document'),
     };
   });
 
@@ -439,7 +447,17 @@ function getEmployeeBaseSql(whereClause) {
       medical_doc.sha256 AS medical_visit_document_sha256,
       medical_doc.file_created_at AS medical_visit_document_file_created_at,
       medical_doc.uploaded_at AS medical_visit_document_uploaded_at,
-      medical_doc.updated_at AS medical_visit_document_updated_at
+      medical_doc.updated_at AS medical_visit_document_updated_at,
+      dpi_doc.id AS dpi_delivery_document_id,
+      dpi_doc.file_name AS dpi_delivery_document_file_name,
+      dpi_doc.stored_name AS dpi_delivery_document_stored_name,
+      dpi_doc.relative_path AS dpi_delivery_document_relative_path,
+      dpi_doc.mime_type AS dpi_delivery_document_mime_type,
+      dpi_doc.size_bytes AS dpi_delivery_document_size_bytes,
+      dpi_doc.sha256 AS dpi_delivery_document_sha256,
+      dpi_doc.file_created_at AS dpi_delivery_document_file_created_at,
+      dpi_doc.uploaded_at AS dpi_delivery_document_uploaded_at,
+      dpi_doc.updated_at AS dpi_delivery_document_updated_at
     FROM employees e
     LEFT JOIN employee_documents hire_doc
       ON hire_doc.employee_id = e.id
@@ -450,6 +468,9 @@ function getEmployeeBaseSql(whereClause) {
     LEFT JOIN employee_documents medical_doc
       ON medical_doc.employee_id = e.id
       AND medical_doc.category = '${DOCUMENT_CATEGORIES.medicalVisit}'
+    LEFT JOIN employee_documents dpi_doc
+      ON dpi_doc.employee_id = e.id
+      AND dpi_doc.category = '${DOCUMENT_CATEGORIES.dpiDelivery}'
     ${whereClause}
   `;
 }
@@ -1388,6 +1409,10 @@ function deleteMedicalVisitDocument(employeeId) {
   return deleteEmployeeDocumentByCategory(employeeId, DOCUMENT_CATEGORIES.medicalVisit);
 }
 
+function deleteDpiDeliveryDocument(employeeId) {
+  return deleteEmployeeDocumentByCategory(employeeId, DOCUMENT_CATEGORIES.dpiDelivery);
+}
+
 async function uploadHireDocument(browserWindow, employeeId) {
   return uploadEmployeeDocumentByCategory(browserWindow, employeeId, DOCUMENT_CATEGORIES.hire);
 }
@@ -1398,6 +1423,10 @@ async function uploadArt37Document(browserWindow, employeeId) {
 
 async function uploadMedicalVisitDocument(browserWindow, employeeId) {
   return uploadEmployeeDocumentByCategory(browserWindow, employeeId, DOCUMENT_CATEGORIES.medicalVisit);
+}
+
+async function uploadDpiDeliveryDocument(browserWindow, employeeId) {
+  return uploadEmployeeDocumentByCategory(browserWindow, employeeId, DOCUMENT_CATEGORIES.dpiDelivery);
 }
 
 async function openHireDocument(employeeId) {
@@ -1469,6 +1498,10 @@ async function openArt37Document(employeeId) {
 
 async function openMedicalVisitDocument(employeeId) {
   return openEmployeeDocumentByCategory(employeeId, DOCUMENT_CATEGORIES.medicalVisit);
+}
+
+async function openDpiDeliveryDocument(employeeId) {
+  return openEmployeeDocumentByCategory(employeeId, DOCUMENT_CATEGORIES.dpiDelivery);
 }
 
 function addEmploymentPeriodToEmployee(employeeId, payload) {
@@ -1666,6 +1699,7 @@ module.exports = {
   deleteEmployeePermanently,
   deleteHireDocument,
   deleteMedicalVisitDocument,
+  deleteDpiDeliveryDocument,
   findEmployeeHistoryMatches,
   getEmployeeDocumentByCategory,
   getEmployeeById,
@@ -1679,12 +1713,14 @@ module.exports = {
   openHireDocument,
   openHireDocumentForEmploymentPeriod,
   openMedicalVisitDocument,
+  openDpiDeliveryDocument,
   restoreEmployee,
   updateEmployee,
   uploadArt37Document,
   uploadHireDocument,
   uploadHireDocumentForEmploymentPeriod,
   uploadMedicalVisitDocument,
+  uploadDpiDeliveryDocument,
   deleteHireDocumentForEmploymentPeriod,
   buildEmploymentPeriodDocumentCategory,
   classifyImportedEmployeeRecord,

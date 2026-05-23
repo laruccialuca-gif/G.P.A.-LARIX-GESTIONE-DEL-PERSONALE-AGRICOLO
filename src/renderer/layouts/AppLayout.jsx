@@ -5,6 +5,7 @@ import LicenseGate from '../components/LicenseGate';
 import { getSoftwareBrandingLabel } from '../config/branding';
 import { useYearContext } from '../context/YearContext';
 import { useAuth } from '../context/AuthContext';
+import { dispatchNavigationStart } from '../utils/navigationPerf';
 
 function inferToastTone(message) {
   if (!message) return 'info';
@@ -18,6 +19,11 @@ export default function AppLayout() {
   const { currentUser, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const navigationPerfRef = useRef({
+    route: '',
+    startedAt: 0,
+    loggedRoutes: new Map(),
+  });
   const [demoInfo, setDemoInfo] = useState(null);
   const [showDemoWelcome, setShowDemoWelcome] = useState(false);
   const [toasts, setToasts] = useState([]);
@@ -49,6 +55,61 @@ export default function AppLayout() {
 
     toastTimersRef.current.set(toastId, timerId);
   }, [dismissToast]);
+
+  useEffect(() => {
+    const logRoutePerf = (route, startedAt, readyAt) => {
+      if (!route || !Number.isFinite(startedAt) || !Number.isFinite(readyAt)) return;
+      const loadMs = Math.max(0, Math.round(readyAt - startedAt));
+      const alreadyLoggedAt = navigationPerfRef.current.loggedRoutes.get(route);
+      if (alreadyLoggedAt === startedAt) return;
+      navigationPerfRef.current.loggedRoutes.set(route, startedAt);
+      const logMsg = `[nav-perf] route=${route} loadMs=${loadMs}`;
+      console.info(logMsg);
+      window.api?.diagnostics?.logRendererEvent?.({
+        type: 'nav-perf',
+        route,
+        loadMs,
+        timestamp: new Date().toISOString(),
+      }).catch(() => {});
+    };
+
+    const handleNavStart = (event) => {
+      const route = String(event.detail?.route || '').trim() || '/';
+      const startedAt = Number(event.detail?.startedAt);
+      navigationPerfRef.current.route = route;
+      navigationPerfRef.current.startedAt = Number.isFinite(startedAt) ? startedAt : performance.now();
+    };
+
+    const handleRouteReady = (event) => {
+      const route = String(event.detail?.route || '').trim() || '/';
+      const readyAt = Number(event.detail?.readyAt);
+      if (route !== navigationPerfRef.current.route) {
+        navigationPerfRef.current.route = route;
+        navigationPerfRef.current.startedAt = performance.now();
+      }
+      logRoutePerf(
+        route,
+        navigationPerfRef.current.startedAt || performance.now(),
+        Number.isFinite(readyAt) ? readyAt : performance.now(),
+      );
+    };
+
+    window.addEventListener('app:nav-start', handleNavStart);
+    window.addEventListener('app:route-ready', handleRouteReady);
+
+    return () => {
+      window.removeEventListener('app:nav-start', handleNavStart);
+      window.removeEventListener('app:route-ready', handleRouteReady);
+    };
+  }, []);
+
+  useEffect(() => {
+    const currentRoute = location.pathname || '/';
+    const previousRoute = navigationPerfRef.current.route;
+    if (currentRoute !== previousRoute) {
+      dispatchNavigationStart(currentRoute);
+    }
+  }, [location.pathname]);
 
   useEffect(() => {
     let isMounted = true;

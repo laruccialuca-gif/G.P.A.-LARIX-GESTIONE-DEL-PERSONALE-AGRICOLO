@@ -117,6 +117,10 @@ function defaultSettings() {
     },
     general: {
       standard_day_hours: 7,
+      medical_visit_validity_value: 1,
+      medical_visit_validity_unit: 'years',
+      art37_validity_value: 5,
+      art37_validity_unit: 'years',
       attendance_entry_mode: 'hours_and_symbol',
       attendance_hours_format: 'decimal',
       overtime_enabled: false,
@@ -323,6 +327,10 @@ function normalizeSettings(input = {}) {
     },
     general: {
       standard_day_hours: Number(merged.general?.standard_day_hours || 7) || 7,
+      medical_visit_validity_value: Math.max(1, Number(merged.general?.medical_visit_validity_value || 1) || 1),
+      medical_visit_validity_unit: merged.general?.medical_visit_validity_unit === 'months' ? 'months' : 'years',
+      art37_validity_value: Math.max(1, Number(merged.general?.art37_validity_value || 5) || 5),
+      art37_validity_unit: merged.general?.art37_validity_unit === 'months' ? 'months' : 'years',
       attendance_entry_mode: merged.general?.attendance_entry_mode === 'hours_only'
         ? 'hours_only'
         : 'hours_and_symbol',

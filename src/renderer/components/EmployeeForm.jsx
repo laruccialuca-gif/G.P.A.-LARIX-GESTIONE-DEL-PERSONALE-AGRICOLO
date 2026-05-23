@@ -9,46 +9,77 @@ const contractLabels = {
   partita_iva: 'Partita IVA',
 };
 
-const DAILY_PAY_OPTIONS = [50, 55, 60, 65, 70];
+const UI_SYMBOLS = {
+  medical: '\u{1FA7A}',
+  training: '\u{1F393}',
+  dpi: '\u{1F97E}',
+  attachment: '\u{1F4CE}',
+  info: '\u2139\uFE0F',
+  close: '\u2715',
+  bullet: '\u2022',
+  euro: '\u20AC',
+  arrow: '\u2192',
+  divide: '\u00F7',
+  times: '\u00D7',
+  emDash: '\u2014',
+  ellipsis: '\u2026',
+};
 
 function SectionTitle({ children }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 4 }}>
-      <span
-        style={{
-          fontSize: 12,
-          fontWeight: 800,
-          textTransform: 'uppercase',
-          letterSpacing: '0.06em',
-          color: '#4338ca',
-        }}
-      >
-        {children}
-      </span>
-      <div style={{ flex: 1, height: 1, background: '#e5e7eb' }} />
+    <div className="employee-form__section-title">
+      <span className="employee-form__section-kicker">{children}</span>
+      <div className="employee-form__section-divider" />
     </div>
   );
 }
 
-function CheckRow({ id, label, checked, onChange }) {
+function SectionCard({ title, description, children, className = '' }) {
+  return (
+    <section className={`employee-form__section ${className}`.trim()}>
+      <div className="employee-form__section-header">
+        <SectionTitle>{title}</SectionTitle>
+        {description ? <p className="employee-form__section-description">{description}</p> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function SecurityCard({ badge, title, children }) {
+  return (
+    <div className="employee-form__security-card">
+      <div className="employee-form__security-head">
+        <span className="employee-form__security-badge">{badge}</span>
+        <div className="employee-form__security-title">{title}</div>
+      </div>
+      <div className="employee-form__security-body">{children}</div>
+    </div>
+  );
+}
+
+function CheckRow({ id, label, checked, onChange, disabled = false }) {
   return (
     <label
       htmlFor={id}
+      className="employee-form__check-row"
       style={{
         display: 'flex',
         alignItems: 'center',
         gap: 10,
-        cursor: 'pointer',
-        padding: '10px 12px',
+        cursor: disabled ? 'default' : 'pointer',
+        padding: '8px 10px',
         borderRadius: 14,
         background: 'rgba(255,255,255,0.62)',
         border: '1px solid rgba(20, 33, 61, 0.06)',
+        opacity: disabled ? 0.78 : 1,
       }}
     >
       <input
         id={id}
         type="checkbox"
         checked={!!checked}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
         style={{ width: 18, height: 18 }}
       />
@@ -66,8 +97,33 @@ function Field({ label, children }) {
   );
 }
 
+function getOvertimeMode(form) {
+  if (form?.overtime_use_general_rate) {
+    return 'general';
+  }
+
+  if (
+    form?.overtime_hourly_rate !== '' &&
+    form?.overtime_hourly_rate !== null &&
+    form?.overtime_hourly_rate !== undefined
+  ) {
+    return 'custom';
+  }
+
+  return 'disabled';
+}
+
+function normalizeDecimalValue(value) {
+  if (value === '' || value === null || value === undefined) {
+    return undefined;
+  }
+
+  const normalized = Number(String(value).replace(',', '.'));
+  return Number.isFinite(normalized) ? normalized : undefined;
+}
+
 function formatDisplayDate(value) {
-  if (!value) return '—';
+  if (!value) return UI_SYMBOLS.emDash;
   const clean = String(value).split('T')[0];
   const parts = clean.split('-');
   if (parts.length === 3) {
@@ -76,12 +132,43 @@ function formatDisplayDate(value) {
   return clean;
 }
 
+function addValidityToIsoDate(dateValue, validityValue, validityUnit = 'years') {
+  const raw = String(dateValue || '').trim();
+  if (!raw) return '';
+
+  const parts = raw.split('-').map(Number);
+  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) {
+    return '';
+  }
+
+  const [year, month, day] = parts;
+  const result = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(result.getTime())) {
+    return '';
+  }
+
+  const amount = Math.max(1, Number(validityValue || 0) || 1);
+  const originalDay = result.getUTCDate();
+
+  if (validityUnit === 'months') {
+    result.setUTCMonth(result.getUTCMonth() + amount);
+  } else {
+    result.setUTCFullYear(result.getUTCFullYear() + amount);
+  }
+
+  if (result.getUTCDate() !== originalDay) {
+    result.setUTCDate(0);
+  }
+
+  return result.toISOString().slice(0, 10);
+}
+
 const emptyForm = {
   first_name: '',
   last_name: '',
   fiscal_code: '',
   role: '',
-  contract_type: 'tempo_indeterminato',
+  contract_type: 'tempo_determinato',
   daily_pay: '',
   standard_hours: 7,
   overtime_use_general_rate: true,
@@ -151,19 +238,26 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
   const [settingsGeneral, setSettingsGeneral] = useState({
     overtime_enabled: false,
     overtime_hourly_rate: 0,
+    medical_visit_validity_value: 1,
+    medical_visit_validity_unit: 'years',
+    art37_validity_value: 5,
+    art37_validity_unit: 'years',
   });
   const [historyMatches, setHistoryMatches] = useState([]);
   const [selectedHistoryId, setSelectedHistoryId] = useState('');
   const [occupations, setOccupations] = useState([]);
   const [newOccupation, setNewOccupation] = useState('');
+  const [overtimeMode, setOvertimeMode] = useState(getOvertimeMode(employee || emptyForm));
   const [employeeDocuments, setEmployeeDocuments] = useState({
     hire_document: null,
     legacy_hire_document: null,
     art37_document: null,
     medical_visit_document: null,
+    dpi_delivery_document: null,
   });
   const [documentBusyKey, setDocumentBusyKey] = useState('');
   const [employmentPeriods, setEmploymentPeriods] = useState([]);
+  const [dpiAssignments, setDpiAssignments] = useState([]);
   const [employerOptions, setEmployerOptions] = useState([
     { value: 'LC', label: 'LC' },
     { value: 'LG', label: 'LG' },
@@ -175,13 +269,16 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
     setHistoryMatches([]);
     setSelectedHistoryId('');
     setNewOccupation('');
+    setOvertimeMode(getOvertimeMode(employee || emptyForm));
     setEmployeeDocuments({
       hire_document: employee?.hire_document || null,
       legacy_hire_document: employee?.legacy_hire_document || null,
       art37_document: employee?.art37_document || null,
       medical_visit_document: employee?.medical_visit_document || null,
+      dpi_delivery_document: employee?.dpi_delivery_document || null,
     });
     setEmploymentPeriods(employee?.employment_periods || []);
+    setDpiAssignments([]);
   }, [employee, open]);
 
   const set = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
@@ -217,7 +314,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
 
         const options = (settings?.employer_options || []).map((item) => ({
           value: item.short_name,
-          label: `${item.short_name} · ${item.name}`,
+          label: `${item.short_name} • ${item.name}`,
         }));
 
         if ((settings?.employers?.mode || 'two') === 'two') {
@@ -232,6 +329,10 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
         setSettingsGeneral({
           overtime_enabled: !!settings?.general?.overtime_enabled,
           overtime_hourly_rate: Number(settings?.general?.overtime_hourly_rate || 0) || 0,
+          medical_visit_validity_value: Math.max(1, Number(settings?.general?.medical_visit_validity_value || 1) || 1),
+          medical_visit_validity_unit: settings?.general?.medical_visit_validity_unit === 'months' ? 'months' : 'years',
+          art37_validity_value: Math.max(1, Number(settings?.general?.art37_validity_value || 5) || 5),
+          art37_validity_unit: settings?.general?.art37_validity_unit === 'months' ? 'months' : 'years',
         });
         if (!employee && options.length && !options.some((item) => item.value === form.hired_by)) {
           set('hired_by', options[0].value);
@@ -290,6 +391,71 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
     };
   }, [open, employee, form.first_name, form.last_name, form.fiscal_code]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDpiAssignments() {
+      if (!open || !employee?.id) {
+        setDpiAssignments([]);
+        return;
+      }
+
+      try {
+        const assignments = await window.api.dpi.getEmployeeAssignments(employee.id);
+        if (!cancelled) {
+          setDpiAssignments(Array.isArray(assignments) ? assignments : []);
+        }
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) {
+          setDpiAssignments([]);
+        }
+      }
+    }
+
+    loadDpiAssignments();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, employee?.id]);
+
+  useEffect(() => {
+    setForm((prev) => {
+      const nextMedicalExpiry = prev.medical_visit_date
+        ? addValidityToIsoDate(
+            prev.medical_visit_date,
+            settingsGeneral.medical_visit_validity_value,
+            settingsGeneral.medical_visit_validity_unit
+          )
+        : '';
+      const nextArt37Expiry = prev.art37_date
+        ? addValidityToIsoDate(
+            prev.art37_date,
+            settingsGeneral.art37_validity_value,
+            settingsGeneral.art37_validity_unit
+          )
+        : '';
+
+      if (
+        prev.medical_visit_expiry === nextMedicalExpiry &&
+        prev.art37_expiry === nextArt37Expiry
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        medical_visit_expiry: nextMedicalExpiry,
+        art37_expiry: nextArt37Expiry,
+      };
+    });
+  }, [
+    settingsGeneral.medical_visit_validity_value,
+    settingsGeneral.medical_visit_validity_unit,
+    settingsGeneral.art37_validity_value,
+    settingsGeneral.art37_validity_unit,
+  ]);
+
   const handleSubmit = (e) => {
     e.preventDefault();
 
@@ -301,9 +467,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
       overtime_hourly_rate:
         form.overtime_use_general_rate
           ? undefined
-          : form.overtime_hourly_rate !== ''
-          ? Number(form.overtime_hourly_rate)
-          : undefined,
+          : normalizeDecimalValue(form.overtime_hourly_rate),
       reactivate_employee_id: !employee && selectedHistoryId ? Number(selectedHistoryId) : undefined,
     });
   };
@@ -333,7 +497,42 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
   const exampleHours = 8;
   const pay = Number(form.daily_pay) || 0;
   const stdH = Number(form.standard_hours) || 7;
+  const standardHoursLabel = String(form.standard_hours ?? '').trim() || '7';
+  const dailyPayLabel = `Retribuzione giornaliera (${UI_SYMBOLS.euro} / ${standardHoursLabel} ore)`;
   const exampleEarning = stdH > 0 && pay > 0 ? ((pay / stdH) * exampleHours).toFixed(2) : null;
+  const hasEmployeeRecord = !!employee?.id;
+  const latestDpiAssignment = useMemo(() => {
+    if (!dpiAssignments.length) return null;
+    return [...dpiAssignments].sort((a, b) =>
+      String(b.assigned_date || '').localeCompare(String(a.assigned_date || ''))
+    )[0];
+  }, [dpiAssignments]);
+  const handleMedicalVisitDateChange = (value) => {
+    setForm((prev) => ({
+      ...prev,
+      medical_visit_date: value,
+      medical_visit_expiry: value
+        ? addValidityToIsoDate(
+            value,
+            settingsGeneral.medical_visit_validity_value,
+            settingsGeneral.medical_visit_validity_unit
+          )
+        : '',
+    }));
+  };
+  const handleArt37DateChange = (value) => {
+    setForm((prev) => ({
+      ...prev,
+      art37_date: value,
+      art37_expiry: value
+        ? addValidityToIsoDate(
+            value,
+            settingsGeneral.art37_validity_value,
+            settingsGeneral.art37_validity_unit
+          )
+        : '',
+    }));
+  };
 
   if (!open) return null;
 
@@ -347,6 +546,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
           legacy_hire_document: fresh.legacy_hire_document || null,
           art37_document: fresh.art37_document || null,
           medical_visit_document: fresh.medical_visit_document || null,
+          dpi_delivery_document: fresh.dpi_delivery_document || null,
         });
         setEmploymentPeriods(fresh.employment_periods || []);
       }
@@ -424,19 +624,23 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
 
   return (
     <div className="modal-overlay" onClick={requestClose}>
-      <div className="modal-dialog" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
+      <div className="modal-dialog employee-form-dialog" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header employee-form__header">
           <div>
             <span className="page-kicker">{employee ? 'Scheda dipendente' : 'Nuovo inserimento'}</span>
             <h2 style={{ margin: '6px 0 0' }}>{employee ? 'Modifica Dipendente' : 'Nuovo Dipendente'}</h2>
+            <p className="employee-form__header-subtitle">
+              {employee ? 'Scheda dipendente' : 'Compila anagrafica, contratto e documenti di sicurezza.'}
+            </p>
           </div>
-          <button type="button" className="modal-close" onClick={requestClose}>✕</button>
+          <button type="button" className="modal-close" onClick={requestClose}>{UI_SYMBOLS.close}</button>
         </div>
 
-        <form onSubmit={handleSubmit} className="form-grid">
+        <form onSubmit={handleSubmit} className="employee-form">
+          <div className="form-grid employee-form-grid employee-form__body">
           <SectionTitle>Anagrafica</SectionTitle>
 
-          <div style={grid2}>
+          <div className="employee-form__grid employee-form__grid--2">
             <Field label="Nome *">
               <input value={form.first_name} onChange={(e) => set('first_name', e.target.value)} required />
             </Field>
@@ -445,7 +649,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
             </Field>
           </div>
 
-          <div style={grid2}>
+          <div className="employee-form__grid employee-form__grid--2">
             <Field label="Codice Fiscale">
               <input value={form.fiscal_code} onChange={(e) => set('fiscal_code', e.target.value)} />
             </Field>
@@ -459,7 +663,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                     </option>
                   ))}
                 </select>
-                <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'minmax(0, 1fr) auto' }}>
+                <div className="employee-form__inline-add">
                   <input
                     value={newOccupation}
                     onChange={(e) => setNewOccupation(e.target.value)}
@@ -520,8 +724,8 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                     </div>
                     <div style={{ fontSize: 13, color: '#667085' }}>
                       Periodi registrati: {match.employment_periods?.length || 0}
-                      {match.hired_by ? ` · Datore attuale/storico: ${match.hired_by}` : ''}
-                      {!match.is_deleted ? ' · Scheda gia attiva nel gestionale' : ''}
+                      {match.hired_by ? ` ${UI_SYMBOLS.bullet} Datore attuale/storico: ${match.hired_by}` : ''}
+                      {!match.is_deleted ? ' • Scheda gia attiva nel gestionale' : ''}
                     </div>
                   </label>
                 ))}
@@ -549,7 +753,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
             </div>
           ) : null}
 
-          <div style={grid2}>
+          <div className="employee-form__grid employee-form__grid--2">
             <Field label="Telefono">
               <input value={form.phone} onChange={(e) => set('phone', e.target.value)} />
             </Field>
@@ -560,7 +764,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
 
           <SectionTitle>Contratto e Retribuzione</SectionTitle>
 
-          <div style={grid2}>
+          <div className="employee-form__grid employee-form__grid--2">
             <Field label="Tipo Contratto">
               <select value={form.contract_type} onChange={(e) => set('contract_type', e.target.value)}>
                 {Object.entries(contractLabels).map(([k, v]) => (
@@ -577,7 +781,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
             </Field>
           </div>
 
-          <div style={grid3}>
+          <div className="employee-form__grid employee-form__grid--3">
             <Field label="Data assunzione da">
               <input
                 type="date"
@@ -606,41 +810,16 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
             </Field>
           </div>
 
-          <div style={grid2}>
-            <Field label="Retribuzione giornaliera (€ / 7 ore)">
-              <select
-                value={
-                  form.daily_pay !== '' && DAILY_PAY_OPTIONS.includes(Number(form.daily_pay))
-                    ? String(form.daily_pay)
-                    : 'custom'
-                }
-                onChange={(e) => {
-                  if (e.target.value === 'custom') {
-                    set('daily_pay', '');
-                  } else {
-                    set('daily_pay', e.target.value);
-                  }
-                }}
-              >
-                {DAILY_PAY_OPTIONS.map((p) => (
-                  <option key={p} value={String(p)}>
-                    € {p} / 7h
-                  </option>
-                ))}
-                <option value="custom">Altro importo</option>
-              </select>
-
-              {(!DAILY_PAY_OPTIONS.includes(Number(form.daily_pay)) || form.daily_pay === '') && (
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={form.daily_pay}
-                  onChange={(e) => set('daily_pay', e.target.value)}
-                  placeholder="Importo personalizzato (€)"
-                  style={{ marginTop: 8 }}
-                />
-              )}
+          <div className="employee-form__grid employee-form__grid--2">
+            <Field label={dailyPayLabel}>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={form.daily_pay}
+                onChange={(e) => set('daily_pay', e.target.value)}
+                placeholder="Inserisci importo retribuzione giornaliera"
+              />
             </Field>
 
             <Field label="Ore standard/giorno (base calcolo)">
@@ -655,160 +834,364 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
             </Field>
           </div>
 
-          <div style={grid2}>
+          <div className="employee-form__grid employee-form__grid--2">
             <Field label="Gestione straordinario">
               <select
-                value={form.overtime_use_general_rate ? 'general' : 'custom'}
-                onChange={(e) => set('overtime_use_general_rate', e.target.value === 'general')}
-                disabled={!settingsGeneral.overtime_enabled}
+                value={overtimeMode}
+                onChange={(e) => {
+                  const nextMode = e.target.value;
+                  setOvertimeMode(nextMode);
+                  if (nextMode === 'general') {
+                    setForm((prev) => ({
+                      ...prev,
+                      overtime_use_general_rate: true,
+                    }));
+                    return;
+                  }
+
+                  if (nextMode === 'custom') {
+                    setForm((prev) => ({
+                      ...prev,
+                      overtime_use_general_rate: false,
+                      overtime_hourly_rate:
+                        prev.overtime_hourly_rate !== '' &&
+                        prev.overtime_hourly_rate !== null &&
+                        prev.overtime_hourly_rate !== undefined
+                          ? prev.overtime_hourly_rate
+                          : '',
+                    }));
+                    return;
+                  }
+
+                  setForm((prev) => ({
+                    ...prev,
+                    overtime_use_general_rate: false,
+                    overtime_hourly_rate: '',
+                  }));
+                }}
               >
-                <option value="general">Usa tariffa generale</option>
+                <option value="disabled">Disattivato</option>
+                <option value="general">Tariffa generale</option>
                 <option value="custom">Tariffa personalizzata</option>
               </select>
             </Field>
 
             <Field label="Tariffa straordinario (€ / ora)">
               <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={form.overtime_use_general_rate ? settingsGeneral.overtime_hourly_rate : form.overtime_hourly_rate}
-                disabled={!settingsGeneral.overtime_enabled || form.overtime_use_general_rate}
+                type="text"
+                inputMode="decimal"
+                value={
+                  overtimeMode === 'general'
+                    ? settingsGeneral.overtime_hourly_rate
+                    : overtimeMode === 'custom'
+                    ? form.overtime_hourly_rate
+                    : ''
+                }
+                disabled={overtimeMode !== 'custom'}
                 onChange={(e) => set('overtime_hourly_rate', e.target.value)}
-                placeholder="Importo orario straordinario"
+                placeholder="Es. 10,50"
               />
             </Field>
           </div>
 
           <div style={infoBoxStyle}>
-            Straordinario {settingsGeneral.overtime_enabled ? 'attivo' : 'disattivato'}.
-            {settingsGeneral.overtime_enabled ? (
+            Straordinario {overtimeMode === 'disabled' ? 'disattivato' : 'attivo'}.
+            {overtimeMode === 'general' ? (
               <>
                 {' '}Tariffa generale: <strong>€ {Number(settingsGeneral.overtime_hourly_rate || 0).toFixed(2)} / ora</strong>.
-                {!form.overtime_use_general_rate ? ' Questo dipendente usa una tariffa personalizzata.' : ' Questo dipendente usa la tariffa generale.'}
+                {' '}Questo dipendente usa la tariffa generale.
               </>
+            ) : overtimeMode === 'custom' ? (
+              <> Questo dipendente usa una tariffa personalizzata.</>
             ) : (
-              <> Attivalo dalle impostazioni generali per usarlo nei report.</>
+              <> Nessuna tariffa straordinario attiva per questo dipendente.</>
             )}
+            {!settingsGeneral.overtime_enabled ? (
+              <> Lo straordinario è disattivato nelle impostazioni generali.</>
+            ) : null}
           </div>
 
           {exampleEarning && (
             <div style={infoBoxStyle}>
-              💡 <strong>Esempio calcolo:</strong> per {exampleHours} ore lavorate →{' '}
+              ℹ️ <strong>Esempio calcolo:</strong> per {exampleHours} ore lavorate →{' '}
               <strong>€ {exampleEarning}</strong>{' '}
               <span style={{ color: '#6b7280' }}>(€{pay} ÷ {stdH}h × {exampleHours}h)</span>
             </div>
           )}
 
-          <SectionTitle>Visita Medica</SectionTitle>
+          <SectionCard
+            title="Sicurezza e adempimenti"
+            description="🩺 Visita medica, 🎓 formazione e 🥾 DPI in una sezione compatta."
+          >
+            <div className="employee-form__security-grid">
+              <SecurityCard badge="🩺" title="Visita medica">
+                <div className="employee-form__security-checks">
+                  <CheckRow
+                    id="mv_req"
+                    label="Richiesta"
+                    checked={form.medical_visit_required}
+                    onChange={(v) => set('medical_visit_required', v)}
+                  />
+                  <CheckRow
+                    id="mv_done"
+                    label="Effettuata"
+                    checked={form.medical_visit_done}
+                    onChange={(v) => set('medical_visit_done', v)}
+                  />
+                  {form.medical_visit_done ? (
+                    <CheckRow
+                      id="mv_us"
+                      label="Tramite la nostra azienda"
+                      checked={form.medical_visit_done_with_us}
+                      onChange={(v) => set('medical_visit_done_with_us', v)}
+                    />
+                  ) : null}
+                </div>
 
-          <div style={{ display: 'grid', gap: 10 }}>
-            <CheckRow
-              id="mv_req"
-              label="Visita medica richiesta"
-              checked={form.medical_visit_required}
-              onChange={(v) => set('medical_visit_required', v)}
-            />
+                {form.medical_visit_done ? (
+                  <div className="employee-form__security-fields">
+                    <Field label="Data effettuata">
+                      <input
+                        type="date"
+                        value={form.medical_visit_date}
+                        onChange={(e) => handleMedicalVisitDateChange(e.target.value)}
+                      />
+                    </Field>
 
-            <CheckRow
-              id="mv_done"
-              label="Visita medica effettuata"
-              checked={form.medical_visit_done}
-              onChange={(v) => set('medical_visit_done', v)}
-            />
+                    <Field label="Scadenza visita medica">
+                      <input
+                        type="date"
+                        value={form.medical_visit_expiry}
+                        readOnly
+                      />
+                    </Field>
+                  </div>
+                ) : null}
 
-            {form.medical_visit_done && (
-              <CheckRow
-                id="mv_us"
-                label="Effettuata tramite la nostra azienda"
-                checked={form.medical_visit_done_with_us}
-                onChange={(v) => set('medical_visit_done_with_us', v)}
-              />
-            )}
-
-            {form.medical_visit_done && (
-              <div style={grid2}>
-                <Field label="Data visita">
+                <Field label="Note">
                   <input
-                    type="date"
-                    value={form.medical_visit_date}
-                    onChange={(e) => set('medical_visit_date', e.target.value)}
+                    value={form.medical_visit_notes}
+                    onChange={(e) => set('medical_visit_notes', e.target.value)}
+                    placeholder="es. idoneo con prescrizioni…"
                   />
                 </Field>
 
-                <Field label="Scadenza visita">
+                <div className="employee-form__document-panel">
+                  <div className="employee-form__document-title">📎 Allegato visita medica</div>
+                  {employee?.id ? (
+                    <DocumentActions
+                      document={employeeDocuments.medical_visit_document}
+                      onUpload={() =>
+                        handleDocumentAction(
+                          () => window.api.employees.uploadMedicalVisitDocument(employee.id),
+                          'Errore caricamento allegato visita medica',
+                          { documentKey: 'medical_visit_document', busyKey: 'medical_visit_document' }
+                        )
+                      }
+                      onOpen={() =>
+                        handleOpenDocument(
+                          () => window.api.employees.openMedicalVisitDocument(employee.id),
+                          'Errore apertura allegato visita medica'
+                        )
+                      }
+                      onDelete={() =>
+                        handleDocumentAction(
+                          async () => {
+                            if (!window.confirm("Confermi l'eliminazione dell'allegato visita medica?")) {
+                              return { canceled: true };
+                            }
+                            return window.api.employees.deleteMedicalVisitDocument(employee.id);
+                          },
+                          'Errore eliminazione allegato visita medica',
+                          { documentKey: 'medical_visit_document', busyKey: 'medical_visit_document' }
+                        )
+                      }
+                      emptyLabel="Nessun allegato visita medica"
+                      loading={documentBusyKey === 'medical_visit_document'}
+                    />
+                  ) : (
+                    <div className="employee-form__compact-note">Salva prima la scheda per caricare l'allegato.</div>
+                  )}
+                </div>
+              </SecurityCard>
+
+              <SecurityCard badge="🎓" title="Formazione Art. 37">
+                <div className="employee-form__security-checks">
+                  <CheckRow
+                    id="a37_req"
+                    label="Richiesta"
+                    checked={form.art37_required}
+                    onChange={(v) => set('art37_required', v)}
+                  />
+                  <CheckRow
+                    id="a37_done"
+                    label="Effettuata"
+                    checked={form.art37_done}
+                    onChange={(v) => set('art37_done', v)}
+                  />
+                  {form.art37_done ? (
+                    <CheckRow
+                      id="a37_us"
+                      label="Tramite la nostra azienda"
+                      checked={form.art37_done_with_us}
+                      onChange={(v) => set('art37_done_with_us', v)}
+                    />
+                  ) : null}
+                </div>
+
+                {form.art37_done ? (
+                  <div className="employee-form__security-fields">
+                    <Field label="Data effettuata">
+                      <input
+                        type="date"
+                        value={form.art37_date}
+                        onChange={(e) => handleArt37DateChange(e.target.value)}
+                      />
+                    </Field>
+
+                    <Field label="Scadenza formazione">
+                      <input
+                        type="date"
+                        value={form.art37_expiry}
+                        readOnly
+                      />
+                    </Field>
+                  </div>
+                ) : null}
+
+                <Field label="Note">
                   <input
-                    type="date"
-                    value={form.medical_visit_expiry}
-                    onChange={(e) => set('medical_visit_expiry', e.target.value)}
+                    value={form.art37_notes}
+                    onChange={(e) => set('art37_notes', e.target.value)}
+                    placeholder="es. corso completato 8h…"
                   />
                 </Field>
-              </div>
-            )}
 
-            <Field label="Note visita medica">
-              <input
-                value={form.medical_visit_notes}
-                onChange={(e) => set('medical_visit_notes', e.target.value)}
-                placeholder="es. idoneo con prescrizioni…"
-              />
-            </Field>
-          </div>
+                <div className="employee-form__document-panel">
+                  <div className="employee-form__document-title">📎 Allegato formazione</div>
+                  {employee?.id ? (
+                    <DocumentActions
+                      document={employeeDocuments.art37_document}
+                      onUpload={() =>
+                        handleDocumentAction(
+                          () => window.api.employees.uploadArt37Document(employee.id),
+                          'Errore caricamento allegato formazione art. 37',
+                          {
+                            documentKey: 'art37_document',
+                            busyKey: 'art37_document',
+                            perfName: 'formazione',
+                          }
+                        )
+                      }
+                      onOpen={() =>
+                        handleOpenDocument(
+                          () => window.api.employees.openArt37Document(employee.id),
+                          'Errore apertura allegato formazione art. 37'
+                        )
+                      }
+                      onDelete={() =>
+                        handleDocumentAction(
+                          async () => {
+                            if (!window.confirm("Confermi l'eliminazione dell'allegato formazione art. 37?")) {
+                              return { canceled: true };
+                            }
+                            return window.api.employees.deleteArt37Document(employee.id);
+                          },
+                          'Errore eliminazione allegato formazione art. 37',
+                          { documentKey: 'art37_document', busyKey: 'art37_document' }
+                        )
+                      }
+                      emptyLabel="Nessun allegato formazione art. 37"
+                      loading={documentBusyKey === 'art37_document'}
+                      loadingLabel="Salvataggio formazione in corso..."
+                    />
+                  ) : (
+                    <div className="employee-form__compact-note">Salva prima la scheda per caricare l'allegato.</div>
+                  )}
+                </div>
+              </SecurityCard>
 
-          <SectionTitle>Formazione Art. 37</SectionTitle>
+              <SecurityCard badge="🥾" title="DPI">
+                <div className="employee-form__security-checks">
+                  <CheckRow
+                    id="dpi_assigned"
+                    label="DPI consegnati"
+                    checked={dpiAssignments.length > 0}
+                    onChange={() => {}}
+                    disabled
+                  />
+                </div>
 
-          <div style={{ display: 'grid', gap: 10 }}>
-            <CheckRow
-              id="a37_req"
-              label="Formazione Art. 37 richiesta"
-              checked={form.art37_required}
-              onChange={(v) => set('art37_required', v)}
-            />
+                <div className="employee-form__dpi-summary">
+                  <div className="employee-form__dpi-summary-line">
+                    <span>Assegnazioni</span>
+                    <strong>{dpiAssignments.length}</strong>
+                  </div>
+                  <div className="employee-form__dpi-summary-line">
+                    <span>Ultima consegna</span>
+                    <strong>{latestDpiAssignment ? formatDisplayDate(latestDpiAssignment.assigned_date) : '—'}</strong>
+                  </div>
+                </div>
 
-            <CheckRow
-              id="a37_done"
-              label="Formazione Art. 37 effettuata"
-              checked={form.art37_done}
-              onChange={(v) => set('art37_done', v)}
-            />
-
-            {form.art37_done && (
-              <CheckRow
-                id="a37_us"
-                label="Effettuata tramite la nostra azienda"
-                checked={form.art37_done_with_us}
-                onChange={(v) => set('art37_done_with_us', v)}
-              />
-            )}
-
-            {form.art37_done && (
-              <div style={grid2}>
-                <Field label="Data formazione">
+                <Field label="Note DPI">
                   <input
-                    type="date"
-                    value={form.art37_date}
-                    onChange={(e) => set('art37_date', e.target.value)}
+                    value={latestDpiAssignment?.notes || ''}
+                    readOnly
+                    placeholder="Nessuna nota DPI disponibile"
                   />
                 </Field>
 
-                <Field label="Scadenza formazione">
-                  <input
-                    type="date"
-                    value={form.art37_expiry}
-                    onChange={(e) => set('art37_expiry', e.target.value)}
-                  />
-                </Field>
-              </div>
-            )}
+                {dpiAssignments.length ? (
+                  <div className="employee-form__dpi-list">
+                    {dpiAssignments.slice(0, 3).map((assignment) => (
+                      <div key={assignment.id} className="employee-form__dpi-item">
+                        <strong>{assignment.item_type}{assignment.item_description ? ` - ${assignment.item_description}` : ''}</strong>
+                        <span>Qty {Number(assignment.quantity || 0)} • {formatDisplayDate(assignment.assigned_date)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
 
-            <Field label="Note formazione">
-              <input
-                value={form.art37_notes}
-                onChange={(e) => set('art37_notes', e.target.value)}
-                placeholder="es. corso completato 8h…"
-              />
-            </Field>
-          </div>
+                <div className="employee-form__document-panel">
+                  <div className="employee-form__document-title">📎 Allegato consegna DPI</div>
+                  {employee?.id ? (
+                    <DocumentActions
+                      document={employeeDocuments.dpi_delivery_document}
+                      onUpload={() =>
+                        handleDocumentAction(
+                          () => window.api.employees.uploadDpiDeliveryDocument(employee.id),
+                          'Errore caricamento allegato consegna DPI',
+                          { documentKey: 'dpi_delivery_document', busyKey: 'dpi_delivery_document' }
+                        )
+                      }
+                      onOpen={() =>
+                        handleOpenDocument(
+                          () => window.api.employees.openDpiDeliveryDocument(employee.id),
+                          'Errore apertura allegato consegna DPI'
+                        )
+                      }
+                      onDelete={() =>
+                        handleDocumentAction(
+                          async () => {
+                            if (!window.confirm("Confermi l'eliminazione dell'allegato consegna DPI?")) {
+                              return { canceled: true };
+                            }
+                            return window.api.employees.deleteDpiDeliveryDocument(employee.id);
+                          },
+                          'Errore eliminazione allegato consegna DPI',
+                          { documentKey: 'dpi_delivery_document', busyKey: 'dpi_delivery_document' }
+                        )
+                      }
+                      emptyLabel="Nessun allegato consegna DPI"
+                      loading={documentBusyKey === 'dpi_delivery_document'}
+                    />
+                  ) : (
+                    <div className="employee-form__compact-note">Salva prima la scheda per caricare l'allegato.</div>
+                  )}
+                </div>
+              </SecurityCard>
+            </div>
+          </SectionCard>
 
           <SectionTitle>Note Generali</SectionTitle>
 
@@ -821,10 +1204,11 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
             />
           </Field>
 
-          <SectionTitle>Allegati Dipendente</SectionTitle>
+          <SectionTitle>📎 Allegati</SectionTitle>
 
           {employee?.id ? (
-            <div style={{ display: 'grid', gap: 12 }}>
+            <>
+            <div className="employee-form-attachments" style={{ display: 'grid', gap: 12 }}>
               {(employmentPeriods || []).length ? (
                 <div style={{ display: 'grid', gap: 14 }}>
                   {['LC', 'LG', 'ENTRAMBE'].map((employerCode) => {
@@ -936,82 +1320,32 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                 />
               ) : null}
 
-              <DocumentActions
-                document={employeeDocuments.art37_document}
-                onUpload={() =>
-                  handleDocumentAction(
-                    () => window.api.employees.uploadArt37Document(employee.id),
-                    'Errore caricamento allegato formazione art. 37',
-                    {
-                      documentKey: 'art37_document',
-                      busyKey: 'art37_document',
-                      perfName: 'formazione',
-                    }
-                  )
-                }
-                onOpen={() =>
-                  handleOpenDocument(
-                    () => window.api.employees.openArt37Document(employee.id),
-                    'Errore apertura allegato formazione art. 37'
-                  )
-                }
-                onDelete={() =>
-                  handleDocumentAction(
-                    async () => {
-                      if (!window.confirm("Confermi l'eliminazione dell'allegato formazione art. 37?")) {
-                        return { canceled: true };
-                      }
-                      return window.api.employees.deleteArt37Document(employee.id);
-                    },
-                    'Errore eliminazione allegato formazione art. 37',
-                    { documentKey: 'art37_document', busyKey: 'art37_document' }
-                  )
-                }
-                emptyLabel="Nessun allegato formazione art. 37"
-                loading={documentBusyKey === 'art37_document'}
-                loadingLabel="Salvataggio formazione in corso..."
-              />
-
-              <DocumentActions
-                document={employeeDocuments.medical_visit_document}
-                onUpload={() =>
-                  handleDocumentAction(
-                    () => window.api.employees.uploadMedicalVisitDocument(employee.id),
-                    'Errore caricamento allegato visita medica',
-                    { documentKey: 'medical_visit_document', busyKey: 'medical_visit_document' }
-                  )
-                }
-                onOpen={() =>
-                  handleOpenDocument(
-                    () => window.api.employees.openMedicalVisitDocument(employee.id),
-                    'Errore apertura allegato visita medica'
-                  )
-                }
-                onDelete={() =>
-                  handleDocumentAction(
-                    async () => {
-                      if (!window.confirm("Confermi l'eliminazione dell'allegato visita medica?")) {
-                        return { canceled: true };
-                      }
-                      return window.api.employees.deleteMedicalVisitDocument(employee.id);
-                    },
-                    'Errore eliminazione allegato visita medica',
-                    { documentKey: 'medical_visit_document', busyKey: 'medical_visit_document' }
-                  )
-                }
-                emptyLabel="Nessun allegato visita medica"
-                loading={documentBusyKey === 'medical_visit_document'}
-              />
             </div>
+            </>
           ) : (
             <div style={infoBoxStyle}>
-              Salva prima la scheda: dopo il primo salvataggio potrai allegare assunzione, formazione art. 37 e visita medica.
+              Salva prima la scheda: dopo il primo salvataggio potrai allegare assunzione, formazione art. 37, visita medica e consegna DPI.
             </div>
           )}
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
-            <button type="button" className="button-secondary" onClick={requestClose}>Annulla</button>
-            <button type="submit" className="button">{employee ? 'Salva Modifiche' : 'Aggiungi'}</button>
+          </div>
+
+          <div className="employee-form__footer">
+            <div className="employee-form__footer-status">
+              {isDirty ? (
+                <span className="soft-chip" style={{ background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', borderColor: 'rgba(245, 158, 11, 0.18)' }}>
+                  Modifiche non salvate
+                </span>
+              ) : (
+                <span className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', borderColor: 'rgba(22, 101, 52, 0.14)' }}>
+                  Dati sincronizzati
+                </span>
+              )}
+            </div>
+            <div className="employee-form__footer-actions">
+              <button type="button" className="button-secondary" onClick={requestClose}>Annulla</button>
+              <button type="submit" className="button">{employee ? 'Salva Modifiche' : 'Aggiungi'}</button>
+            </div>
           </div>
         </form>
       </div>

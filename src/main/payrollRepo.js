@@ -117,6 +117,8 @@ function attachAdvances(records, options = {}) {
       ...record,
       is_pagato: !!record.is_pagato,
       resto_pagato: !!record.resto_pagato,
+      partial_paid_amount: Number(record.partial_paid_amount || 0),
+      remaining_balance: Number(record.remaining_balance || 0),
       is_processed: !!record.processed_at,
       is_archived: !!record.archived_at,
       report_snapshot_json: includePreviewData ? snapshot : null,
@@ -142,6 +144,43 @@ function attachAdvances(records, options = {}) {
         : null,
     };
   });
+}
+
+function normalizeBalanceStatus(status, fallbackBalance = 0, fallbackClosed = false) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'saldato' || fallbackClosed || Math.abs(Number(fallbackBalance || 0)) <= 0.009) {
+    return 'saldato';
+  }
+  if (normalized === 'parziale') {
+    return 'parziale';
+  }
+  return 'non_pagato';
+}
+
+function getCarriedForwardBalance(record) {
+  const effectiveBalance = Number(record.effective_balance || 0);
+  const normalizedStatus = normalizeBalanceStatus(
+    record.balance_status,
+    effectiveBalance,
+    !!record.resto_pagato
+  );
+
+  if (normalizedStatus === 'saldato') {
+    return 0;
+  }
+
+  if (normalizedStatus === 'parziale') {
+    const explicitRemaining = Number(record.remaining_balance || 0);
+    if (Math.abs(explicitRemaining) > 0.009) {
+      return explicitRemaining;
+    }
+
+    const paidAbs = Math.max(0, Number(record.partial_paid_amount || 0));
+    const residualAbs = Math.max(Math.abs(effectiveBalance) - paidAbs, 0);
+    return Math.sign(effectiveBalance || 1) * residualAbs;
+  }
+
+  return effectiveBalance;
 }
 
 function getJoinedRecordSql(whereClause) {
@@ -188,8 +227,16 @@ function getHistoryListSql(whereClause) {
       pr.regalo_importo,
       pr.regalo_descrizione,
       pr.is_pagato,
+      pr.payroll_payment_status,
+      pr.payroll_payment_method,
+      pr.payroll_payment_date,
       pr.resto_pagato,
       pr.resto_pagato_data,
+      pr.balance_status,
+      pr.partial_paid_amount,
+      pr.remaining_balance,
+      pr.balance_closed_at,
+      pr.balance_notes,
       pr.processed_at,
       pr.archived_at,
       pr.note,
@@ -439,8 +486,16 @@ function upsertPayrollRecord(data) {
         regalo_importo,
         regalo_descrizione,
         is_pagato,
+        payroll_payment_status,
+        payroll_payment_method,
+        payroll_payment_date,
         resto_pagato,
         resto_pagato_data,
+        balance_status,
+        partial_paid_amount,
+        remaining_balance,
+        balance_closed_at,
+        balance_notes,
         processed_at,
         archived_at,
         report_html_snapshot,
@@ -466,8 +521,16 @@ function upsertPayrollRecord(data) {
         @regalo_importo,
         @regalo_descrizione,
         @is_pagato,
+        @payroll_payment_status,
+        @payroll_payment_method,
+        @payroll_payment_date,
         @resto_pagato,
         @resto_pagato_data,
+        @balance_status,
+        @partial_paid_amount,
+        @remaining_balance,
+        @balance_closed_at,
+        @balance_notes,
         @processed_at,
         NULL,
         @report_html_snapshot,
@@ -492,8 +555,16 @@ function upsertPayrollRecord(data) {
         regalo_importo = excluded.regalo_importo,
         regalo_descrizione = excluded.regalo_descrizione,
         is_pagato = excluded.is_pagato,
+        payroll_payment_status = excluded.payroll_payment_status,
+        payroll_payment_method = excluded.payroll_payment_method,
+        payroll_payment_date = excluded.payroll_payment_date,
         resto_pagato = excluded.resto_pagato,
         resto_pagato_data = excluded.resto_pagato_data,
+        balance_status = excluded.balance_status,
+        partial_paid_amount = excluded.partial_paid_amount,
+        remaining_balance = excluded.remaining_balance,
+        balance_closed_at = excluded.balance_closed_at,
+        balance_notes = excluded.balance_notes,
         processed_at = excluded.processed_at,
         archived_at = NULL,
         report_html_snapshot = excluded.report_html_snapshot,
@@ -525,8 +596,19 @@ function upsertPayrollRecord(data) {
       regalo_importo: data.regalo_importo ?? 0,
       regalo_descrizione: data.regalo_descrizione || null,
       is_pagato: data.is_pagato ? 1 : 0,
+      payroll_payment_status:
+        String(data.payroll_payment_status || '').trim().toLowerCase() === 'non_pagato'
+          ? 'non_pagato'
+          : 'pagato',
+      payroll_payment_method: data.payroll_payment_method || 'bonifico',
+      payroll_payment_date: data.payroll_payment_date || null,
       resto_pagato: data.resto_pagato ? 1 : 0,
       resto_pagato_data: data.resto_pagato_data || null,
+      balance_status: data.balance_status || 'non_pagato',
+      partial_paid_amount: data.partial_paid_amount ?? 0,
+      remaining_balance: data.remaining_balance ?? 0,
+      balance_closed_at: data.balance_closed_at || null,
+      balance_notes: data.balance_notes || null,
       processed_at: data.processed_at || new Date().toISOString(),
       report_html_snapshot: data.report_html_snapshot || null,
       report_snapshot_json: data.report_snapshot_json
@@ -614,8 +696,14 @@ function listPayrollRecordsForEmployees(options = {}) {
       pr.regalo_importo,
       pr.regalo_descrizione,
       pr.is_pagato,
+      pr.payroll_payment_status,
+      pr.payroll_payment_method,
+      pr.payroll_payment_date,
       pr.resto_pagato,
       pr.resto_pagato_data,
+      pr.balance_status,
+      pr.balance_closed_at,
+      pr.balance_notes,
       pr.processed_at,
       pr.archived_at,
       pr.note,
@@ -651,7 +739,23 @@ function listPayrollRecordsForEmployees(options = {}) {
       advances: [],
       debt_plans: [],
       is_pagato: !!row.is_pagato,
+      payroll_payment_status:
+        String(row.payroll_payment_status || '').trim().toLowerCase() === 'non_pagato'
+          ? 'non_pagato'
+          : (row.payroll_payment_status ? 'pagato' : row.is_pagato ? 'pagato' : 'non_pagato'),
+      payroll_payment_method: row.payroll_payment_method || 'bonifico',
+      payroll_payment_date: row.payroll_payment_date || null,
       resto_pagato: !!row.resto_pagato,
+      balance_status:
+        row.balance_status ||
+        (Math.abs(Number(row.differenza_finale || 0)) <= 0.009 || row.resto_pagato ? 'saldato' : 'non_pagato'),
+      partial_paid_amount: Number(row.partial_paid_amount || 0),
+      remaining_balance:
+        row.remaining_balance !== null && row.remaining_balance !== undefined
+          ? Number(row.remaining_balance || 0)
+          : Number(row.differenza_finale || 0),
+      balance_closed_at: row.balance_closed_at || row.resto_pagato_data || null,
+      balance_notes: row.balance_notes ?? row.note ?? null,
       is_processed: !!row.processed_at,
       is_archived: !!row.archived_at,
       report_snapshot_json: null,
@@ -849,6 +953,9 @@ function getPreviousBalance(employeeId, month) {
     SELECT
       pr.month,
       pr.resto_pagato,
+      pr.balance_status,
+      pr.partial_paid_amount,
+      pr.remaining_balance,
       ${effectiveBalanceSql} AS effective_balance
     FROM payroll_records pr
     LEFT JOIN (
@@ -863,16 +970,35 @@ function getPreviousBalance(employeeId, month) {
     WHERE pr.employee_id = ?
       AND pr.month < ?
       AND pr.archived_at IS NULL
-      AND COALESCE(pr.resto_pagato, 0) = 0
-      AND ${effectiveBalanceSql} <> 0
+      AND (
+        CASE
+          WHEN COALESCE(pr.balance_status, '') = 'saldato' OR COALESCE(pr.resto_pagato, 0) = 1 THEN 0
+          WHEN COALESCE(pr.balance_status, '') = 'parziale' THEN
+            CASE
+              WHEN ABS(COALESCE(pr.remaining_balance, 0)) > 0.009 THEN COALESCE(pr.remaining_balance, 0)
+              ELSE
+                CASE
+                  WHEN (${effectiveBalanceSql}) < 0 THEN -MAX(ABS(${effectiveBalanceSql}) - COALESCE(pr.partial_paid_amount, 0), 0)
+                  ELSE MAX(ABS(${effectiveBalanceSql}) - COALESCE(pr.partial_paid_amount, 0), 0)
+                END
+            END
+          ELSE ${effectiveBalanceSql}
+        END
+      ) <> 0
     ORDER BY pr.month DESC
     LIMIT 1
   `).get(employeeId, month);
 
   if (openPrevious) {
+    const carriedBalance = getCarriedForwardBalance(openPrevious);
     return {
       previousMonth: openPrevious.month,
-      previousBalance: Number(openPrevious.effective_balance || 0),
+      previousBalance: carriedBalance,
+      balanceStatus: normalizeBalanceStatus(
+        openPrevious.balance_status,
+        openPrevious.effective_balance,
+        !!openPrevious.resto_pagato
+      ),
       alreadyPaid: false,
     };
   }
@@ -881,6 +1007,9 @@ function getPreviousBalance(employeeId, month) {
     SELECT
       pr.month,
       pr.resto_pagato,
+      pr.balance_status,
+      pr.partial_paid_amount,
+      pr.remaining_balance,
       ${effectiveBalanceSql} AS effective_balance
     FROM payroll_records pr
     LEFT JOIN (
@@ -911,9 +1040,14 @@ function getPreviousBalance(employeeId, month) {
   return {
     previousMonth: null,
     previousBalance: 0,
-    alreadyPaid: !!latestPrevious.resto_pagato,
+    alreadyPaid: Math.abs(getCarriedForwardBalance(latestPrevious)) <= 0.009,
     paidPreviousMonth: latestPrevious.month,
-    paidPreviousBalance: Number(latestPrevious.effective_balance || 0),
+    paidPreviousBalance: getCarriedForwardBalance(latestPrevious),
+    balanceStatus: normalizeBalanceStatus(
+      latestPrevious.balance_status,
+      latestPrevious.effective_balance,
+      !!latestPrevious.resto_pagato
+    ),
   };
 }
 
@@ -931,7 +1065,7 @@ function getPayrollRecordById(id) {
   };
 }
 
-function updatePayrollReportPaymentStatus(id, paymentStatus, paymentDate) {
+function updatePayrollReportPaymentStatus(id, paymentStatus, paymentDate, partialPaidAmount = 0, remainingBalance = null) {
   const db = getDb();
   const record = getPayrollRecordById(id);
   if (!record) {
@@ -942,26 +1076,46 @@ function updatePayrollReportPaymentStatus(id, paymentStatus, paymentDate) {
   const normalizedPaymentDate = String(paymentDate || '').trim();
   const closedPaymentDate = normalizedPaymentDate || new Date().toISOString().slice(0, 10);
 
-  let isPagato = 0;
-  let restoPagato = 0;
-  let restoPagatoData = null;
-
-  if (normalizedStatus === 'parziale') {
-    isPagato = 1;
-  } else if (normalizedStatus === 'pagato' || normalizedStatus === 'saldato') {
-    isPagato = 1;
-    restoPagato = 1;
-    restoPagatoData = closedPaymentDate;
-  }
+  const balanceStatus =
+    normalizedStatus === 'pagato' ? 'saldato' :
+    normalizedStatus === 'parziale' ? 'parziale' :
+    normalizedStatus === 'saldato' ? 'saldato' :
+    'non_pagato';
+  const balanceClosedAt = closedPaymentDate;
+  const restoPagato = balanceStatus === 'saldato' ? 1 : 0;
+  const effectiveBalance = Number(record.differenza_finale || 0);
+  const normalizedPartialPaidAmount =
+    balanceStatus === 'parziale'
+      ? Math.min(Math.max(Number(partialPaidAmount || 0), 0), Math.abs(effectiveBalance))
+      : balanceStatus === 'saldato'
+      ? Math.abs(effectiveBalance)
+      : 0;
+  const normalizedRemainingBalance =
+    balanceStatus === 'saldato'
+      ? 0
+      : balanceStatus === 'parziale'
+      ? Number(remainingBalance ?? effectiveBalance)
+      : effectiveBalance;
 
   db.prepare(`
     UPDATE payroll_records
-    SET is_pagato = ?,
-        resto_pagato = ?,
+    SET resto_pagato = ?,
         resto_pagato_data = ?,
+        balance_status = ?,
+        partial_paid_amount = ?,
+        remaining_balance = ?,
+        balance_closed_at = ?,
         updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `).run(isPagato, restoPagato, restoPagatoData, id);
+  `).run(
+    restoPagato,
+    balanceClosedAt,
+    balanceStatus,
+    normalizedPartialPaidAmount,
+    normalizedRemainingBalance,
+    balanceClosedAt,
+    id
+  );
 
   return getPayrollRecordById(id);
 }

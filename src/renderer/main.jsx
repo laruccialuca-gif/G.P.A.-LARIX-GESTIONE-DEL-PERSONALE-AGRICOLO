@@ -11,6 +11,7 @@ import FinancialMovementsPage from './pages/FinancialMovementsPage';
 import StoricoOperaioPage from './pages/StoricoOperaioPage';
 import OperaiAssuntiPage from './pages/OperaiAssuntiPage';
 import CommunicationPage from './pages/CommunicationPage';
+import DpiPage from './pages/DpiPage';
 import SettingsPage from './pages/SettingsPage';
 import BustePagaPage from './pages/BustePagaPage';
 import SetupPage from './pages/SetupPage';
@@ -220,6 +221,7 @@ const router = createHashRouter([
       { path: 'storico-operaio', element: withScreenBoundary(<StoricoOperaioPage />, 'history-page'), errorElement: <RouteErrorFallback /> },
       { path: 'buste-paga', element: withScreenBoundary(<BustePagaPage />, 'payroll-page'), errorElement: <RouteErrorFallback /> },
       { path: 'comunicazione', element: withScreenBoundary(<CommunicationPage />, 'communication-page'), errorElement: <RouteErrorFallback /> },
+      { path: 'dpi', element: withScreenBoundary(<DpiPage />, 'dpi-page'), errorElement: <RouteErrorFallback /> },
       { path: 'impostazioni', element: withScreenBoundary(<SettingsPage />, 'settings-page'), errorElement: <RouteErrorFallback /> },
       { path: 'operai-assunti', element: withScreenBoundary(<OperaiAssuntiPage />, 'hired-workers-page'), errorElement: <RouteErrorFallback /> },
       { path: 'utenti', element: withScreenBoundary(<UsersPage />, 'users-page'), errorElement: <RouteErrorFallback /> },

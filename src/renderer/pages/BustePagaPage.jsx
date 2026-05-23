@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useYearContext } from '../context/YearContext';
 import { employeeIsActiveInYear } from '../utils/yearScope';
+import { dispatchRouteReady } from '../utils/navigationPerf';
 
 const MONTH_NAMES = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
 
@@ -114,6 +115,12 @@ export default function BustePagaPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!loading) {
+      dispatchRouteReady('/buste-paga');
+    }
+  }, [loading]);
 
   const employeeRows = useMemo(
     () => employees

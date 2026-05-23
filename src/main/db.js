@@ -209,6 +209,14 @@ function runCoreSchemaMigration(database) {
       regalo_descrizione TEXT,
       is_pagato INTEGER DEFAULT 0,
       resto_pagato INTEGER DEFAULT 0,
+      payroll_payment_status TEXT DEFAULT 'non_pagato',
+      payroll_payment_method TEXT DEFAULT 'bonifico',
+      payroll_payment_date TEXT,
+      balance_status TEXT DEFAULT 'non_pagato',
+      partial_paid_amount REAL DEFAULT 0,
+      remaining_balance REAL DEFAULT 0,
+      balance_closed_at TEXT,
+      balance_notes TEXT,
       processed_at TEXT,
       archived_at TEXT,
       report_html_snapshot TEXT,
@@ -318,7 +326,10 @@ function runCoreSchemaMigration(database) {
       month TEXT NOT NULL,
       advance_date TEXT NOT NULL,
       amount REAL NOT NULL DEFAULT 0,
+      employer_key TEXT,
       notes TEXT,
+      include_in_report INTEGER NOT NULL DEFAULT 1,
+      source_type TEXT NOT NULL DEFAULT 'report',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
@@ -338,6 +349,24 @@ function runCoreSchemaMigration(database) {
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
       FOREIGN KEY (employee_id) REFERENCES employees(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS team_report_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      transport_enabled INTEGER DEFAULT 0,
+      transport_description TEXT,
+      transport_amount REAL DEFAULT 0,
+      note TEXT,
+      processed_at TEXT,
+      archived_at TEXT,
+      report_html_snapshot TEXT,
+      report_snapshot_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      UNIQUE(team_id, month)
     );
 
     CREATE TABLE IF NOT EXISTS employee_employment_periods (
@@ -397,6 +426,32 @@ function runCoreSchemaMigration(database) {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (communication_id) REFERENCES communications(id) ON DELETE CASCADE,
+      FOREIGN KEY (employee_id) REFERENCES employees(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS dpi_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      description TEXT,
+      size TEXT,
+      purchased_quantity REAL NOT NULL DEFAULT 0,
+      purchase_date TEXT,
+      notes TEXT,
+      is_archived INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS dpi_assignments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      dpi_item_id INTEGER NOT NULL,
+      employee_id INTEGER NOT NULL,
+      assigned_date TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 1,
+      notes TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (dpi_item_id) REFERENCES dpi_items(id),
       FOREIGN KEY (employee_id) REFERENCES employees(id)
     );
 
@@ -464,6 +519,17 @@ function runCoreSchemaMigration(database) {
   ensureColumn(database, 'teams', 'is_archived', 'INTEGER DEFAULT 0');
   ensureColumn(database, 'teams', 'archived_at', 'TEXT');
   ensureColumn(database, 'teams', 'team_daily_rate', 'REAL DEFAULT 0');
+  ensureColumn(database, 'team_advances', 'employer_key', 'TEXT');
+  ensureColumn(database, 'team_advances', 'include_in_report', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(database, 'team_advances', 'source_type', "TEXT NOT NULL DEFAULT 'report'");
+  ensureColumn(database, 'team_report_records', 'transport_enabled', 'INTEGER DEFAULT 0');
+  ensureColumn(database, 'team_report_records', 'transport_description', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'transport_amount', 'REAL DEFAULT 0');
+  ensureColumn(database, 'team_report_records', 'note', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'processed_at', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'archived_at', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'report_html_snapshot', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'report_snapshot_json', 'TEXT');
   ensureColumn(database, 'employee_employment_periods', 'source_document_id', 'TEXT');
   ensureColumn(database, 'employee_documents', 'sha256', 'TEXT');
   ensureColumn(database, 'employee_documents', 'file_created_at', 'TEXT');
@@ -515,12 +581,16 @@ function runCoreSchemaMigration(database) {
     CREATE INDEX IF NOT EXISTS idx_team_members_employee ON team_members(employee_id);
     CREATE INDEX IF NOT EXISTS idx_team_advances_lookup ON team_advances(team_id, month, advance_date, id);
     CREATE INDEX IF NOT EXISTS idx_team_payroll_components_lookup ON team_payroll_components(team_id, month, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_team_report_records_lookup ON team_report_records(team_id, month, processed_at, id);
     CREATE INDEX IF NOT EXISTS idx_team_attendance_lookup ON team_attendance(team_id, date, id);
     CREATE INDEX IF NOT EXISTS idx_teams_archived ON teams(is_archived, name);
     CREATE INDEX IF NOT EXISTS idx_employee_periods_employee ON employee_employment_periods(employee_id, is_current, id);
     CREATE INDEX IF NOT EXISTS idx_employee_periods_range ON employee_employment_periods(employee_id, hire_date_from, hire_date_to);
     CREATE INDEX IF NOT EXISTS idx_communications_period ON communications(period_start, period_end, created_at);
     CREATE INDEX IF NOT EXISTS idx_communication_details_comm ON communication_details(communication_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_dpi_items_archived ON dpi_items(is_archived, type, size, id);
+    CREATE INDEX IF NOT EXISTS idx_dpi_assignments_item ON dpi_assignments(dpi_item_id, assigned_date, id);
+    CREATE INDEX IF NOT EXISTS idx_dpi_assignments_employee ON dpi_assignments(employee_id, assigned_date, id);
   `);
 
   backfillLegacyAdvances(database);
@@ -581,6 +651,102 @@ function runPayrollRestoStatusMigration(database) {
 
 function runPayrollRestoPaidDateMigration(database) {
   ensureColumn(database, 'payroll_records', 'resto_pagato_data', 'TEXT');
+}
+
+function runPayrollPaymentSplitMigration(database) {
+  const paymentStatusAdded = ensureColumn(
+    database,
+    'payroll_records',
+    'payroll_payment_status',
+    "TEXT DEFAULT 'non_pagato'"
+  );
+  const paymentMethodAdded = ensureColumn(
+    database,
+    'payroll_records',
+    'payroll_payment_method',
+    "TEXT DEFAULT 'bonifico'"
+  );
+  const paymentDateAdded = ensureColumn(
+    database,
+    'payroll_records',
+    'payroll_payment_date',
+    'TEXT'
+  );
+  const balanceStatusAdded = ensureColumn(
+    database,
+    'payroll_records',
+    'balance_status',
+    "TEXT DEFAULT 'non_pagato'"
+  );
+  const partialPaidAmountAdded = ensureColumn(
+    database,
+    'payroll_records',
+    'partial_paid_amount',
+    'REAL DEFAULT 0'
+  );
+  const remainingBalanceAdded = ensureColumn(
+    database,
+    'payroll_records',
+    'remaining_balance',
+    'REAL DEFAULT 0'
+  );
+  const balanceClosedAtAdded = ensureColumn(
+    database,
+    'payroll_records',
+    'balance_closed_at',
+    'TEXT'
+  );
+  const balanceNotesAdded = ensureColumn(
+    database,
+    'payroll_records',
+    'balance_notes',
+    'TEXT'
+  );
+
+  if (
+    paymentStatusAdded ||
+    paymentMethodAdded ||
+    paymentDateAdded ||
+    balanceStatusAdded ||
+    partialPaidAmountAdded ||
+    remainingBalanceAdded ||
+    balanceClosedAtAdded ||
+    balanceNotesAdded
+  ) {
+    database.exec(`
+      UPDATE payroll_records
+      SET
+        payroll_payment_status = CASE
+          WHEN COALESCE(is_pagato, 0) = 1 THEN 'pagato'
+          ELSE 'non_pagato'
+        END,
+        payroll_payment_method = COALESCE(NULLIF(payroll_payment_method, ''), 'bonifico'),
+        payroll_payment_date = CASE
+          WHEN COALESCE(is_pagato, 0) = 1 THEN COALESCE(payroll_payment_date, processed_at, updated_at, created_at)
+          ELSE NULL
+        END,
+        balance_status = CASE
+          WHEN ABS(COALESCE(differenza_finale, 0)) <= 0.009 THEN 'saldato'
+          WHEN COALESCE(resto_pagato, 0) = 1 THEN 'saldato'
+          ELSE COALESCE(balance_status, 'non_pagato')
+        END,
+        partial_paid_amount = CASE
+          WHEN COALESCE(balance_status, '') = 'parziale' THEN COALESCE(partial_paid_amount, 0)
+          ELSE COALESCE(partial_paid_amount, 0)
+        END,
+        remaining_balance = CASE
+          WHEN COALESCE(balance_status, '') = 'saldato' OR COALESCE(resto_pagato, 0) = 1 OR ABS(COALESCE(differenza_finale, 0)) <= 0.009 THEN 0
+          WHEN COALESCE(balance_status, '') = 'parziale' AND ABS(COALESCE(remaining_balance, 0)) > 0.009 THEN remaining_balance
+          ELSE COALESCE(differenza_finale, 0)
+        END,
+        balance_closed_at = CASE
+          WHEN COALESCE(resto_pagato, 0) = 1 THEN COALESCE(balance_closed_at, resto_pagato_data)
+          ELSE balance_closed_at
+        END,
+        balance_notes = COALESCE(balance_notes, note)
+      WHERE 1 = 1
+    `);
+  }
 }
 
 function runAttendanceEntryCodeMigration(database) {
@@ -780,6 +946,223 @@ function runTeamsTeamDailyRateMigration(database) {
   });
 }
 
+function runTeamPayrollTablesMigration(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS team_advances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      advance_date TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_team_advances_lookup
+      ON team_advances(team_id, month, advance_date, id);
+  `);
+  ensureColumn(database, 'team_advances', 'employer_key', 'TEXT');
+  ensureColumn(database, 'team_advances', 'include_in_report', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(database, 'team_advances', 'source_type', "TEXT NOT NULL DEFAULT 'report'");
+  console.info('[db-migration] team_advances ensured');
+  logDbEvent('schema-table-updated', {
+    table_name: 'team_advances',
+    columns_added: ['ensured'],
+  });
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS team_payroll_components (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      employee_id INTEGER NULL,
+      employee_label TEXT,
+      days REAL DEFAULT 0,
+      amount REAL DEFAULT 0,
+      notes TEXT,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_team_payroll_components_lookup
+      ON team_payroll_components(team_id, month, sort_order, id);
+  `);
+  console.info('[db-migration] team_payroll_components ensured');
+  logDbEvent('schema-table-updated', {
+    table_name: 'team_payroll_components',
+    columns_added: ['ensured'],
+  });
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS team_report_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      transport_enabled INTEGER DEFAULT 0,
+      transport_description TEXT,
+      transport_amount REAL DEFAULT 0,
+      note TEXT,
+      processed_at TEXT,
+      archived_at TEXT,
+      report_html_snapshot TEXT,
+      report_snapshot_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      UNIQUE(team_id, month)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_team_report_records_lookup
+      ON team_report_records(team_id, month, processed_at, id);
+  `);
+  console.info('[db-migration] team_report_records ensured');
+  logDbEvent('schema-table-updated', {
+    table_name: 'team_report_records',
+    columns_added: ['ensured'],
+  });
+  ensureColumn(database, 'team_report_records', 'transport_enabled', 'INTEGER DEFAULT 0');
+  ensureColumn(database, 'team_report_records', 'transport_description', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'transport_amount', 'REAL DEFAULT 0');
+  ensureColumn(database, 'team_report_records', 'note', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'processed_at', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'archived_at', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'report_html_snapshot', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'report_snapshot_json', 'TEXT');
+}
+
+function runTeamAdvancesColumnsMigration(database) {
+  const teamAdvanceColumns = database.prepare('PRAGMA table_info(team_advances)').all();
+  const hasEmployerKey = teamAdvanceColumns.some((column) => column.name === 'employer_key');
+  const hasIncludeInReport = teamAdvanceColumns.some((column) => column.name === 'include_in_report');
+  const hasSourceType = teamAdvanceColumns.some((column) => column.name === 'source_type');
+
+  if (hasEmployerKey) {
+    console.info('[db-migration] team_advances.employer_key already exists');
+    logDbEvent('schema-migration-skipped', {
+      table_name: 'team_advances',
+      reason: 'column-already-present',
+      checked_columns: ['employer_key'],
+    });
+  } else {
+    database.exec('ALTER TABLE team_advances ADD COLUMN employer_key TEXT;');
+    console.info('[db-migration] team_advances.employer_key added');
+    logDbEvent('schema-table-updated', {
+      table_name: 'team_advances',
+      columns_added: ['employer_key'],
+    });
+  }
+
+  if (!hasIncludeInReport) {
+    database.exec('ALTER TABLE team_advances ADD COLUMN include_in_report INTEGER NOT NULL DEFAULT 1;');
+    console.info('[db-migration] team_advances.include_in_report added');
+    logDbEvent('schema-table-updated', {
+      table_name: 'team_advances',
+      columns_added: ['include_in_report'],
+    });
+  }
+
+  if (!hasSourceType) {
+    database.exec("ALTER TABLE team_advances ADD COLUMN source_type TEXT NOT NULL DEFAULT 'report';");
+    console.info('[db-migration] team_advances.source_type added');
+    logDbEvent('schema-table-updated', {
+      table_name: 'team_advances',
+      columns_added: ['source_type'],
+    });
+  }
+}
+
+function runTeamAdvancesEmployerKeyMigration(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS team_advances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      advance_date TEXT NOT NULL,
+      amount REAL NOT NULL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
+    );
+  `);
+
+  const teamAdvanceColumns = database.prepare('PRAGMA table_info(team_advances)').all();
+  const columnNames = new Set(teamAdvanceColumns.map((column) => column.name));
+
+  if (columnNames.has('employer_key')) {
+    console.info('[db-migration] team_advances.employer_key already exists');
+    logDbEvent('schema-migration-skipped', {
+      table_name: 'team_advances',
+      reason: 'column-already-present',
+      checked_columns: ['employer_key'],
+    });
+  } else {
+    database.exec('ALTER TABLE team_advances ADD COLUMN employer_key TEXT;');
+    console.info('[db-migration] team_advances.employer_key added');
+    logDbEvent('schema-table-updated', {
+      table_name: 'team_advances',
+      columns_added: ['employer_key'],
+    });
+  }
+
+  if (!columnNames.has('include_in_report')) {
+    database.exec('ALTER TABLE team_advances ADD COLUMN include_in_report INTEGER NOT NULL DEFAULT 1;');
+    console.info('[db-migration] team_advances.include_in_report added');
+    logDbEvent('schema-table-updated', {
+      table_name: 'team_advances',
+      columns_added: ['include_in_report'],
+    });
+  }
+
+  if (!columnNames.has('source_type')) {
+    database.exec("ALTER TABLE team_advances ADD COLUMN source_type TEXT NOT NULL DEFAULT 'report';");
+    console.info('[db-migration] team_advances.source_type added');
+    logDbEvent('schema-table-updated', {
+      table_name: 'team_advances',
+      columns_added: ['source_type'],
+    });
+  }
+}
+
+function runDpiSchemaMigration(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS dpi_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      description TEXT,
+      size TEXT,
+      purchased_quantity REAL NOT NULL DEFAULT 0,
+      purchase_date TEXT,
+      notes TEXT,
+      is_archived INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS dpi_assignments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      dpi_item_id INTEGER NOT NULL,
+      employee_id INTEGER NOT NULL,
+      assigned_date TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 1,
+      notes TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (dpi_item_id) REFERENCES dpi_items(id),
+      FOREIGN KEY (employee_id) REFERENCES employees(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dpi_items_archived ON dpi_items(is_archived, type, size, id);
+    CREATE INDEX IF NOT EXISTS idx_dpi_assignments_item ON dpi_assignments(dpi_item_id, assigned_date, id);
+    CREATE INDEX IF NOT EXISTS idx_dpi_assignments_employee ON dpi_assignments(employee_id, assigned_date, id);
+  `);
+}
+
 const MIGRATIONS = [
   {
     id: '2026-04-20-core-schema',
@@ -796,6 +1179,10 @@ const MIGRATIONS = [
   {
     id: '2026-04-20-payroll-resto-paid-date',
     run: runPayrollRestoPaidDateMigration,
+  },
+  {
+    id: '2026-05-22-payroll-payment-split',
+    run: runPayrollPaymentSplitMigration,
   },
   {
     id: '2026-04-22-attendance-entry-code',
@@ -836,6 +1223,22 @@ const MIGRATIONS = [
   {
     id: '2026-05-21-teams-team-daily-rate',
     run: runTeamsTeamDailyRateMigration,
+  },
+  {
+    id: '2026-05-21-team-payroll-components',
+    run: runTeamPayrollTablesMigration,
+  },
+  {
+    id: '2026-05-21-team-advances-columns',
+    run: runTeamAdvancesColumnsMigration,
+  },
+  {
+    id: '2026-05-21-team-advances-employer-key',
+    run: runTeamAdvancesEmployerKeyMigration,
+  },
+  {
+    id: '2026-05-21-dpi-schema',
+    run: runDpiSchemaMigration,
   },
 ];
 

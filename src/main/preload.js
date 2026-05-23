@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld('api', {
   diagnostics: {
     generateReport: () => ipcRenderer.invoke('diagnostics:generateReport'),
     logRendererError: (payload) => ipcRenderer.invoke('diagnostics:logRendererError', payload),
+    logRendererEvent: (payload) => ipcRenderer.invoke('diagnostics:logRendererEvent', payload),
   },
 
   operations: {
@@ -122,6 +123,22 @@ contextBridge.exposeInMainWorld('api', {
     uploadMedicalVisitDocument: (employeeId) => ipcRenderer.invoke('employees:uploadMedicalVisitDocument', employeeId),
     openMedicalVisitDocument: (employeeId) => ipcRenderer.invoke('employees:openMedicalVisitDocument', employeeId),
     deleteMedicalVisitDocument: (employeeId) => ipcRenderer.invoke('employees:deleteMedicalVisitDocument', employeeId),
+    uploadDpiDeliveryDocument: (employeeId) => ipcRenderer.invoke('employees:uploadDpiDeliveryDocument', employeeId),
+    openDpiDeliveryDocument: (employeeId) => ipcRenderer.invoke('employees:openDpiDeliveryDocument', employeeId),
+    deleteDpiDeliveryDocument: (employeeId) => ipcRenderer.invoke('employees:deleteDpiDeliveryDocument', employeeId),
+  },
+
+  dpi: {
+    listItems: (options) => ipcRenderer.invoke('dpi:listItems', options),
+    createItem: (payload) => ipcRenderer.invoke('dpi:createItem', payload),
+    updateItem: (id, payload) => ipcRenderer.invoke('dpi:updateItem', id, payload),
+    archiveItem: (id) => ipcRenderer.invoke('dpi:archiveItem', id),
+    deleteItem: (id) => ipcRenderer.invoke('dpi:deleteItem', id),
+    listAssignments: (options) => ipcRenderer.invoke('dpi:listAssignments', options),
+    createAssignment: (payload) => ipcRenderer.invoke('dpi:createAssignment', payload),
+    updateAssignment: (id, payload) => ipcRenderer.invoke('dpi:updateAssignment', id, payload),
+    deleteAssignment: (id) => ipcRenderer.invoke('dpi:deleteAssignment', id),
+    getEmployeeAssignments: (employeeId) => ipcRenderer.invoke('dpi:getEmployeeAssignments', employeeId),
   },
 
   occupations: {
@@ -140,18 +157,25 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   teamPayroll: {
-    listAdvances: (teamId, month) => ipcRenderer.invoke('teamPayroll:listAdvances', teamId, month),
+    listAdvances: (teamId, month, options) => ipcRenderer.invoke('teamPayroll:listAdvances', teamId, month, options),
+    listAvailableAdvances: (teamId, month) => ipcRenderer.invoke('teamPayroll:listAvailableAdvances', teamId, month),
+    listAllAdvances: (options) => ipcRenderer.invoke('teamPayroll:listAllAdvances', options),
     createAdvance: (payload) => ipcRenderer.invoke('teamPayroll:createAdvance', payload),
     updateAdvance: (id, payload) => ipcRenderer.invoke('teamPayroll:updateAdvance', id, payload),
     deleteAdvance: (id) => ipcRenderer.invoke('teamPayroll:deleteAdvance', id),
+    setAdvancesImported: (ids, includeInReport) => ipcRenderer.invoke('teamPayroll:setAdvancesImported', ids, includeInReport),
+    getReportRecord: (teamId, month) => ipcRenderer.invoke('teamPayroll:getReportRecord', teamId, month),
+    saveReportRecord: (payload) => ipcRenderer.invoke('teamPayroll:saveReportRecord', payload),
     listPayrollComponents: (teamId, month) => ipcRenderer.invoke('teamPayroll:listPayrollComponents', teamId, month),
     createPayrollComponent: (payload) => ipcRenderer.invoke('teamPayroll:createPayrollComponent', payload),
     updatePayrollComponent: (id, payload) => ipcRenderer.invoke('teamPayroll:updatePayrollComponent', id, payload),
     deletePayrollComponent: (id) => ipcRenderer.invoke('teamPayroll:deletePayrollComponent', id),
+    replacePayrollComponents: (teamId, month, items) => ipcRenderer.invoke('teamPayroll:replacePayrollComponents', teamId, month, items),
   },
 
   communications: {
     list: (options) => ipcRenderer.invoke('communications:list', options),
+    getById: (id) => ipcRenderer.invoke('communications:getById', id),
     save: (payload) => ipcRenderer.invoke('communications:save', payload),
     delete: (id) => ipcRenderer.invoke('communications:delete', id),
     openFile: (id, type) => ipcRenderer.invoke('communications:openFile', id, type),
@@ -178,8 +202,8 @@ contextBridge.exposeInMainWorld('api', {
     listHistory: (options) => ipcRenderer.invoke('payroll:listHistory', options),
     getRecord: (employeeId, month) => ipcRenderer.invoke('payroll:getRecord', employeeId, month),
     getRecordById: (id) => ipcRenderer.invoke('payroll:getRecordById', id),
-    updatePaymentStatus: (id, paymentStatus, paymentDate) =>
-      ipcRenderer.invoke('payroll:updatePaymentStatus', id, paymentStatus, paymentDate),
+    updatePaymentStatus: (id, paymentStatus, paymentDate, partialPaidAmount, remainingBalance) =>
+      ipcRenderer.invoke('payroll:updatePaymentStatus', id, paymentStatus, paymentDate, partialPaidAmount, remainingBalance),
     getPreviousBalance: (employeeId, month) =>
       ipcRenderer.invoke('payroll:getPreviousBalance', employeeId, month),
     uploadDocument: (employeeId, month) => ipcRenderer.invoke('payroll:uploadDocument', employeeId, month),

@@ -189,6 +189,65 @@ function getCommunicationBaseSelect() {
   `;
 }
 
+function buildCommunicationWhere(options = {}) {
+  const conditions = [];
+  const params = [];
+  const search = String(options.search || '').trim().toLowerCase();
+
+  if (options.year) {
+    conditions.push(`
+      (
+        substr(COALESCE(c.month_reference, ''), 1, 4) = ?
+        OR substr(COALESCE(c.period_start, ''), 1, 4) = ?
+        OR substr(COALESCE(c.period_end, ''), 1, 4) = ?
+      )
+    `);
+    params.push(String(options.year), String(options.year), String(options.year));
+  }
+
+  if (options.month) {
+    conditions.push(`
+      (
+        COALESCE(c.month_reference, '') = ?
+        OR substr(COALESCE(c.period_start, ''), 1, 7) = ?
+        OR substr(COALESCE(c.period_end, ''), 1, 7) = ?
+      )
+    `);
+    params.push(String(options.month), String(options.month), String(options.month));
+  }
+
+  if (options.periodStart) {
+    conditions.push(`COALESCE(c.period_end, c.period_start, '') >= ?`);
+    params.push(String(options.periodStart));
+  }
+
+  if (options.periodEnd) {
+    conditions.push(`COALESCE(c.period_start, c.period_end, '') <= ?`);
+    params.push(String(options.periodEnd));
+  }
+
+  if (search) {
+    conditions.push(`
+      LOWER(
+        COALESCE(c.company_name, '') || ' ' ||
+        COALESCE(c.subject, '') || ' ' ||
+        COALESCE(c.title, '') || ' ' ||
+        COALESCE(c.month_reference, '') || ' ' ||
+        COALESCE(c.period_start, '') || ' ' ||
+        COALESCE(c.period_end, '') || ' ' ||
+        COALESCE(c.file_name_pdf, '') || ' ' ||
+        COALESCE(c.file_name_excel, '')
+      ) LIKE ?
+    `);
+    params.push(`%${search}%`);
+  }
+
+  return {
+    whereClause: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '',
+    params,
+  };
+}
+
 function parseJsonArray(value, fallback = []) {
   if (value === null || value === undefined || value === '') {
     return fallback;
@@ -306,6 +365,25 @@ function mapCommunicationRow(row, details = []) {
   };
 }
 
+function mapCommunicationListSummaryRow(row) {
+  return {
+    id: row.id,
+    period_mode: row.period_mode || 'monthly',
+    period_start: row.period_start || '',
+    period_end: row.period_end || '',
+    month_reference: row.month_reference || '',
+    company_name: row.company_name || '',
+    title: row.title || row.subject || 'Elenco giornate',
+    recipient_email: row.recipient_email || '',
+    created_at: row.created_at || '',
+    updated_at: row.updated_at || '',
+    pdf_relative_path: row.pdf_relative_path || '',
+    excel_relative_path: row.excel_relative_path || '',
+    details: [],
+    detail_count: Number(row.detail_count || 0),
+  };
+}
+
 function getCommunicationDetails(communicationId) {
   const db = getDb();
   ensureCommunicationsSchema(db);
@@ -349,54 +427,61 @@ function getCommunicationById(id) {
 function listCommunications(options = {}) {
   const db = getDb();
   ensureCommunicationsSchema(db);
-  const conditions = [];
-  const params = [];
   const requestedLimit = Number(options.limit || 0) || 0;
-  const limit = requestedLimit > 0 ? Math.max(1, Math.min(requestedLimit, 200)) : 0;
+  const limit = requestedLimit > 0 ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
   const offset = Math.max(0, Number(options.offset || 0) || 0);
-  const search = String(options.search || '').trim().toLowerCase();
-
-  if (options.year) {
-    conditions.push(`
-      (
-        substr(COALESCE(c.month_reference, ''), 1, 4) = ?
-        OR substr(COALESCE(c.period_start, ''), 1, 4) = ?
-        OR substr(COALESCE(c.period_end, ''), 1, 4) = ?
-      )
-    `);
-    params.push(String(options.year), String(options.year), String(options.year));
-  }
-
-  if (search) {
-    conditions.push(`
-      LOWER(
-        COALESCE(c.company_name, '') || ' ' ||
-        COALESCE(c.subject, '') || ' ' ||
-        COALESCE(c.month_reference, '') || ' ' ||
-        COALESCE(c.period_start, '') || ' ' ||
-        COALESCE(c.period_end, '') || ' ' ||
-        COALESCE(c.file_name_pdf, '') || ' ' ||
-        COALESCE(c.file_name_excel, '')
-      ) LIKE ?
-    `);
-    params.push(`%${search}%`);
-  }
-
-  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const includeDetails = options.includeDetails === true;
+  const { whereClause, params } = buildCommunicationWhere(options);
   const totalRow = db.prepare(`
     SELECT COUNT(*) AS total
     FROM communications c
     ${whereClause}
   `).get(...params);
   const total = Number(totalRow?.total || 0);
-  const paginationSql = limit ? 'LIMIT ? OFFSET ?' : '';
-  const queryParams = limit ? [...params, limit, offset] : params;
+  const queryParams = [...params, limit, offset];
+
+  if (!includeDetails) {
+    const rows = db.prepare(`
+      SELECT
+        c.id,
+        c.period_mode,
+        c.period_start,
+        c.period_end,
+        c.month_reference,
+        c.company_name,
+        c.title,
+        c.subject,
+        c.recipient_email,
+        c.created_at,
+        c.updated_at,
+        c.pdf_relative_path,
+        c.excel_relative_path,
+        (
+          SELECT COUNT(*)
+          FROM communication_details cd
+          WHERE cd.communication_id = c.id
+        ) AS detail_count
+      FROM communications c
+      ${whereClause}
+      ORDER BY c.created_at DESC, c.id DESC
+      LIMIT ? OFFSET ?
+    `).all(...queryParams);
+
+    return {
+      items: rows.map(mapCommunicationListSummaryRow),
+      total,
+      limit,
+      offset,
+      has_more: offset + rows.length < total,
+    };
+  }
+
   const rows = db.prepare(`
     ${getCommunicationBaseSelect()}
     ${whereClause}
     GROUP BY c.id
-    ORDER BY COALESCE(c.month_reference, substr(c.period_start, 1, 7)) DESC, c.created_at DESC, c.id DESC
-    ${paginationSql}
+    ORDER BY c.created_at DESC, c.id DESC
+    LIMIT ? OFFSET ?
   `).all(...queryParams);
 
   const detailsMap = new Map();
@@ -432,10 +517,6 @@ function listCommunications(options = {}) {
   }
 
   const items = rows.map((row) => mapCommunicationRow(row, detailsMap.get(row.id) || []));
-
-  if (!limit) {
-    return items;
-  }
 
   return {
     items,

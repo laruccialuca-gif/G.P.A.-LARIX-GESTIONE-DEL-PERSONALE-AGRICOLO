@@ -169,6 +169,8 @@ export default function OperaiAssuntiPage() {
 
   const [detailEmployee, setDetailEmployee] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [showFiscalCodeInPrint, setShowFiscalCodeInPrint] = useState(false);
+  const [customPrintTitle, setCustomPrintTitle] = useState('');
 
   useEffect(() => {
     if (detailEmployeeId == null) {
@@ -334,7 +336,8 @@ export default function OperaiAssuntiPage() {
     return parts.join(' • ');
   }
 
-  function buildPrintHtml(list, modeLabel) {
+  function buildPrintHtml(list, modeLabel, showFiscalCode = false, printTitle = '') {
+    const displayTitle = printTitle.trim() || 'Elenco Operai Assunti';
     const printDate = new Date().toLocaleDateString('it-IT');
     const sortedList = [...list].sort((a, b) => {
       const last = String(a.last_name || '').localeCompare(String(b.last_name || ''));
@@ -354,9 +357,11 @@ export default function OperaiAssuntiPage() {
     const rows = sortedList.map((employee) => {
       const trainingInfo = getComplianceInfo(employee, 'training');
       const medicalInfo = getComplianceInfo(employee, 'medical');
+      const fiscalCodeCell = showFiscalCode ? `<td style="padding:10px 8px; color:#334155; font-size:10px; white-space:nowrap;">${employee.fiscal_code || '—'}</td>` : '';
       return `
       <tr>
         <td style="padding:10px 12px; font-weight:700; color:#1F2937;">${employee.last_name || ''} ${employee.first_name || ''}</td>
+        ${fiscalCodeCell}
         <td style="padding:10px 12px; color:#334155;">${employee.role || '—'}</td>
         <td style="padding:10px 12px; color:#334155; white-space:nowrap;">${formatDisplayDate(employee.hire_date_from)}</td>
         <td style="padding:10px 12px; color:#334155; white-space:nowrap;">${formatDisplayDate(employee.hire_date_to)}</td>
@@ -412,7 +417,7 @@ export default function OperaiAssuntiPage() {
               Vista stampabile
             </div>
             <div style="margin-top:12px; font-size:24px; font-weight:800; line-height:1.1;">
-              Elenco Operai Assunti
+              ${escapeHtml(displayTitle)}
             </div>
             <div style="margin-top:6px; font-size:13px; color:#475569;">
               ${settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.4'}
@@ -455,6 +460,7 @@ export default function OperaiAssuntiPage() {
             <thead>
               <tr>
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Operaio</th>
+                ${showFiscalCode ? '<th style="padding:12px 8px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Cod. Fiscale</th>' : ''}
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Mansione</th>
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Data da</th>
                 <th style="padding:12px; text-align:left; font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.05em; color:#475569; background:#edf4ee; border-bottom:1px solid rgba(31, 41, 55, 0.08);">Data a</th>
@@ -636,7 +642,7 @@ export default function OperaiAssuntiPage() {
     try {
       await window.api.reports.savePdf({
         fileName: buildPdfFileName(modeLabel),
-        html: buildPrintHtml(list, modeLabel),
+        html: buildPrintHtml(list, modeLabel, showFiscalCodeInPrint, customPrintTitle),
         landscape: true,
       });
     } catch (err) {
@@ -655,7 +661,7 @@ export default function OperaiAssuntiPage() {
     try {
       await window.api.reports.printHtml({
         fileName: buildPdfFileName(modeLabel),
-        html: buildPrintHtml(list, modeLabel),
+        html: buildPrintHtml(list, modeLabel, showFiscalCodeInPrint, customPrintTitle),
         landscape: true,
       });
     } catch (err) {
@@ -902,7 +908,7 @@ export default function OperaiAssuntiPage() {
             </button>
           </div>
 
-          <div className="toolbar-group hired-workers-toolbar__meta" style={{ gap: 8, flexWrap: 'wrap', marginLeft: 0 }}>
+          <div className="toolbar-group hired-workers-toolbar__meta" style={{ gap: 12, flexWrap: 'wrap', marginLeft: 0, alignItems: 'center' }}>
             <span
               className="soft-chip hired-workers-toolbar__badge"
               style={{
@@ -918,6 +924,29 @@ export default function OperaiAssuntiPage() {
               {selectedCount} selezionati su {filteredCount}
               {filteredCount !== totalCount ? ` (totale ${totalCount})` : ''}
             </span>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#334155' }}>
+              <input
+                type="checkbox"
+                checked={showFiscalCodeInPrint}
+                onChange={(e) => setShowFiscalCodeInPrint(e.target.checked)}
+                style={{ cursor: 'pointer' }}
+              />
+              Mostra codice fiscale in stampa
+            </label>
+            <input
+              type="text"
+              placeholder="Titolo stampa (es. Operai assunti maggio 2026)"
+              value={customPrintTitle}
+              onChange={(e) => setCustomPrintTitle(e.target.value)}
+              style={{
+                minHeight: 34,
+                padding: '0 10px',
+                borderRadius: 8,
+                border: '1px solid rgba(31, 41, 55, 0.12)',
+                fontSize: 13,
+                color: '#1F2937',
+              }}
+            />
           </div>
         </div>
       </div>

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import larixLogo from '../../assets/larix-logo.png';
 import { useAuth } from '../context/AuthContext';
+import { dispatchNavigationStart } from '../utils/navigationPerf';
 
 function PersonIcon() {
   return (
@@ -75,6 +76,7 @@ const links = [
   { path: '/storico-operaio', label: 'Storico', icon: '\u25ce' },
   { path: '/buste-paga', label: 'Buste paga', icon: '\u25a4' },
   { path: '/comunicazione', label: 'Comunicazione', icon: '\u2709' },
+  { path: '/dpi', label: 'DPI', icon: '\u{1F97E}' },
   { path: '/operai-assunti', label: 'Operai assunti', icon: '\u25a3' },
   { path: '/impostazioni', label: 'Impostazioni', icon: '\u2699' },
 ];
@@ -108,6 +110,7 @@ export default function Sidebar() {
     }
 
     setPendingPath(path);
+    dispatchNavigationStart(path);
     console.info('[route-lifecycle] navigation requested', {
       from: location.pathname,
       to: path,

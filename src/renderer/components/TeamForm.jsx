@@ -67,7 +67,53 @@ function formatHireDate(employee) {
   return employee.hire_date || '—';
 }
 
-export default function TeamForm({ open, onClose, onSubmit, team, employees = [] }) {
+function normalizeTeamSortText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function getEmployeeFallbackName(employee) {
+  return String(
+    employee?.full_name ||
+    employee?.displayName ||
+    employee?.name ||
+    [employee?.last_name, employee?.first_name].filter(Boolean).join(' ') ||
+    [employee?.first_name, employee?.last_name].filter(Boolean).join(' ')
+  ).trim();
+}
+
+function compareEmployeeByLastNameThenFirstName(a, b) {
+  const lastCompare = normalizeTeamSortText(a?.last_name).localeCompare(
+    normalizeTeamSortText(b?.last_name),
+    'it',
+    { sensitivity: 'base' }
+  );
+  if (lastCompare !== 0) return lastCompare;
+
+  const firstCompare = normalizeTeamSortText(a?.first_name).localeCompare(
+    normalizeTeamSortText(b?.first_name),
+    'it',
+    { sensitivity: 'base' }
+  );
+  if (firstCompare !== 0) return firstCompare;
+
+  return normalizeTeamSortText(getEmployeeFallbackName(a)).localeCompare(
+    normalizeTeamSortText(getEmployeeFallbackName(b)),
+    'it',
+    { sensitivity: 'base' }
+  );
+}
+
+function isEmployeeAvailableStatus(employee) {
+  const status = normalizeTeamSortText(employee?.status);
+  return status === 'attivo' || status === 'active';
+}
+
+export default function TeamForm({ open, onClose, onSubmit, team, employees = [], teams = [] }) {
   const [form, setForm] = useState(emptyForm);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
   const [saving, setSaving] = useState(false);
@@ -119,8 +165,27 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
 
   const selectableEmployees = useMemo(() => {
     const selectedIds = new Set(form.members.map((member) => Number(member.employee_id)));
-    return employees.filter((employee) => !selectedIds.has(Number(employee.id)));
-  }, [employees, form.members]);
+    const currentTeamId = Number(team?.id);
+    const assignedToOtherTeams = new Set();
+
+    teams.forEach((currentTeam) => {
+      if (currentTeam?.is_archived) return;
+      if (Number(currentTeam?.id) === currentTeamId) return;
+
+      (currentTeam?.members || []).forEach((member) => {
+        const employeeId = Number(member?.employee_id);
+        if (Number.isFinite(employeeId)) {
+          assignedToOtherTeams.add(employeeId);
+        }
+      });
+    });
+
+    return [...employees]
+      .filter((employee) => isEmployeeAvailableStatus(employee))
+      .filter((employee) => !selectedIds.has(Number(employee.id)))
+      .filter((employee) => !assignedToOtherTeams.has(Number(employee.id)))
+      .sort(compareEmployeeByLastNameThenFirstName);
+  }, [employees, form.members, team?.id, teams]);
 
   function addMember() {
     if (saving) return;
@@ -197,8 +262,8 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
 
   return (
     <div className="modal-overlay" onClick={requestClose}>
-      <div className="modal-dialog" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-header">
+      <div className="modal-dialog team-form-dialog" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header team-form__header">
           <div>
             <span className="page-kicker">{team ? 'Scheda squadra' : 'Nuova squadra'}</span>
             <h2 style={{ margin: '6px 0 0' }}>{team ? 'Modifica Squadra' : 'Crea Nuova Squadra'}</h2>
@@ -206,7 +271,8 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
           <button type="button" className="modal-close" onClick={requestClose}>✕</button>
         </div>
 
-        <form onSubmit={handleSubmit} className="form-grid">
+        <form onSubmit={handleSubmit} className="team-form">
+          <div className="form-grid team-form__body">
           <div style={{ display: 'grid', gap: 14 }}>
             <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'minmax(260px, 1fr) minmax(0, 1fr)' }}>
               <Field label="Nome squadra *">
@@ -402,14 +468,22 @@ export default function TeamForm({ open, onClose, onSubmit, team, employees = []
               )}
             </div>
           </div>
+          </div>
 
-          <div className="actions-row" style={{ marginTop: 0, paddingTop: 0, borderTop: 0 }}>
-            <button type="button" className="button-secondary" onClick={requestClose} disabled={saving}>
-              Annulla
-            </button>
-            <button type="submit" className="button" disabled={saving}>
-              {saving ? 'Salvataggio squadra...' : team ? 'Salva squadra' : 'Crea squadra'}
-            </button>
+          <div className="team-form__footer">
+            <div className="team-form__footer-status">
+              <span className="soft-chip" style={{ background: 'rgba(15, 118, 110, 0.10)', color: '#115e59' }}>
+                Dati squadra sincronizzati
+              </span>
+            </div>
+            <div className="team-form__footer-actions">
+              <button type="button" className="button-secondary" onClick={requestClose} disabled={saving}>
+                Annulla
+              </button>
+              <button type="submit" className="button" disabled={saving}>
+                {saving ? 'Salvataggio squadra...' : team ? 'Salva squadra' : 'Crea squadra'}
+              </button>
+            </div>
           </div>
         </form>
       </div>

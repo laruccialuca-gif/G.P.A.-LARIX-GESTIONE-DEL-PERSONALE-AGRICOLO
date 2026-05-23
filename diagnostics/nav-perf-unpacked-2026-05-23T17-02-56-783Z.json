@@ -1,0 +1,96 @@
+{
+  "generatedAt": "2026-05-23T17:02:56.784Z",
+  "userDataPath": "C:\\Users\\llaru\\AppData\\Roaming\\Gestionale",
+  "results": [
+    {
+      "page": "Dashboard",
+      "route": "/",
+      "loadMs": null,
+      "status": "DA OTTIMIZZARE",
+      "slowestPerfMs": null,
+      "slowestPerfLine": null,
+      "error": "page.waitForFunction: Timeout 30000ms exceeded.\n    at main (C:\\Users\\llaru\\Downloads\\gestionale-presenze-offline\\G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO\\tools\\nav-perf-unpacked.mjs:211:18)"
+    },
+    {
+      "page": "Dipendenti",
+      "route": "/dipendenti",
+      "loadMs": null,
+      "status": "DA OTTIMIZZARE",
+      "slowestPerfMs": null,
+      "slowestPerfLine": null,
+      "error": "page.waitForFunction: Timeout 30000ms exceeded.\n    at main (C:\\Users\\llaru\\Downloads\\gestionale-presenze-offline\\G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO\\tools\\nav-perf-unpacked.mjs:211:18)"
+    },
+    {
+      "page": "Presenze",
+      "route": "/presenze",
+      "loadMs": null,
+      "status": "DA OTTIMIZZARE",
+      "slowestPerfMs": null,
+      "slowestPerfLine": null,
+      "error": "page.waitForFunction: Timeout 30000ms exceeded.\n    at main (C:\\Users\\llaru\\Downloads\\gestionale-presenze-offline\\G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO\\tools\\nav-perf-unpacked.mjs:211:18)"
+    },
+    {
+      "page": "Report",
+      "route": "/report",
+      "loadMs": null,
+      "status": "DA OTTIMIZZARE",
+      "slowestPerfMs": null,
+      "slowestPerfLine": null,
+      "error": "page.waitForFunction: Timeout 30000ms exceeded.\n    at main (C:\\Users\\llaru\\Downloads\\gestionale-presenze-offline\\G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO\\tools\\nav-perf-unpacked.mjs:211:18)"
+    },
+    {
+      "page": "Storico",
+      "route": "/storico-operaio",
+      "loadMs": null,
+      "status": "DA OTTIMIZZARE",
+      "slowestPerfMs": null,
+      "slowestPerfLine": null,
+      "error": "page.waitForFunction: Timeout 30000ms exceeded.\n    at main (C:\\Users\\llaru\\Downloads\\gestionale-presenze-offline\\G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO\\tools\\nav-perf-unpacked.mjs:211:18)"
+    },
+    {
+      "page": "Buste paga",
+      "route": "/buste-paga",
+      "loadMs": null,
+      "status": "DA OTTIMIZZARE",
+      "slowestPerfMs": null,
+      "slowestPerfLine": null,
+      "error": "page.waitForFunction: Timeout 30000ms exceeded.\n    at main (C:\\Users\\llaru\\Downloads\\gestionale-presenze-offline\\G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO\\tools\\nav-perf-unpacked.mjs:211:18)"
+    },
+    {
+      "page": "Comunicazione",
+      "route": "/comunicazione",
+      "loadMs": null,
+      "status": "DA OTTIMIZZARE",
+      "slowestPerfMs": null,
+      "slowestPerfLine": null,
+      "error": "page.waitForFunction: Timeout 30000ms exceeded.\n    at main (C:\\Users\\llaru\\Downloads\\gestionale-presenze-offline\\G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO\\tools\\nav-perf-unpacked.mjs:211:18)"
+    },
+    {
+      "page": "DPI",
+      "route": "/dpi",
+      "loadMs": null,
+      "status": "DA OTTIMIZZARE",
+      "slowestPerfMs": null,
+      "slowestPerfLine": null,
+      "error": "page.waitForFunction: Timeout 30000ms exceeded.\n    at main (C:\\Users\\llaru\\Downloads\\gestionale-presenze-offline\\G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO\\tools\\nav-perf-unpacked.mjs:211:18)"
+    },
+    {
+      "page": "Impostazioni",
+      "route": "/impostazioni",
+      "loadMs": null,
+      "status": "DA OTTIMIZZARE",
+      "slowestPerfMs": null,
+      "slowestPerfLine": null,
+      "error": "page.waitForFunction: Timeout 30000ms exceeded.\n    at main (C:\\Users\\llaru\\Downloads\\gestionale-presenze-offline\\G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO\\tools\\nav-perf-unpacked.mjs:211:18)"
+    }
+  ],
+  "messages": [
+    "[pageerror] ReferenceError: loading is not defined\n    at file:///C:/Users/llaru/Downloads/gestionale-presenze-offline/G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO/release/win-unpacked/resources/app.asar/dist/assets/index-CMS6_mda.js:73:28728",
+    "[pageerror] ReferenceError: loading is not defined\n    at file:///C:/Users/llaru/Downloads/gestionale-presenze-offline/G.P.A.-LARIX-GESTIONE-DEL-PERSONALE-AGRICOLO/release/win-unpacked/resources/app.asar/dist/assets/index-CMS6_mda.js:73:28728",
+    "[main:stdout] [settings-debug] loaded report settings = { print_layout_version: 'v1', show_pay_calculation_detail: false }",
+    "[main:stdout]",
+    "[main:stderr] Debugger ending on ws://127.0.0.1:52426/2a0a7fca-5a11-4c0c-8136-182907914fa1",
+    "[main:stderr] For help, see: https://nodejs.org/en/docs/inspector",
+    "[main:stderr]"
+  ]
+}

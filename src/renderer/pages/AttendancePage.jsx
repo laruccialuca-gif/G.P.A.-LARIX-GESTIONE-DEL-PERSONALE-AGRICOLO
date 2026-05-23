@@ -21,6 +21,7 @@ import {
   LEGACY_DAY_TYPES,
   DEFAULT_DAY_MARKERS,
 } from '../utils/attendancePrintUtils';
+import { dispatchRouteReady } from '../utils/navigationPerf';
 import AttendanceToolbar from '../components/attendance/AttendanceToolbar';
 import AttendanceTable from '../components/attendance/AttendanceTable';
 import AttendanceEmployeeFilter from '../components/attendance/AttendanceEmployeeFilter';
@@ -881,6 +882,12 @@ export default function AttendancePage() {
   const loadingMessage = directoryLoading
     ? 'Caricamento anagrafica presenze...'
     : 'Caricamento presenze mese...';
+
+  useEffect(() => {
+    if (!loading) {
+      dispatchRouteReady('/presenze');
+    }
+  }, [loading]);
 
   async function loadDirectoryData() {
     const startedAt = getPerfNow();
@@ -3944,4 +3951,3 @@ export default function AttendancePage() {
     </div>
   );
 }
-

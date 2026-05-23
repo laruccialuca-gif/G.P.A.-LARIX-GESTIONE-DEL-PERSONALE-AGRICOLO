@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { formatDisplayDateTime } from '../utils/dateFormat';
 import { formatCurrency } from '../utils/currencyFormat';
 import { useYearContext } from '../context/YearContext';
+import { dispatchRouteReady } from '../utils/navigationPerf';
 
 const MONTH_NAMES = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'];
 
@@ -54,6 +55,19 @@ function formatDateOnly(value) {
 function formatHours(value) {
   const hours = Number(value || 0);
   return Number.isInteger(hours) ? `${hours} h` : `${hours.toFixed(2).replace('.', ',')} h`;
+}
+
+function getPayrollPaymentStatusLabel(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized && normalized !== 'non_pagato') return 'Pagato';
+  return 'Non pagato';
+}
+
+function getPayrollPaymentMethodLabel(method) {
+  const normalized = String(method || '').trim().toLowerCase();
+  if (normalized === 'assegno') return 'Assegno';
+  if (normalized === 'contanti') return 'Contanti';
+  return 'Bonifico';
 }
 
 function escapeHtml(value) {
@@ -200,39 +214,59 @@ function getSnapshot(record) {
 function getRecordPaymentSummary(record, precomputedSnapshot = null) {
   const snapshot = precomputedSnapshot !== null ? precomputedSnapshot : getSnapshot(record);
   const grossBalance = getRecordEffectiveBalance(record);
-  const residual = record?.resto_pagato ? 0 : grossBalance;
+  const explicitBalanceStatus = String(record?.balance_status || '').trim().toLowerCase();
+  const partialPaidAmount = Math.max(0, Number(record?.partial_paid_amount || 0));
+  const explicitRemainingBalance = Number(record?.remaining_balance || 0);
   const basePaidAmount =
     Number(record?.importo_busta_paga || 0) +
     Number(record?.acconti || 0) +
     getCurrentInstallmentsTotal(record, snapshot);
-  const residualPaidAmount = record?.resto_pagato ? Math.abs(grossBalance) : 0;
-  const paidAmount = basePaidAmount + residualPaidAmount;
 
-  let status = 'non_pagato';
-  let label = 'Non pagato';
-  if (Math.abs(grossBalance) <= 0.009) {
-    status = 'pagato';
-    label = 'Pagato';
-  } else if (record?.resto_pagato) {
-    status = 'saldato';
-    label = 'Saldato';
-  } else if (basePaidAmount > 0 || record?.is_pagato) {
-    status = 'parziale';
-    label = 'Parziale';
+  let status = explicitBalanceStatus;
+  if (!status) {
+    if (Math.abs(grossBalance) <= 0.009 || record?.resto_pagato) {
+      status = 'saldato';
+    } else if (basePaidAmount > 0) {
+      status = 'parziale';
+    } else {
+      status = 'non_pagato';
+    }
   }
+  if (status === 'pagato') status = 'saldato';
+  const residual =
+    status === 'saldato'
+      ? 0
+      : status === 'parziale'
+      ? (Math.abs(explicitRemainingBalance) > 0.009
+          ? explicitRemainingBalance
+          : Math.sign(grossBalance || 1) * Math.max(Math.abs(grossBalance) - partialPaidAmount, 0))
+      : grossBalance;
+  const residualPaidAmount =
+    status === 'saldato'
+      ? Math.abs(grossBalance)
+      : status === 'parziale'
+      ? partialPaidAmount
+      : 0;
+  const paidAmount = basePaidAmount + residualPaidAmount;
+  const label =
+    status === 'saldato' ? 'Saldato' :
+    status === 'parziale' ? `Parziale • Residuo ${formatCurrency(Math.abs(residual))}` :
+    'Non pagato';
 
   return {
     snapshot,
     grossBalance,
     residual,
     originAmount: Math.abs(grossBalance),
+    partialPaidAmount,
     paidAmount,
     residualAmount: Math.abs(residual),
     status,
     label,
     paidDate:
+      record?.balance_closed_at ||
       record?.resto_pagato_data ||
-      (record?.is_pagato ? record?.processed_at || record?.updated_at || record?.created_at || '' : ''),
+      (status === 'saldato' ? record?.processed_at || record?.updated_at || record?.created_at || '' : ''),
     overtimeHours: Number(snapshot?.totalOvertimeHours || 0),
     overtimeAmount: Number(snapshot?.totalOvertimePay || 0),
     regularHours: Number(
@@ -292,6 +326,7 @@ export default function StoricoOperaioPage() {
   const [previewRecord, setPreviewRecord] = useState(null);
   const [previewPaymentStatus, setPreviewPaymentStatus] = useState('non_pagato');
   const [previewPaymentDateInput, setPreviewPaymentDateInput] = useState('');
+  const [previewPartialPaidAmount, setPreviewPartialPaidAmount] = useState('');
   const [updatingPaymentStatus, setUpdatingPaymentStatus] = useState(false);
   const [showArchivedSlots, setShowArchivedSlots] = useState(false);
   const [expandedMonths, setExpandedMonths] = useState(() => new Set());
@@ -394,6 +429,12 @@ export default function StoricoOperaioPage() {
   useEffect(() => {
     loadHistory();
   }, [historyYearFilter, monthFilter]);
+
+  useEffect(() => {
+    if (!loading) {
+      dispatchRouteReady('/storico-operaio');
+    }
+  }, [loading]);
 
   useEffect(() => {
     setHistoryYearFilter(String(selectedYear));
@@ -722,27 +763,40 @@ export default function StoricoOperaioPage() {
       return;
     }
 
-    const requiresPaymentDate =
-      previewPaymentStatus === 'pagato' || previewPaymentStatus === 'saldato';
-    const paymentDate = requiresPaymentDate ? previewPaymentDateInput : '';
-
-    if (requiresPaymentDate && !paymentDate) {
-      alert('Seleziona la data pagamento prima di aggiornare lo stato.');
+    if (previewPaymentStatus === 'parziale' && previewPartialPaidAmountNum <= 0) {
+      alert('Inserisci l\'importo pagato/incassato per il saldo parziale.');
       return;
     }
+
+    const paymentDate = formatLocalDate(new Date());
+    const partialPaidAmount =
+      previewPaymentStatus === 'parziale'
+        ? Math.min(previewPartialPaidAmountNum, Math.abs(previewPaymentSummary?.grossBalance || 0))
+        : previewPaymentStatus === 'saldato'
+        ? Math.abs(previewPaymentSummary?.grossBalance || 0)
+        : 0;
+    const remainingBalance =
+      previewPaymentStatus === 'saldato'
+        ? 0
+        : previewPaymentStatus === 'parziale'
+        ? previewResidualAmount
+        : Number(previewPaymentSummary?.grossBalance || 0);
 
     setUpdatingPaymentStatus(true);
     try {
       const updatedRecord = await window.api.payroll.updatePaymentStatus(
         previewRecord.id,
         previewPaymentStatus,
-        paymentDate
+        paymentDate,
+        partialPaidAmount,
+        remainingBalance
       );
+      setPreviewPaymentDateInput(paymentDate);
       setPreviewRecord(updatedRecord || previewRecord);
       await loadHistory();
     } catch (err) {
       console.error(err);
-      alert('Errore aggiornamento stato pagamento');
+      alert('Errore aggiornamento stato saldo');
     } finally {
       setUpdatingPaymentStatus(false);
     }
@@ -841,7 +895,7 @@ export default function StoricoOperaioPage() {
         <td>${escapeHtml(formatCurrency(financials.amountToReceive))}</td>
         <td>${escapeHtml(financials.payment.label)}</td>
         <td>${escapeHtml(financials.payment.paidDate ? formatDisplayDateTime(financials.payment.paidDate) : '—')}</td>
-        <td>${escapeHtml(record.note || '—')}</td>
+        <td>${escapeHtml(record.balance_notes || record.note || '—')}</td>
       </tr>
     `).join('');
 
@@ -863,8 +917,8 @@ export default function StoricoOperaioPage() {
               <th>Saldo finale</th>
               <th>Da dare all'operaio</th>
               <th>Da ricevere dall'operaio</th>
-              <th>Stato pagamento</th>
-              <th>Data pagamento</th>
+              <th>Stato saldo</th>
+              <th>Data chiusura saldo</th>
               <th>Note</th>
             </tr>
           </thead>
@@ -907,7 +961,7 @@ export default function StoricoOperaioPage() {
 
     const monthSections = historyMonthGroups.map((group) => {
       const rowsHtml = group.rows.map(({ record, employee, financials }) => {
-        const note = String(record.note || '').trim();
+        const note = String(record.balance_notes || record.note || '').trim();
         const paymentStatus = mapPaymentStatus(financials.payment.label);
         const mainRow = `
           <tr class="history-synthetic-print__row">
@@ -1003,21 +1057,45 @@ export default function StoricoOperaioPage() {
     previewPaymentSummary?.grossBalance > 0 ? previewPaymentSummary.originAmount : 0;
   const previewDebtAmount =
     previewPaymentSummary?.grossBalance < 0 ? previewPaymentSummary.originAmount : 0;
+  const previewPartialPaidAmountNum = parsePartialAmountInput(previewPartialPaidAmount);
+  const previewResidualAmount =
+    !previewPaymentSummary
+      ? 0
+      : previewPaymentStatus === 'saldato'
+      ? 0
+      : previewPaymentStatus === 'parziale'
+      ? Math.sign(previewPaymentSummary.grossBalance || 1) *
+        Math.max(
+          Math.abs(previewPaymentSummary.grossBalance || 0) -
+            Math.min(previewPartialPaidAmountNum, Math.abs(previewPaymentSummary.grossBalance || 0)),
+          0
+        )
+      : previewPaymentSummary.grossBalance;
 
   useEffect(() => {
     if (!previewRecord) {
       setPreviewPaymentStatus('non_pagato');
       setPreviewPaymentDateInput('');
+      setPreviewPartialPaidAmount('');
       return;
     }
 
-    const nextStatus = getRecordPaymentSummary(previewRecord).status || 'non_pagato';
+    const nextSummary = getRecordPaymentSummary(previewRecord);
+    const nextStatus = nextSummary.status || 'non_pagato';
     setPreviewPaymentStatus(nextStatus);
     setPreviewPaymentDateInput(
       String(
-        previewRecord.resto_pagato_data ||
-          (previewRecord.is_pagato ? previewRecord.processed_at || '' : '')
+        previewRecord.balance_closed_at ||
+          previewRecord.resto_pagato_data ||
+          previewRecord.updated_at ||
+          previewRecord.processed_at ||
+          ''
       ).slice(0, 10)
+    );
+    setPreviewPartialPaidAmount(
+      nextStatus === 'parziale' && Number(nextSummary.partialPaidAmount || 0) > 0
+        ? String(nextSummary.partialPaidAmount)
+        : ''
     );
   }, [previewRecord]);
 
@@ -1180,7 +1258,6 @@ export default function StoricoOperaioPage() {
                       >
                         <div>
                           <div className="history-month-group__title">
-                            <span>{isOpen ? '▾' : '▸'}</span>
                             {group.label}
                           </div>
                           <div className="history-month-group__meta">
@@ -1197,60 +1274,80 @@ export default function StoricoOperaioPage() {
 
                       {isOpen ? (
                         <div className="history-month-group__rows">
+                          <div className="history-table-header">
+                            <div className="history-cell history-employee">Dipendente</div>
+                            <div className="history-cell history-employer">Datore / Squadra</div>
+                            <div className="history-cell history-days">Giornate</div>
+                            <div className="history-cell history-money">Compenso</div>
+                            <div className="history-cell history-money">Bonifici</div>
+                            <div className="history-cell history-balance">Da dare / ricevere</div>
+                            <div className="history-cell history-status">Stato</div>
+                            <div className="history-cell history-actions">Azioni</div>
+                          </div>
                           {group.rows.map(({ record, employee, financials }) => {
                             const paymentSummary = financials.payment;
                             const saldoColor =
                               financials.finalBalance > 0 ? '#dc2626' : financials.finalBalance < 0 ? '#059669' : '#111827';
+                            const giveReceiveValue =
+                              financials.amountToGive > 0
+                                ? `Da dare ${formatCurrency(financials.amountToGive)}`
+                                : financials.amountToReceive > 0
+                                ? `Da ricevere ${formatCurrency(financials.amountToReceive)}`
+                                : formatCurrency(0);
                             const paymentStyle =
-                              paymentSummary.status === 'pagato' || paymentSummary.status === 'saldato'
+                              paymentSummary.status === 'saldato'
                                 ? { background: '#ecfdf3', color: '#166534' }
                                 : paymentSummary.status === 'parziale'
                                 ? { background: '#fef3c7', color: '#92400e' }
                                 : { background: '#fee2e2', color: '#b91c1c' };
 
                             return (
-                              <div key={record.id} className="history-record-row">
-                                <button
-                                  type="button"
-                                  className="history-record-row__main"
-                                  onClick={() => handleOpenPreview(record)}
-                                  title="Apri anteprima report"
-                                >
-                                  <div className="history-record-row__employee">
+                              <div
+                                key={record.id}
+                                className="history-row"
+                                onClick={() => handleOpenPreview(record)}
+                                title="Apri anteprima report"
+                              >
+                                  <div className="history-cell history-employee">
                                     <strong>{getHistoryEmployeeName(employee)}</strong>
                                     <span>
-                                      {record.datore || 'Datore non indicato'}
-                                      {employee.role ? ` • ${employee.role}` : ''}
+                                      {employee.role || 'Nessuna mansione'}
                                       {record.archived_at ? ' • slot archiviato' : ''}
                                     </span>
                                   </div>
-                                  <div className="history-record-row__team">
-                                    {(employee.team_names || []).join(', ') || '—'}
+                                  <div className="history-cell history-employer">
+                                    <strong>{record.datore || 'Datore non indicato'}</strong>
+                                    <span>{(employee.team_names || []).join(', ') || '—'}</span>
                                   </div>
-                                  <div>{Number(record.giornate_effettuate || 0)}</div>
-                                  <div>{formatCurrency(record.retribuzione_calcolata)}</div>
-                                  <div style={{ color: saldoColor, fontWeight: 900 }}>
-                                    {formatCurrency(financials.finalBalance)}
+                                  <div className="history-cell history-days">{Number(record.giornate_effettuate || 0)}</div>
+                                  <div className="history-cell history-money">{formatCurrency(record.retribuzione_calcolata)}</div>
+                                  <div className="history-cell history-money">{formatCurrency(financials.payrollAmount)}</div>
+                                  <div className="history-cell history-balance" style={{ color: saldoColor, fontWeight: 900 }}>
+                                    {giveReceiveValue}
                                   </div>
-                                  <span className="soft-chip" style={paymentStyle}>
-                                    {paymentSummary.label}
-                                  </span>
-                                </button>
+                                  <div className="history-cell history-status">
+                                    <span className="soft-chip" style={paymentStyle}>
+                                      {paymentSummary.label}
+                                    </span>
+                                  </div>
 
-                                <div className="history-record-row__actions">
-                                  <button type="button" className="button-secondary" onClick={() => handleOpenPreview(record)}>
+                                <div className="history-cell history-actions">
+                                  <button type="button" className="button-secondary" onClick={(event) => { event.stopPropagation(); handleOpenPreview(record); }}>
                                     Apri
                                   </button>
-                                  <button type="button" className="button-secondary" onClick={() => handleOpenLinkedReport(record)}>
+                                  <button type="button" className="button-secondary" onClick={(event) => { event.stopPropagation(); handleOpenLinkedReport(record); }}>
                                     Modifica report
                                   </button>
-                                  <button type="button" className="button-secondary" onClick={() => handlePrintSnapshot(record)}>
+                                  <button type="button" className="button-secondary" onClick={(event) => { event.stopPropagation(); handlePrintSnapshot(record); }}>
                                     Stampa
                                   </button>
                                   <button
                                     type="button"
                                     className={record.payroll_document ? 'button-secondary' : 'button'}
-                                    onClick={() => (record.payroll_document ? handleOpenDocument(record) : handleUploadDocument(record))}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      return record.payroll_document ? handleOpenDocument(record) : handleUploadDocument(record);
+                                    }}
                                     disabled={busyRecordId === String(record.id)}
                                   >
                                     {busyRecordId === String(record.id)
@@ -1297,7 +1394,7 @@ export default function StoricoOperaioPage() {
                             ? { background: '#fef3c7', color: '#92400e' }
                             : { background: '#e5e7eb', color: '#374151' };
                         const paymentStyle =
-                          paymentSummary.status === 'pagato'
+                          paymentSummary.status === 'saldato'
                             ? { background: '#ecfdf3', color: '#166534' }
                             : paymentSummary.status === 'parziale'
                             ? { background: '#fef3c7', color: '#92400e' }
@@ -1420,7 +1517,7 @@ export default function StoricoOperaioPage() {
                             ? { background: '#fef3c7', color: '#92400e' }
                             : { background: '#e5e7eb', color: '#374151' };
                         const paymentStatusStyle =
-                          paymentSummary.status === 'pagato'
+                          paymentSummary.status === 'saldato'
                             ? { background: '#e5e7eb', color: '#374151' }
                             : paymentSummary.status === 'parziale'
                             ? { background: '#fef3c7', color: '#92400e' }
@@ -1571,7 +1668,7 @@ export default function StoricoOperaioPage() {
               <button type="button" className="modal-close" onClick={() => setPreviewRecord(null)}>×</button>
             </div>
             {previewRecord.report_html_snapshot ? (
-              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.8fr) minmax(280px, 0.8fr)', gap: 18, alignItems: 'start' }}>
+              <div className="history-preview-layout">
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <div style={{ fontSize: 11, color: '#92400e', padding: '5px 10px', background: '#fef3c7', borderRadius: 6, borderLeft: '3px solid #f59e0b', lineHeight: 1.4 }}>
                     Anteprima storica — i valori mostrati qui riflettono il momento del salvataggio.
@@ -1580,113 +1677,61 @@ export default function StoricoOperaioPage() {
                     <div dangerouslySetInnerHTML={{ __html: previewRecord.report_html_snapshot }} />
                   </div>
                 </div>
-                <div style={{ display: 'grid', gap: 14 }}>
-                  <div className="panel panel-section" style={{ padding: 16 }}>
-                    <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#667085', marginBottom: 12 }}>
-                      Sintesi report
-                    </div>
-                    <div style={{ display: 'grid', gap: 10 }}>
-                      <HistorySummaryRow
-                        label="Dipendente"
-                        value={`${previewRecord.employee?.first_name || ''} ${previewRecord.employee?.last_name || ''}`.trim() || '—'}
-                      />
-                      <HistorySummaryRow label="Mese" value={formatMonth(previewRecord.month)} />
-                      <HistorySummaryRow label="Giornate lavorate" value={String(Number(previewRecord.giornate_effettuate || 0))} />
-                      <HistorySummaryRow label="Ore totali" value={formatHours(previewRecord.ore_totali)} />
-                      <HistorySummaryRow label="Compenso mese" value={formatCurrency(previewRecord.retribuzione_calcolata)} />
-                      <HistorySummaryRow label="Bonifico / assegno" value={formatCurrency(previewRecord.importo_busta_paga)} />
-                      <HistorySummaryRow label="Da dare all'operaio" value={formatCurrency(previewCreditAmount)} color="#166534" />
-                      <HistorySummaryRow label="Da ricevere dall'operaio" value={formatCurrency(previewDebtAmount)} color="#b91c1c" />
-                      <HistorySummaryRow label="Saldo finale" value={formatCurrency(previewPaymentSummary?.residual)} color={previewPaymentSummary?.residual >= 0 ? '#166534' : '#b91c1c'} />
-                      <div style={{ display: 'grid', gap: 8, paddingTop: 6, borderTop: '1px solid #e5e7eb' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-                          <span style={{ fontSize: 12, color: '#667085', fontWeight: 700 }}>Stato pagamento</span>
-                          <select
-                            value={previewPaymentStatus}
-                            onChange={(event) => setPreviewPaymentStatus(event.target.value)}
-                            style={{ minWidth: 168 }}
-                          >
-                            <option value="non_pagato">Non pagato</option>
-                            <option value="parziale">Parziale</option>
-                            <option value="pagato">Pagato</option>
-                            <option value="saldato">Saldato</option>
-                          </select>
-                        </div>
-                        {(previewPaymentStatus === 'pagato' || previewPaymentStatus === 'saldato') ? (
-                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
-                            <span style={{ fontSize: 12, color: '#667085', fontWeight: 700 }}>Data pagamento</span>
-                            <input type="date" value={previewPaymentDateInput} onChange={(event) => setPreviewPaymentDateInput(event.target.value)} />
-                          </div>
-                        ) : null}
-                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                          <button type="button" className="button-secondary" onClick={handleUpdatePreviewPaymentStatus} disabled={updatingPaymentStatus}>
-                            {updatingPaymentStatus ? 'Aggiornamento...' : 'Aggiorna stato'}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="panel panel-section" style={{ padding: 16 }}>
-                    <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#667085', marginBottom: 12 }}>
-                      Azioni e allegati
-                    </div>
-                    <div style={{ display: 'grid', gap: 12 }}>
-                      <HistoryPayrollActions
-                        document={previewRecord.payroll_document}
-                        busy={busyRecordId === String(previewRecord.id)}
-                        onUpload={() => handleUploadDocument(previewRecord)}
-                        onOpen={() => handleOpenDocument(previewRecord)}
-                        onDelete={() => handleDeleteDocument(previewRecord)}
-                      />
-                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                        {!previewRecord.archived_at ? (
-                          <button type="button" className="button-secondary" onClick={() => handleArchiveRecord(previewRecord)}>
-                            Archivia slot
-                          </button>
-                        ) : (
-                          <button type="button" className="button-secondary" onClick={() => handleRestoreRecord(previewRecord)}>
-                            Ripristina slot
-                          </button>
-                        )}
-                        <button type="button" className="button-danger" onClick={() => handleDeleteRecord(previewRecord)}>
-                          Elimina slot
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                    <button type="button" className="button" onClick={() => handleOpenLinkedReport(previewRecord)}>
-                      Modifica report
-                    </button>
-                    <button type="button" className="button-secondary" onClick={() => handlePrintSnapshot(previewRecord)}>
-                      Stampa
-                    </button>
-                    <button type="button" className="button-secondary" onClick={() => setPreviewRecord(null)}>
-                      Esci
-                    </button>
-                  </div>
-                </div>
+                <HistoryPreviewSidebar
+                  previewRecord={previewRecord}
+                  previewCreditAmount={previewCreditAmount}
+                  previewDebtAmount={previewDebtAmount}
+                  previewPaymentSummary={previewPaymentSummary}
+                  previewPaymentStatus={previewPaymentStatus}
+                  setPreviewPaymentStatus={setPreviewPaymentStatus}
+                  previewPaymentDateInput={previewPaymentDateInput}
+                  setPreviewPaymentDateInput={setPreviewPaymentDateInput}
+                  previewPartialPaidAmount={previewPartialPaidAmount}
+                  setPreviewPartialPaidAmount={setPreviewPartialPaidAmount}
+                  previewResidualAmount={previewResidualAmount}
+                  handleUpdatePreviewPaymentStatus={handleUpdatePreviewPaymentStatus}
+                  updatingPaymentStatus={updatingPaymentStatus}
+                  busyRecordId={busyRecordId}
+                  handleUploadDocument={handleUploadDocument}
+                  handleOpenDocument={handleOpenDocument}
+                  handleDeleteDocument={handleDeleteDocument}
+                  handleArchiveRecord={handleArchiveRecord}
+                  handleRestoreRecord={handleRestoreRecord}
+                  handleDeleteRecord={handleDeleteRecord}
+                  handleOpenLinkedReport={handleOpenLinkedReport}
+                  handlePrintSnapshot={handlePrintSnapshot}
+                  setPreviewRecord={setPreviewRecord}
+                />
               </div>
             ) : (
               <div style={{ display: 'grid', gap: 18 }}>
                 <div className="panel empty-state">Nessuna anteprima salvata per questo report.</div>
-                <div className="panel panel-section" style={{ padding: 16 }}>
-                  <HistoryPayrollActions
-                    document={previewRecord.payroll_document}
-                    busy={busyRecordId === String(previewRecord.id)}
-                    onUpload={() => handleUploadDocument(previewRecord)}
-                    onOpen={() => handleOpenDocument(previewRecord)}
-                    onDelete={() => handleDeleteDocument(previewRecord)}
-                  />
-                </div>
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  <button type="button" className="button" onClick={() => handleOpenLinkedReport(previewRecord)}>
-                    Modifica report
-                  </button>
-                  <button type="button" className="button-secondary" onClick={() => setPreviewRecord(null)}>
-                    Esci
-                  </button>
-                </div>
+                <HistoryPreviewSidebar
+                  previewRecord={previewRecord}
+                  previewCreditAmount={previewCreditAmount}
+                  previewDebtAmount={previewDebtAmount}
+                  previewPaymentSummary={previewPaymentSummary}
+                  previewPaymentStatus={previewPaymentStatus}
+                  setPreviewPaymentStatus={setPreviewPaymentStatus}
+                  previewPaymentDateInput={previewPaymentDateInput}
+                  setPreviewPaymentDateInput={setPreviewPaymentDateInput}
+                  previewPartialPaidAmount={previewPartialPaidAmount}
+                  setPreviewPartialPaidAmount={setPreviewPartialPaidAmount}
+                  previewResidualAmount={previewResidualAmount}
+                  handleUpdatePreviewPaymentStatus={handleUpdatePreviewPaymentStatus}
+                  updatingPaymentStatus={updatingPaymentStatus}
+                  busyRecordId={busyRecordId}
+                  handleUploadDocument={handleUploadDocument}
+                  handleOpenDocument={handleOpenDocument}
+                  handleDeleteDocument={handleDeleteDocument}
+                  handleArchiveRecord={handleArchiveRecord}
+                  handleRestoreRecord={handleRestoreRecord}
+                  handleDeleteRecord={handleDeleteRecord}
+                  handleOpenLinkedReport={handleOpenLinkedReport}
+                  handlePrintSnapshot={handlePrintSnapshot}
+                  setPreviewRecord={setPreviewRecord}
+                  includePrintAction={false}
+                />
               </div>
             )}
           </div>
@@ -1824,4 +1869,122 @@ function HistorySummaryRow({ label, value, color = '#111827' }) {
       <span style={{ fontSize: 14, color, fontWeight: 800, textAlign: 'right' }}>{value || '—'}</span>
     </div>
   );
+}
+
+function HistoryPreviewSidebar({
+  previewRecord,
+  previewCreditAmount,
+  previewDebtAmount,
+  previewPaymentSummary,
+  previewPaymentStatus,
+  setPreviewPaymentStatus,
+  previewPaymentDateInput,
+  setPreviewPaymentDateInput,
+  previewPartialPaidAmount,
+  setPreviewPartialPaidAmount,
+  previewResidualAmount,
+  handleUpdatePreviewPaymentStatus,
+  updatingPaymentStatus,
+  busyRecordId,
+  handleUploadDocument,
+  handleOpenDocument,
+  handleDeleteDocument,
+  handleArchiveRecord,
+  handleRestoreRecord,
+  handleDeleteRecord,
+  handleOpenLinkedReport,
+  handlePrintSnapshot,
+  setPreviewRecord,
+  includePrintAction = true,
+}) {
+  return (
+    <div className="history-preview-sidebar">
+      <div className="panel panel-section history-preview-card">
+        <div className="history-preview-card__title">Sintesi report</div>
+        <div className="history-preview-card__grid">
+          <HistorySummaryRow label="Compenso mese" value={formatCurrency(previewRecord.retribuzione_calcolata)} />
+          <HistorySummaryRow label="Bonifico / assegno" value={formatCurrency(previewRecord.importo_busta_paga)} />
+          <HistorySummaryRow label="Da dare all'operaio" value={formatCurrency(previewCreditAmount)} color="#166534" />
+          <HistorySummaryRow label="Da ricevere dall'operaio" value={formatCurrency(previewDebtAmount)} color="#b91c1c" />
+          <HistorySummaryRow label="Saldo finale" value={formatCurrency(previewPaymentSummary?.residual)} color={previewPaymentSummary?.residual >= 0 ? '#166534' : '#b91c1c'} />
+        </div>
+      </div>
+      <div className="panel panel-section history-preview-card">
+        <div className="history-preview-card__title">Chiusura saldo</div>
+        <div className="history-preview-card__grid">
+          <div className="history-preview-control-row">
+            <span className="history-preview-control-label">Stato saldo</span>
+            <select value={previewPaymentStatus} onChange={(event) => setPreviewPaymentStatus(event.target.value)} style={{ minWidth: 168 }}>
+              <option value="non_pagato">Non pagato</option>
+              <option value="parziale">Parziale</option>
+              <option value="saldato">Saldato</option>
+            </select>
+          </div>
+          {previewPaymentStatus === 'parziale' ? (
+            <div className="history-preview-control-row">
+              <span className="history-preview-control-label">Importo pagato/incassato</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={previewPartialPaidAmount}
+                onChange={(event) => setPreviewPartialPaidAmount(event.target.value)}
+                placeholder="0,00"
+                style={{ minWidth: 168 }}
+              />
+            </div>
+          ) : null}
+          <div className="history-preview-control-row">
+            <span className="history-preview-control-label">Data chiusura saldo</span>
+            <input type="date" value={previewPaymentDateInput} onChange={(event) => setPreviewPaymentDateInput(event.target.value)} />
+          </div>
+          {previewPaymentStatus === 'parziale' ? (
+            <>
+              <HistorySummaryRow label="Importo pagato/incassato" value={formatCurrency(previewPartialPaidAmount ? parsePartialAmountInput(previewPartialPaidAmount) : 0)} />
+              <HistorySummaryRow label="Residuo" value={formatCurrency(Math.abs(previewResidualAmount || 0))} color={previewResidualAmount >= 0 ? '#166534' : '#b91c1c'} />
+            </>
+          ) : null}
+          <div className="history-preview-card__actions">
+            <button type="button" className="button-secondary" onClick={handleUpdatePreviewPaymentStatus} disabled={updatingPaymentStatus}>
+              {updatingPaymentStatus ? 'Aggiornamento...' : 'Aggiorna saldo'}
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="panel panel-section history-preview-card">
+        <div className="history-preview-card__title">Busta paga e allegati</div>
+        <div className="history-preview-card__grid">
+          <HistorySummaryRow label="Stato pagamento busta" value={getPayrollPaymentStatusLabel(previewRecord.payroll_payment_status)} />
+          <HistorySummaryRow label="Modalita pagamento busta" value={getPayrollPaymentMethodLabel(previewRecord.payroll_payment_method)} />
+          <HistorySummaryRow label="Data pagamento busta" value={previewRecord.payroll_payment_date ? formatDateOnly(previewRecord.payroll_payment_date) : '—'} />
+          <HistoryPayrollActions
+            document={previewRecord.payroll_document}
+            busy={busyRecordId === String(previewRecord.id)}
+            onUpload={() => handleUploadDocument(previewRecord)}
+            onOpen={() => handleOpenDocument(previewRecord)}
+            onDelete={() => handleDeleteDocument(previewRecord)}
+          />
+          <div className="history-preview-card__actions history-preview-card__actions--spread">
+            {!previewRecord.archived_at ? (
+              <button type="button" className="button-secondary" onClick={() => handleArchiveRecord(previewRecord)}>Archivia slot</button>
+            ) : (
+              <button type="button" className="button-secondary" onClick={() => handleRestoreRecord(previewRecord)}>Ripristina slot</button>
+            )}
+            <button type="button" className="button-danger" onClick={() => handleDeleteRecord(previewRecord)}>Elimina slot</button>
+          </div>
+        </div>
+      </div>
+      <div className="history-preview-footer-actions">
+        <button type="button" className="button" onClick={() => handleOpenLinkedReport(previewRecord)}>Modifica report</button>
+        {includePrintAction ? <button type="button" className="button-secondary" onClick={() => handlePrintSnapshot(previewRecord)}>Stampa</button> : null}
+        <button type="button" className="button-secondary" onClick={() => setPreviewRecord(null)}>Esci</button>
+      </div>
+    </div>
+  );
+}
+
+function parsePartialAmountInput(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const normalized = String(value).trim().replace(',', '.');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
 }

@@ -9,6 +9,7 @@ import {
   filterExpiryItems,
   formatTodayLabel,
 } from '../utils/dashboard';
+import { dispatchRouteReady } from '../utils/navigationPerf';
 
 function StatusBadge({ status }) {
   const styles = {
@@ -75,6 +76,12 @@ export default function DashboardPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (!loading) {
+      dispatchRouteReady('/');
+    }
+  }, [loading]);
 
   const employees = summary.employees || [];
   const todayAttendance = summary.todayAttendance || [];
