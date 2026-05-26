@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { getDb } = require('./db');
+const { getDb, isReadOnlyMode } = require('./db');
 const { getConfigDir } = require('./storagePaths');
 
 // Super-admin is NOT stored in the database.
@@ -132,8 +132,10 @@ function login(username, password) {
     throw new Error('Credenziali non valide. Verifica username e password.');
   }
 
-  db.prepare('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?').run(user.id);
-  writeAuthState({ last_username: user.username });
+  if (!isReadOnlyMode()) {
+    db.prepare('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?').run(user.id);
+    writeAuthState({ last_username: user.username });
+  }
 
   currentSession = {
     userId: user.id,
@@ -142,7 +144,9 @@ function login(username, password) {
     fullName: user.full_name,
   };
 
-  try { audit('auth:login', 'user', user.id, { username: user.username }); } catch {}
+  if (!isReadOnlyMode()) {
+    try { audit('auth:login', 'user', user.id, { username: user.username }); } catch {}
+  }
 
   return { ...currentSession };
 }
@@ -173,7 +177,9 @@ function loginSuperAdmin(password) {
     fullName: SA_FULL_NAME,
   };
 
-  try { audit('auth:login_super_admin', 'session', null, { mode: 'super_admin' }); } catch {}
+  if (!isReadOnlyMode()) {
+    try { audit('auth:login_super_admin', 'session', null, { mode: 'super_admin' }); } catch {}
+  }
 
   return { ...currentSession };
 }
@@ -184,7 +190,9 @@ function loginSuperAdmin(password) {
 
 function logout() {
   if (currentSession) {
-    try { audit('auth:logout', 'user', currentSession.userId, { username: currentSession.username }); } catch {}
+    if (!isReadOnlyMode()) {
+      try { audit('auth:logout', 'user', currentSession.userId, { username: currentSession.username }); } catch {}
+    }
   }
   currentSession = null;
 }

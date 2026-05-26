@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import DocumentActions from './DocumentActions';
 
 const contractLabels = {
@@ -163,6 +163,43 @@ function addValidityToIsoDate(dateValue, validityValue, validityUnit = 'years') 
   return result.toISOString().slice(0, 10);
 }
 
+function nowMs() {
+  return (typeof performance !== 'undefined' && typeof performance.now === 'function')
+    ? performance.now()
+    : Date.now();
+}
+
+function scheduleIdleTask(callback, timeout = 180) {
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    const handle = window.requestIdleCallback(callback, { timeout });
+    return () => window.cancelIdleCallback(handle);
+  }
+
+  const handle = window.setTimeout(callback, 0);
+  return () => window.clearTimeout(handle);
+}
+
+function mergeEmploymentPeriodsWithDocuments(basePeriods = [], freshPeriods = []) {
+  const freshById = new Map(
+    (Array.isArray(freshPeriods) ? freshPeriods : [])
+      .filter((period) => Number.isInteger(Number(period?.id)))
+      .map((period) => [Number(period.id), period])
+  );
+
+  const merged = (Array.isArray(basePeriods) ? basePeriods : []).map((period) => {
+    const fresh = freshById.get(Number(period?.id));
+    return fresh ? { ...period, ...fresh, hire_document: fresh.hire_document || null } : period;
+  });
+
+  for (const fresh of Array.isArray(freshPeriods) ? freshPeriods : []) {
+    if (!merged.some((period) => Number(period?.id) === Number(fresh?.id))) {
+      merged.push(fresh);
+    }
+  }
+
+  return merged;
+}
+
 const emptyForm = {
   first_name: '',
   last_name: '',
@@ -233,8 +270,8 @@ function normalizeEmployeeFormForDirtyCheck(form, selectedHistoryId = '') {
   });
 }
 
-export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
-  const [form, setForm] = useState(employee || emptyForm);
+export default function EmployeeForm({ open, onClose, onSubmit, employee, openPerfStartedAt = 0 }) {
+  const [form, setForm] = useState({ ...emptyForm, ...(employee || {}) });
   const [settingsGeneral, setSettingsGeneral] = useState({
     overtime_enabled: false,
     overtime_hourly_rate: 0,
@@ -258,18 +295,22 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
   const [documentBusyKey, setDocumentBusyKey] = useState('');
   const [employmentPeriods, setEmploymentPeriods] = useState([]);
   const [dpiAssignments, setDpiAssignments] = useState([]);
+  const [documentsLoading, setDocumentsLoading] = useState(false);
+  const [documentsLoaded, setDocumentsLoaded] = useState(false);
+  const [dpiAssignmentsLoading, setDpiAssignmentsLoading] = useState(false);
   const [employerOptions, setEmployerOptions] = useState([
     { value: 'LC', label: 'LC' },
     { value: 'LG', label: 'LG' },
     { value: 'ENTRAMBE', label: 'ENTRAMBE' },
   ]);
+  const docsLoadStartedAtRef = useRef(0);
 
   useEffect(() => {
-    setForm(employee || emptyForm);
+    setForm({ ...emptyForm, ...(employee || {}) });
     setHistoryMatches([]);
     setSelectedHistoryId('');
     setNewOccupation('');
-    setOvertimeMode(getOvertimeMode(employee || emptyForm));
+    setOvertimeMode(getOvertimeMode({ ...emptyForm, ...(employee || {}) }));
     setEmployeeDocuments({
       hire_document: employee?.hire_document || null,
       legacy_hire_document: employee?.legacy_hire_document || null,
@@ -279,7 +320,16 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
     });
     setEmploymentPeriods(employee?.employment_periods || []);
     setDpiAssignments([]);
+    setDocumentsLoading(false);
+    setDocumentsLoaded(false);
+    setDpiAssignmentsLoading(false);
   }, [employee, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const elapsed = openPerfStartedAt > 0 ? Math.round(nowMs() - openPerfStartedAt) : 0;
+    console.info('[employee-open-perf] phase=modal-open ms=%d', elapsed);
+  }, [open, openPerfStartedAt]);
 
   const set = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
   const initialSnapshot = useMemo(
@@ -401,21 +451,82 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
       }
 
       try {
+        setDpiAssignmentsLoading(true);
+        const startedAt = nowMs();
         const assignments = await window.api.dpi.getEmployeeAssignments(employee.id);
         if (!cancelled) {
           setDpiAssignments(Array.isArray(assignments) ? assignments : []);
         }
+        console.info('[employee-docs-perf] phase=load-dpi-assignments ms=%d', Math.round(nowMs() - startedAt));
       } catch (err) {
         console.error(err);
         if (!cancelled) {
           setDpiAssignments([]);
         }
+      } finally {
+        if (!cancelled) {
+          setDpiAssignmentsLoading(false);
+        }
       }
     }
 
-    loadDpiAssignments();
+    if (!open || !employee?.id) {
+      return undefined;
+    }
+
+    const cancelIdleTask = scheduleIdleTask(() => {
+      if (!cancelled) {
+        loadDpiAssignments();
+      }
+    });
+
     return () => {
       cancelled = true;
+      cancelIdleTask();
+    };
+  }, [open, employee?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!open || !employee?.id) {
+      return undefined;
+    }
+
+    docsLoadStartedAtRef.current = nowMs();
+    console.info('[employee-docs-perf] phase=schedule-lazy-load ms=0');
+    const cancelIdleTask = scheduleIdleTask(async () => {
+      if (cancelled) return;
+      setDocumentsLoading(true);
+      const startedAt = nowMs();
+      try {
+        const summary = await window.api.employees.getDocumentsSummary(employee.id);
+        if (cancelled || !summary) return;
+
+        setEmployeeDocuments({
+          hire_document: summary.hire_document || null,
+          legacy_hire_document: summary.legacy_hire_document || null,
+          art37_document: summary.art37_document || null,
+          medical_visit_document: summary.medical_visit_document || null,
+          dpi_delivery_document: summary.dpi_delivery_document || null,
+        });
+        setEmploymentPeriods((current) =>
+          mergeEmploymentPeriodsWithDocuments(current, summary.employment_periods || [])
+        );
+        setDocumentsLoaded(true);
+        console.info('[employee-docs-perf] phase=state-updated ms=%d', Math.round(nowMs() - startedAt));
+      } catch (err) {
+        console.error(err);
+      } finally {
+        if (!cancelled) {
+          setDocumentsLoading(false);
+          console.info('[employee-docs-perf] phase=total-lazy-load ms=%d', Math.round(nowMs() - docsLoadStartedAtRef.current));
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      cancelIdleTask();
     };
   }, [open, employee?.id]);
 
@@ -539,7 +650,10 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
   async function refreshEmployeeDocuments() {
     if (!employee?.id) return;
     try {
-      const fresh = await window.api.employees.getById(employee.id, { includeDeleted: true });
+      const startedAt = nowMs();
+      setDocumentsLoading(true);
+      const fresh = await window.api.employees.getDocumentsSummary(employee.id);
+      console.info('[employee-docs-perf] phase=refresh-documents ms=%d', Math.round(nowMs() - startedAt));
       if (fresh) {
         setEmployeeDocuments({
           hire_document: fresh.hire_document || null,
@@ -548,34 +662,32 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
           medical_visit_document: fresh.medical_visit_document || null,
           dpi_delivery_document: fresh.dpi_delivery_document || null,
         });
-        setEmploymentPeriods(fresh.employment_periods || []);
+        setEmploymentPeriods((current) =>
+          mergeEmploymentPeriodsWithDocuments(current, fresh.employment_periods || [])
+        );
+        setDocumentsLoaded(true);
       }
     } catch (err) {
       console.error(err);
+    } finally {
+      setDocumentsLoading(false);
     }
   }
 
   async function handleDocumentAction(action, errorMessage, options = {}) {
-    const { documentKey = '', busyKey = documentKey, perfName = '' } = options;
+    const { documentKey = '', busyKey = documentKey } = options;
     const perf = typeof performance !== 'undefined' ? performance : { now: () => Date.now() };
     const startedAt = perf.now();
-    const isFormationUpload = perfName === 'formazione';
 
     if (busyKey) {
       setDocumentBusyKey(busyKey);
     }
-    if (isFormationUpload) {
-      console.info('[documents-perf] formazione upload start');
-    }
+    console.info('[employee-doc-upload-perf] phase=renderer-start ms=0');
 
     try {
       const result = await action();
       if (!result?.canceled) {
-        if (isFormationUpload) {
-          console.info(
-            `[documents-perf] formazione upload saved in ${Math.round(perf.now() - startedAt)} ms`
-          );
-        }
+        console.info('[employee-doc-upload-perf] phase=main-process-complete ms=%d', Math.round(perf.now() - startedAt));
 
         const uiStartedAt = perf.now();
         if (documentKey && Object.prototype.hasOwnProperty.call(result || {}, 'document')) {
@@ -583,15 +695,11 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
             ...current,
             [documentKey]: result.document || null,
           }));
+          setDocumentsLoaded(true);
         } else {
           await refreshEmployeeDocuments();
         }
-
-        if (isFormationUpload) {
-          console.info(
-            `[documents-perf] formazione ui updated in ${Math.round(perf.now() - uiStartedAt)} ms`
-          );
-        }
+        console.info('[employee-doc-upload-perf] phase=refresh-list ms=%d', Math.round(perf.now() - uiStartedAt));
       }
     } catch (err) {
       console.error(err);
@@ -978,6 +1086,9 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
 
                 <div className="employee-form__document-panel">
                   <div className="employee-form__document-title">📎 Allegato visita medica</div>
+                  {documentsLoading && !documentsLoaded ? (
+                    <div className="employee-form__compact-note">Caricamento allegati visita medica...</div>
+                  ) : null}
                   {employee?.id ? (
                     <DocumentActions
                       document={employeeDocuments.medical_visit_document}
@@ -1069,6 +1180,9 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
 
                 <div className="employee-form__document-panel">
                   <div className="employee-form__document-title">📎 Allegato formazione</div>
+                  {documentsLoading && !documentsLoaded ? (
+                    <div className="employee-form__compact-note">Caricamento allegati formazione...</div>
+                  ) : null}
                   {employee?.id ? (
                     <DocumentActions
                       document={employeeDocuments.art37_document}
@@ -1125,11 +1239,11 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
                 <div className="employee-form__dpi-summary">
                   <div className="employee-form__dpi-summary-line">
                     <span>Assegnazioni</span>
-                    <strong>{dpiAssignments.length}</strong>
+                    <strong>{dpiAssignmentsLoading ? UI_SYMBOLS.ellipsis : dpiAssignments.length}</strong>
                   </div>
                   <div className="employee-form__dpi-summary-line">
                     <span>Ultima consegna</span>
-                    <strong>{latestDpiAssignment ? formatDisplayDate(latestDpiAssignment.assigned_date) : '—'}</strong>
+                    <strong>{dpiAssignmentsLoading ? 'Caricamento...' : latestDpiAssignment ? formatDisplayDate(latestDpiAssignment.assigned_date) : '—'}</strong>
                   </div>
                 </div>
 
@@ -1154,6 +1268,9 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
 
                 <div className="employee-form__document-panel">
                   <div className="employee-form__document-title">📎 Allegato consegna DPI</div>
+                  {documentsLoading && !documentsLoaded ? (
+                    <div className="employee-form__compact-note">Caricamento allegati DPI...</div>
+                  ) : null}
                   {employee?.id ? (
                     <DocumentActions
                       document={employeeDocuments.dpi_delivery_document}
@@ -1209,6 +1326,11 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee }) {
           {employee?.id ? (
             <>
             <div className="employee-form-attachments" style={{ display: 'grid', gap: 12 }}>
+              {documentsLoading && !documentsLoaded ? (
+                <div style={infoBoxStyle}>
+                  Caricamento metadati allegati in corso...
+                </div>
+              ) : null}
               {(employmentPeriods || []).length ? (
                 <div style={{ display: 'grid', gap: 14 }}>
                   {['LC', 'LG', 'ENTRAMBE'].map((employerCode) => {

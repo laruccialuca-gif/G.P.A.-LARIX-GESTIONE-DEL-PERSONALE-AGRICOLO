@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
 const { getAppVariant, getRuntimeContext, getVariantConfig } = require('./runtimeContext');
 
@@ -277,6 +278,14 @@ function buildAppIdentitySnapshot() {
     packaged: runtime.isPackaged,
     developer_machine_config_path: licenseService.getDeveloperMachineConfigPath(),
     known_user_data_paths: getKnownUserDataPaths(),
+    shared_access: {
+      read_only: !!sharedAccessState.readOnlyMode,
+      lock_owned: !!sharedAccessState.lockOwned,
+      lock_file_path: sharedAccessState.lockFilePath || getSharedLockFilePath(),
+      lock_info: sharedAccessState.lockInfo,
+      message: sharedAccessState.lockMessage || '',
+      recovery_used: !!sharedAccessState.recoveryUsed,
+    },
   };
 }
 
@@ -298,17 +307,45 @@ const backupService = require('./backupService');
 const diagnosticsService = require('./diagnosticsService');
 const licenseService = require('./licenseService');
 const demoService = require('./demoService');
-const { getDb, getDbPath, closeDb } = require('./db');
+const { getDb, getDbPath, closeDb, setReadOnlyMode } = require('./db');
 const { ensureAppStorageStructure, getDocumentsDir } = require('./storagePaths');
 
 const runtime = getRuntimeContext();
 
 function requireWritableLicense(actionLabel) {
+  if (sharedAccessState.readOnlyMode) {
+    const error = new Error(sharedAccessState.lockMessage || 'Modalità sola lettura attiva.');
+    error.code = 'APP_READ_ONLY_MODE';
+    throw error;
+  }
   if (authService.isSuperAdmin()) {
     logMainProcessEvent('sa:license-bypass', { action: actionLabel });
     return;
   }
   return licenseService.enforceLicenseGuard(actionLabel);
+}
+
+function getMergedLicenseStatus() {
+  const baseStatus = licenseService.getLicenseStatus() || {};
+  if (!sharedAccessState.readOnlyMode) {
+    return baseStatus;
+  }
+
+  return {
+    ...baseStatus,
+    is_write_blocked: true,
+    block_reason: 'shared_lock_read_only',
+    message: sharedAccessState.lockMessage || `Modalità sola lettura — archivio aperto su ${sharedAccessState.lockInfo?.machine || 'altro PC'}`,
+    read_only_mode: true,
+    shared_lock: {
+      file_path: sharedAccessState.lockFilePath,
+      machine: sharedAccessState.lockInfo?.machine || '',
+      user: sharedAccessState.lockInfo?.user || '',
+      opened_at: sharedAccessState.lockInfo?.opened_at || '',
+      pid: sharedAccessState.lockInfo?.pid || null,
+      recovery_used: !!sharedAccessState.recoveryUsed,
+    },
+  };
 }
 
 function getAppIconPath() {
@@ -322,6 +359,279 @@ const activeOperationControllers = new Map();
 const activeOperationTimeouts = new Map();
 const resetOperationJobIds = new Set();
 const OPERATION_LOCK_TIMEOUT_MS = 180000;
+const SHARED_LOCK_FILE_NAME = '.gpa-lock.json';
+const SHARED_LOCK_STALE_MS = 12 * 60 * 60 * 1000;
+const sharedAccessState = {
+  readOnlyMode: false,
+  lockOwned: false,
+  lockFilePath: '',
+  lockInfo: null,
+  lockMessage: '',
+  recoveryUsed: false,
+};
+
+function getSharedLockFilePath() {
+  return path.join(app.getPath('userData'), SHARED_LOCK_FILE_NAME);
+}
+
+function getCurrentSessionLockInfo() {
+  const userInfo = (() => {
+    try {
+      return os.userInfo();
+    } catch {
+      return null;
+    }
+  })();
+
+  return {
+    machine: String(process.env.COMPUTERNAME || process.env.HOSTNAME || os.hostname() || 'PC sconosciuto').trim() || 'PC sconosciuto',
+    user: String(process.env.USERNAME || process.env.USER || userInfo?.username || 'utente').trim() || 'utente',
+    opened_at: new Date().toISOString(),
+    pid: process.pid,
+  };
+}
+
+function readSharedLockFile() {
+  const lockFilePath = getSharedLockFilePath();
+  if (!fs.existsSync(lockFilePath)) {
+    return null;
+  }
+
+  try {
+    const raw = fs.readFileSync(lockFilePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (error) {
+    logMainProcessEvent('shared-lock:read-error', {
+      lock_file_path: lockFilePath,
+      message: error?.message || String(error),
+    });
+    return {
+      invalid: true,
+      machine: 'sessione non valida',
+      user: '',
+      opened_at: '',
+      pid: null,
+    };
+  }
+}
+
+function isSharedLockStale(lockInfo) {
+  const openedAt = Date.parse(String(lockInfo?.opened_at || ''));
+  if (!Number.isFinite(openedAt)) {
+    return true;
+  }
+  return (Date.now() - openedAt) > SHARED_LOCK_STALE_MS;
+}
+
+function isLockProcessAlive(lockInfo) {
+  const pid = Number(lockInfo?.pid || 0);
+  if (!pid || lockInfo?.machine !== os.hostname()) {
+    return null;
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === 'EPERM') {
+      return true;
+    }
+    if (error?.code === 'ESRCH') {
+      return false;
+    }
+    return null;
+  }
+}
+
+function writeSharedLockFile(lockInfo) {
+  const lockFilePath = getSharedLockFilePath();
+  fs.mkdirSync(path.dirname(lockFilePath), { recursive: true });
+  fs.writeFileSync(lockFilePath, JSON.stringify(lockInfo, null, 2), 'utf8');
+  sharedAccessState.lockFilePath = lockFilePath;
+  sharedAccessState.lockInfo = lockInfo;
+  sharedAccessState.lockOwned = true;
+  sharedAccessState.readOnlyMode = false;
+  sharedAccessState.lockMessage = '';
+}
+
+function releaseSharedLockFile() {
+  if (!sharedAccessState.lockOwned || !sharedAccessState.lockFilePath) {
+    return;
+  }
+
+  try {
+    const currentLock = readSharedLockFile();
+    const sameOwner =
+      currentLock &&
+      currentLock.machine === sharedAccessState.lockInfo?.machine &&
+      Number(currentLock.pid) === Number(sharedAccessState.lockInfo?.pid);
+
+    if (sameOwner && fs.existsSync(sharedAccessState.lockFilePath)) {
+      fs.unlinkSync(sharedAccessState.lockFilePath);
+      logMainProcessEvent('shared-lock:released', {
+        lock_file_path: sharedAccessState.lockFilePath,
+      });
+    }
+  } catch (error) {
+    logMainProcessEvent('shared-lock:release-error', {
+      lock_file_path: sharedAccessState.lockFilePath,
+      message: error?.message || String(error),
+    });
+  } finally {
+    sharedAccessState.lockOwned = false;
+  }
+}
+
+async function initializeSharedAccessMode() {
+  sharedAccessState.readOnlyMode = false;
+  sharedAccessState.lockOwned = false;
+  sharedAccessState.lockFilePath = '';
+  sharedAccessState.lockInfo = null;
+  sharedAccessState.lockMessage = '';
+  sharedAccessState.recoveryUsed = false;
+
+  const currentLockInfo = getCurrentSessionLockInfo();
+  const existingLock = readSharedLockFile();
+  sharedAccessState.lockFilePath = getSharedLockFilePath();
+
+  if (!existingLock) {
+    writeSharedLockFile(currentLockInfo);
+    logMainProcessEvent('shared-lock:acquired', {
+      mode: 'read-write',
+      lock_file_path: sharedAccessState.lockFilePath,
+      lock_info: currentLockInfo,
+    });
+    return true;
+  }
+
+  const sameOwner =
+    existingLock.machine === currentLockInfo.machine &&
+    Number(existingLock.pid) === Number(currentLockInfo.pid);
+
+  if (sameOwner) {
+    writeSharedLockFile(currentLockInfo);
+    logMainProcessEvent('shared-lock:refreshed-self', {
+      lock_file_path: sharedAccessState.lockFilePath,
+      lock_info: currentLockInfo,
+    });
+    return true;
+  }
+
+  const sameMachine = existingLock.machine === currentLockInfo.machine;
+  const processAlive = isLockProcessAlive(existingLock);
+  const stale = isSharedLockStale(existingLock) || (sameMachine && processAlive === false);
+  const commonDetail = `Percorso condiviso: ${sharedAccessState.lockFilePath}\nSessione corrente: ${existingLock.machine || 'PC sconosciuto'}${existingLock.user ? ` (${existingLock.user})` : ''}\nAperta il: ${existingLock.opened_at || 'sconosciuto'}`;
+
+  if (sameMachine && processAlive === false) {
+    writeSharedLockFile(currentLockInfo);
+    sharedAccessState.recoveryUsed = true;
+    logMainProcessEvent('shared-lock:recovered-local-process-missing', {
+      previous_lock: existingLock,
+      next_lock: currentLockInfo,
+    });
+    return true;
+  }
+
+  if (stale) {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      buttons: ['Recupera sessione', 'Apri in sola lettura', 'Annulla'],
+      defaultId: 1,
+      cancelId: 2,
+      title: 'Sessione condivisa rilevata',
+      message: `Esiste un lock precedente del gestionale su ${existingLock.machine || 'un altro PC'}.`,
+      detail: `${commonDetail}\n\nIl lock sembra vecchio o non valido. Vuoi recuperare la sessione?`,
+    });
+
+    if (response === 0) {
+      writeSharedLockFile(currentLockInfo);
+      sharedAccessState.recoveryUsed = true;
+      logMainProcessEvent('shared-lock:recovered', {
+        previous_lock: existingLock,
+        next_lock: currentLockInfo,
+      });
+      return true;
+    }
+
+    if (response === 1) {
+      sharedAccessState.readOnlyMode = true;
+      sharedAccessState.lockOwned = false;
+      sharedAccessState.lockInfo = existingLock;
+      sharedAccessState.lockMessage = `Modalità sola lettura — archivio aperto su ${existingLock.machine || 'altro PC'}`;
+      logMainProcessEvent('shared-lock:readonly-open', {
+        previous_lock: existingLock,
+        reason: 'stale-lock-readonly-choice',
+      });
+      return true;
+    }
+
+    app.exit(0);
+    return false;
+  }
+
+  const { response } = await dialog.showMessageBox({
+    type: 'info',
+    buttons: ['Apri in sola lettura', 'Annulla'],
+    defaultId: 0,
+    cancelId: 1,
+    title: 'Gestionale già aperto',
+    message: `Gestionale già aperto su ${existingLock.machine || 'un altro PC'}.`,
+    detail: `${commonDetail}\n\nVuoi aprire GPA in modalità sola lettura?`,
+  });
+
+  if (response !== 0) {
+    app.exit(0);
+    return false;
+  }
+
+  sharedAccessState.readOnlyMode = true;
+  sharedAccessState.lockOwned = false;
+  sharedAccessState.lockInfo = existingLock;
+  sharedAccessState.lockMessage = `Modalità sola lettura — archivio aperto su ${existingLock.machine || 'altro PC'}`;
+  logMainProcessEvent('shared-lock:readonly-open', {
+    previous_lock: existingLock,
+    reason: 'active-foreign-lock',
+  });
+  return true;
+}
+
+function focusExistingMainWindow() {
+  const candidate = (
+    mainWindow && !mainWindow.isDestroyed()
+      ? mainWindow
+      : BrowserWindow.getAllWindows().find((window) => !window.isDestroyed())
+  ) || null;
+
+  if (!candidate) {
+    return null;
+  }
+
+  mainWindow = candidate;
+
+  if (candidate.isMinimized()) {
+    candidate.restore();
+  }
+
+  if (!candidate.isVisible()) {
+    candidate.show();
+  }
+
+  candidate.focus();
+  return candidate;
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    const focusedWindow = focusExistingMainWindow();
+    logMainProcessEvent('app:second-instance-blocked', {
+      restored_existing_window: !!focusedWindow,
+    });
+  });
+}
 
 function getActiveOperationsSnapshot() {
   return [...activeOperations.values()];
@@ -583,6 +893,13 @@ function buildAppRuntimeInfo() {
       database: getDbPath(),
       preload: getPreloadPath(),
       renderer_entry: getRendererEntryPath(),
+    },
+    access_mode: {
+      read_only: !!sharedAccessState.readOnlyMode,
+      lock_owned: !!sharedAccessState.lockOwned,
+      lock_file_path: sharedAccessState.lockFilePath || getSharedLockFilePath(),
+      lock_info: sharedAccessState.lockInfo,
+      message: sharedAccessState.lockMessage || '',
     },
   };
 }
@@ -1291,10 +1608,29 @@ async function persistCommunicationArtifacts(communicationId) {
 
 app.whenReady().then(async () => {
   configureAppIdentity();
-  cleanDemoBootstrapData();
+  const shouldContinueStartup = await initializeSharedAccessMode();
+  if (!shouldContinueStartup) {
+    return;
+  }
+  setReadOnlyMode(sharedAccessState.readOnlyMode);
+  if (!sharedAccessState.readOnlyMode) {
+    cleanDemoBootstrapData();
+  }
   const storageLayout = ensureAppStorageStructure();
-  await backupService.checkAndHandleIncompleteRestore();
+  if (!sharedAccessState.readOnlyMode) {
+    await backupService.checkAndHandleIncompleteRestore();
+  }
   getDb();
+  if (!sharedAccessState.readOnlyMode) {
+    try {
+      const expiredArchiveResult = employeeRepo.archiveExpiredContracts();
+      logMainProcessEvent('employees:archive-expired-contracts:startup', expiredArchiveResult);
+    } catch (error) {
+      logMainProcessEvent('employees:archive-expired-contracts:startup-error', {
+        message: error?.message || String(error),
+      });
+    }
+  }
   pdfImportService.init({ userDataDir: app.getPath('userData') });
   licenseService.setLogger(logMainProcessEvent);
   const bootRuntime = getRuntimeContext();
@@ -1366,12 +1702,14 @@ app.whenReady().then(async () => {
       }
     }
   });
-  await backupService.maybeRunAutomaticBackup();
+  if (!sharedAccessState.readOnlyMode) {
+    await backupService.maybeRunAutomaticBackup();
+  }
   logMainProcessEvent('bootstrap:license-config', licenseService.getPublicKeyInfo());
   await licenseService.bootstrapLicenseMonitoring();
 
   ipcMain.handle('dashboard:summary', async () => dashboardRepo.getDashboardSummary());
-  ipcMain.handle('license:getStatus', async () => licenseService.getLicenseStatus());
+  ipcMain.handle('license:getStatus', async () => getMergedLicenseStatus());
   ipcMain.handle('license:activate', async (_, activationCode) => {
     const result = licenseService.activate(activationCode);
     try { authService.audit('license:activate', 'license', null, {}); } catch {}
@@ -1602,6 +1940,7 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('backups:list', async () => backupService.listBackups());
   ipcMain.handle('backups:create', async (_, type) => {
+    requireWritableLicense('La creazione dei backup');
     settingsService.requireAdmin();
     const result = await backupService.createBackup(type || 'manual');
     try { authService.audit('backup:create', 'backup', null, { type: type || 'manual' }); } catch {}
@@ -1609,6 +1948,7 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('backups:openDirectory', async () => backupService.openBackupDirectory());
   ipcMain.handle('backups:chooseRestore', async () => {
+    requireWritableLicense('Il ripristino dei backup');
     const result = await backupService.chooseRestoreBackup(mainWindow);
     if (result.canceled || !result.filePaths?.length) {
       return { canceled: true };
@@ -1728,6 +2068,17 @@ app.whenReady().then(async () => {
     });
     return result;
   });
+  ipcMain.handle('employees:getDocumentsSummary', async (_, id) => {
+    const startedAt = Date.now();
+    logMainProcessEvent('employees:getDocumentsSummary:start', { id: Number(id) });
+    const result = employeeRepo.getEmployeeDocumentsSummary(id);
+    logMainProcessEvent('employees:getDocumentsSummary:end', {
+      id: Number(id),
+      found: !!result,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  });
   ipcMain.handle('employees:findHistoryMatches', async (_, criteria) =>
     employeeRepo.findEmployeeHistoryMatches(criteria)
   );
@@ -1778,6 +2129,32 @@ app.whenReady().then(async () => {
       });
       throw error;
     }
+  });
+  ipcMain.handle('employees:closeEarly', async (_, employeeIds = [], terminationDate, reason = '') => {
+    requireWritableLicense('La chiusura anticipata dei dipendenti');
+    const startedAt = Date.now();
+    logMainProcessEvent('employees:close-early:start', {
+      requested_count: Array.isArray(employeeIds) ? employeeIds.length : 0,
+      termination_date: terminationDate || '',
+    });
+    const result = employeeRepo.closeEmployeesEarly(employeeIds, terminationDate, reason);
+    logMainProcessEvent('employees:close-early:end', {
+      archived_count: result?.archived_count || 0,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
+  });
+  ipcMain.handle('employees:archiveExpiredContracts', async (_, today) => {
+    const startedAt = Date.now();
+    logMainProcessEvent('employees:archive-expired-contracts:start', {
+      today: today || '',
+    });
+    const result = employeeRepo.archiveExpiredContracts(today);
+    logMainProcessEvent('employees:archive-expired-contracts:end', {
+      archived_count: result?.archived_count || 0,
+      duration_ms: Date.now() - startedAt,
+    });
+    return result;
   });
   ipcMain.handle('employees:restore', async (_, id) => {
     requireWritableLicense('La modifica dei dipendenti');
@@ -2728,7 +3105,6 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('reports:savePdf', async (_, payload) => {
-    requireWritableLicense('La creazione di nuovi report');
     return runExclusiveOperation({
       type: 'report-export',
       startMessage: 'Avvio generazione report...',
@@ -2792,7 +3168,6 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('reports:savePdfToFolder', async (_, payload) => {
-    requireWritableLicense('La creazione di nuovi report');
     const html = payload?.html || '';
     if (!html.trim()) {
       throw new Error('HTML report mancante');
@@ -2822,7 +3197,6 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('reports:printHtml', async (_, payload) => {
-    requireWritableLicense('La creazione di nuovi report');
     return runExclusiveOperation({
       type: 'report-export',
       startMessage: 'Preparazione stampa report...',
@@ -2880,7 +3254,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('before-quit', (event) => {
-  if (isQuittingAfterExitBackup) {
+  if (isQuittingAfterExitBackup || sharedAccessState.readOnlyMode) {
     return;
   }
 
@@ -2893,6 +3267,10 @@ app.on('before-quit', (event) => {
       app.quit();
     }
   })();
+});
+
+app.on('will-quit', () => {
+  releaseSharedLockFile();
 });
 
 app.on('window-all-closed', () => {

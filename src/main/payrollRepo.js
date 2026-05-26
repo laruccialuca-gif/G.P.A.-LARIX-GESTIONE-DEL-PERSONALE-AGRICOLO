@@ -1204,7 +1204,7 @@ async function uploadPayrollDocument(browserWindow, employeeId, month) {
     return { canceled: true };
   }
 
-  const stored = storeSelectedFile(
+  const stored = await storeSelectedFile(
     selectedPath,
     ['employees', String(employeeId), 'payroll', String(month)],
     `busta-paga-${month}`

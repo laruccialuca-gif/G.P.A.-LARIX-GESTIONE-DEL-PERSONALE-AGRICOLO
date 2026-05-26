@@ -95,6 +95,14 @@ function normalizeDateValue(value) {
   return raw;
 }
 
+function getTodayIsoDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function nowMs() {
   return (typeof performance !== 'undefined' && typeof performance.now === 'function')
     ? performance.now()
@@ -200,6 +208,9 @@ function mapEmployeeInput(employee) {
     art37_expiry: employee.art37_expiry || null,
     art37_notes: employee.art37_notes || null,
     notes: employee.notes || null,
+    early_termination_date: employee.early_termination_date || null,
+    early_termination_reason: employee.early_termination_reason || null,
+    archive_reason: employee.archive_reason || null,
   };
 }
 
@@ -526,16 +537,25 @@ function listBasicEmployees(options = {}) {
       e.phone,
       e.email,
       e.notes,
+      e.early_termination_date,
+      e.early_termination_reason,
+      e.archive_reason,
       e.hired_by,
       e.contract_type,
       e.daily_pay,
       e.standard_hours,
+      e.overtime_use_general_rate,
+      e.overtime_hourly_rate,
       e.medical_visit_required,
       e.medical_visit_done,
+      e.medical_visit_done_with_us,
+      e.medical_visit_notes,
       e.medical_visit_date,
       e.medical_visit_expiry,
       e.art37_required,
       e.art37_done,
+      e.art37_done_with_us,
+      e.art37_notes,
       e.art37_date,
       e.art37_expiry
     FROM employees e
@@ -607,16 +627,28 @@ function listBasicEmployees(options = {}) {
       phone: row.phone || null,
       email: row.email || null,
       notes: row.notes || null,
+      early_termination_date: row.early_termination_date || null,
+      early_termination_reason: row.early_termination_reason || null,
+      archive_reason: row.archive_reason || null,
       hired_by: row.hired_by || null,
       contract_type: row.contract_type || null,
       daily_pay: row.daily_pay,
       standard_hours: row.standard_hours,
+      overtime_use_general_rate: row.overtime_use_general_rate !== 0,
+      overtime_hourly_rate:
+        row.overtime_hourly_rate !== null && row.overtime_hourly_rate !== undefined
+          ? Number(row.overtime_hourly_rate)
+          : null,
       medical_visit_required: !!row.medical_visit_required,
       medical_visit_done: !!row.medical_visit_done,
+      medical_visit_done_with_us: !!row.medical_visit_done_with_us,
+      medical_visit_notes: row.medical_visit_notes || null,
       medical_visit_date: row.medical_visit_date || null,
       medical_visit_expiry: row.medical_visit_expiry || null,
       art37_required: !!row.art37_required,
       art37_done: !!row.art37_done,
+      art37_done_with_us: !!row.art37_done_with_us,
+      art37_notes: row.art37_notes || null,
       art37_date: row.art37_date || null,
       art37_expiry: row.art37_expiry || null,
     };
@@ -672,6 +704,116 @@ function getEmployeeById(id, options = {}) {
   `).get(id);
 
   return attachEmployeeRelations(row ? [row] : [])[0] || null;
+}
+
+function getEmployeeDocumentsSummary(employeeId) {
+  const startedAt = nowMs();
+  const db = getDb();
+  const normalizedEmployeeId = Number(employeeId);
+  if (!Number.isInteger(normalizedEmployeeId) || normalizedEmployeeId <= 0) {
+    return null;
+  }
+
+  const employee = db.prepare(`
+    SELECT id, first_name, last_name
+    FROM employees
+    WHERE id = ?
+    LIMIT 1
+  `).get(normalizedEmployeeId);
+
+  if (!employee) {
+    return null;
+  }
+
+  const docsQueryStartedAt = nowMs();
+  const documentRows = db.prepare(`
+    SELECT
+      id,
+      employee_id,
+      category,
+      file_name,
+      stored_name,
+      relative_path,
+      mime_type,
+      size_bytes,
+      sha256,
+      file_created_at,
+      uploaded_at,
+      updated_at
+    FROM employee_documents
+    WHERE employee_id = ?
+      AND (
+        category IN (?, ?, ?, ?)
+        OR category LIKE ?
+      )
+    ORDER BY uploaded_at DESC, id DESC
+  `).all(
+    normalizedEmployeeId,
+    DOCUMENT_CATEGORIES.hire,
+    DOCUMENT_CATEGORIES.art37,
+    DOCUMENT_CATEGORIES.medicalVisit,
+    DOCUMENT_CATEGORIES.dpiDelivery,
+    `${HIRE_PERIOD_CATEGORY_PREFIX}%`
+  );
+  console.info('[employee-docs-perf] phase=query-metadata ms=%d', Math.round(nowMs() - docsQueryStartedAt));
+
+  const periodsQueryStartedAt = nowMs();
+  const periodRows = db.prepare(`
+    SELECT
+      id,
+      employee_id,
+      hire_date_from,
+      hire_date_to,
+      hired_by,
+      status,
+      is_current
+    FROM employee_employment_periods
+    WHERE employee_id = ?
+    ORDER BY is_current DESC, COALESCE(hire_date_from, created_at) DESC, id DESC
+  `).all(normalizedEmployeeId);
+  console.info('[employee-docs-perf] phase=query-periods ms=%d', Math.round(nowMs() - periodsQueryStartedAt));
+
+  const parseStartedAt = nowMs();
+  const byCategory = new Map();
+  const periodDocs = new Map();
+  for (const row of documentRows) {
+    const document = describeStoredFile(row);
+    if (!document) continue;
+    const periodId = parseEmploymentPeriodIdFromCategory(row.category);
+    if (periodId) {
+      if (!periodDocs.has(periodId)) {
+        periodDocs.set(periodId, document);
+      }
+      continue;
+    }
+    if (!byCategory.has(row.category)) {
+      byCategory.set(row.category, document);
+    }
+  }
+
+  const employmentPeriods = periodRows.map((period) => ({
+    id: period.id,
+    employee_id: period.employee_id,
+    hire_date_from: period.hire_date_from || null,
+    hire_date_to: period.hire_date_to || null,
+    hired_by: period.hired_by || null,
+    status: period.status || 'attivo',
+    is_current: !!period.is_current,
+    hire_document: periodDocs.get(period.id) || null,
+  }));
+  console.info('[employee-docs-perf] phase=parse-metadata ms=%d', Math.round(nowMs() - parseStartedAt));
+  console.info('[employee-docs-perf] phase=repo-total ms=%d', Math.round(nowMs() - startedAt));
+
+  return {
+    employee_id: normalizedEmployeeId,
+    employee_label: `${employee.last_name || ''} ${employee.first_name || ''}`.trim(),
+    hire_document: byCategory.get(DOCUMENT_CATEGORIES.hire) || null,
+    legacy_hire_document: byCategory.get(DOCUMENT_CATEGORIES.hire) || null,
+    art37_document: byCategory.get(DOCUMENT_CATEGORIES.art37) || null,
+    medical_visit_document: byCategory.get(DOCUMENT_CATEGORIES.medicalVisit) || null,
+    dpi_delivery_document: byCategory.get(DOCUMENT_CATEGORIES.dpiDelivery) || null,
+    employment_periods,
+  };
 }
 
 function setCurrentPeriodsInactive(employeeId) {
@@ -947,14 +1089,18 @@ function insertEmployeeRow(employeeData) {
       medical_visit_required, medical_visit_done, medical_visit_done_with_us,
       medical_visit_date, medical_visit_expiry, medical_visit_notes,
       art37_required, art37_done, art37_done_with_us,
-      art37_date, art37_expiry, art37_notes, notes, is_deleted, deleted_at
+      art37_date, art37_expiry, art37_notes, notes,
+      early_termination_date, early_termination_reason, archive_reason,
+      is_deleted, deleted_at
     ) VALUES (
       @first_name, @last_name, @fiscal_code, @role, @contract_type, @daily_pay, @standard_hours, @overtime_use_general_rate, @overtime_hourly_rate,
       @phone, @email, @hire_date, @hire_date_from, @hire_date_to, @hired_by, @status,
       @medical_visit_required, @medical_visit_done, @medical_visit_done_with_us,
       @medical_visit_date, @medical_visit_expiry, @medical_visit_notes,
       @art37_required, @art37_done, @art37_done_with_us,
-      @art37_date, @art37_expiry, @art37_notes, @notes, 0, NULL
+      @art37_date, @art37_expiry, @art37_notes, @notes,
+      @early_termination_date, @early_termination_reason, @archive_reason,
+      0, NULL
     )
   `).run(employeeData);
 
@@ -994,6 +1140,9 @@ function updateEmployeeRow(id, employeeData, { restore = false } = {}) {
       art37_expiry=@art37_expiry,
       art37_notes=@art37_notes,
       notes=@notes,
+      early_termination_date=@early_termination_date,
+      early_termination_reason=@early_termination_reason,
+      archive_reason=@archive_reason,
       is_deleted=${restore ? '0,' : 'is_deleted,'}
       deleted_at=${restore ? 'NULL,' : 'deleted_at,'}
       updated_at=CURRENT_TIMESTAMP
@@ -1046,7 +1195,9 @@ function archiveEmployee(id) {
   db.prepare(`
     UPDATE employees
     SET is_deleted = 1,
+        status = 'inattivo',
         deleted_at = CURRENT_TIMESTAMP,
+        archive_reason = COALESCE(NULLIF(archive_reason, ''), 'manual_archive'),
         updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(id);
@@ -1070,7 +1221,9 @@ function bulkArchiveEmployees(ids = []) {
     const result = db.prepare(`
       UPDATE employees
       SET is_deleted = 1,
+          status = 'inattivo',
           deleted_at = CURRENT_TIMESTAMP,
+          archive_reason = COALESCE(NULLIF(archive_reason, ''), 'manual_archive'),
           updated_at = CURRENT_TIMESTAMP
       WHERE id IN (${placeholders})
     `).run(...normalizedIds);
@@ -1090,7 +1243,9 @@ function restoreEmployee(id) {
   db.prepare(`
     UPDATE employees
     SET is_deleted = 0,
+        status = 'attivo',
         deleted_at = NULL,
+        archive_reason = NULL,
         updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(id);
@@ -1098,6 +1253,127 @@ function restoreEmployee(id) {
   const employee = getEmployeeById(id, { includeDeleted: true });
   upsertCurrentEmploymentPeriod(Number(id), employee || {}, { forceNewPeriod: false });
   return getEmployeeById(id, { includeDeleted: true });
+}
+
+function closeEmployeesEarly(ids = [], terminationDate, reason = '') {
+  const db = getDb();
+  const normalizedIds = normalizeEmployeeIds(ids);
+  const normalizedTerminationDate = normalizeDateValue(terminationDate);
+  const normalizedReason = normalizeString(reason);
+
+  if (!normalizedIds.length) {
+    return {
+      archived_count: 0,
+      archived_ids: [],
+      employees: [],
+    };
+  }
+
+  if (!normalizedTerminationDate) {
+    throw new Error('Data chiusura contratto obbligatoria.');
+  }
+
+  const placeholders = normalizedIds.map(() => '?').join(', ');
+  const rows = db.prepare(`
+    SELECT id, contract_type, is_deleted
+    FROM employees
+    WHERE id IN (${placeholders})
+  `).all(...normalizedIds);
+
+  const invalidPermanent = rows.filter((row) => String(row.contract_type || '').trim().toLowerCase() === 'tempo_indeterminato');
+  if (invalidPermanent.length) {
+    throw new Error('Non puoi chiudere anticipatamente dipendenti a tempo indeterminato.');
+  }
+
+  const tx = db.transaction(() => {
+    const result = db.prepare(`
+      UPDATE employees
+      SET hire_date_to = ?,
+          status = 'inattivo',
+          is_deleted = 1,
+          deleted_at = CURRENT_TIMESTAMP,
+          early_termination_date = ?,
+          early_termination_reason = ?,
+          archive_reason = 'early_termination',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id IN (${placeholders})
+        AND COALESCE(is_deleted, 0) = 0
+    `).run(normalizedTerminationDate, normalizedTerminationDate, normalizedReason || null, ...normalizedIds);
+
+    db.prepare(`
+      UPDATE employee_employment_periods
+      SET hire_date_to = ?,
+          status = 'inattivo',
+          is_current = 0,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE employee_id IN (${placeholders})
+        AND is_current = 1
+    `).run(normalizedTerminationDate, ...normalizedIds);
+
+    return result.changes || 0;
+  });
+
+  const archivedCount = tx();
+  return {
+    archived_count: archivedCount,
+    archived_ids: normalizedIds,
+    employees: normalizedIds
+      .map((employeeId) => getEmployeeById(employeeId, { includeDeleted: true }))
+      .filter(Boolean),
+  };
+}
+
+function archiveExpiredContracts(today = getTodayIsoDate()) {
+  const db = getDb();
+  const normalizedToday = normalizeDateValue(today) || getTodayIsoDate();
+  const rows = db.prepare(`
+    SELECT id
+    FROM employees
+    WHERE COALESCE(is_deleted, 0) = 0
+      AND LOWER(COALESCE(contract_type, '')) = 'tempo_determinato'
+      AND COALESCE(hire_date_to, '') <> ''
+      AND hire_date_to < ?
+  `).all(normalizedToday);
+
+  const employeeIds = rows.map((row) => Number(row.id)).filter((value) => Number.isInteger(value) && value > 0);
+  if (!employeeIds.length) {
+    return {
+      archived_count: 0,
+      archived_ids: [],
+      today: normalizedToday,
+    };
+  }
+
+  const placeholders = employeeIds.map(() => '?').join(', ');
+  const tx = db.transaction(() => {
+    const result = db.prepare(`
+      UPDATE employees
+      SET status = 'inattivo',
+          is_deleted = 1,
+          deleted_at = CURRENT_TIMESTAMP,
+          archive_reason = 'expired_contract_auto',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id IN (${placeholders})
+        AND COALESCE(is_deleted, 0) = 0
+    `).run(...employeeIds);
+
+    db.prepare(`
+      UPDATE employee_employment_periods
+      SET status = 'inattivo',
+          is_current = 0,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE employee_id IN (${placeholders})
+        AND is_current = 1
+    `).run(...employeeIds);
+
+    return result.changes || 0;
+  });
+
+  return {
+    archived_count: tx(),
+    archived_ids: employeeIds,
+    today: normalizedToday,
+  };
 }
 
 function getHireDocument(employeeId) {
@@ -1193,9 +1469,9 @@ async function uploadEmployeeDocumentByCategory(browserWindow, employeeId, categ
   }
 
   const startedAt = nowMs();
-  console.info('[documents-perf] saveEmployeeDocument start', { employeeId, category });
+  console.info('[employee-doc-upload-perf] phase=start ms=0');
 
-  const stored = storeSelectedFile(
+  const stored = await storeSelectedFile(
     selectedPath,
     ['employees', String(employeeId), meta.subdir],
     `${employee.last_name}-${employee.first_name}-${meta.nameSuffix}`
@@ -1237,10 +1513,12 @@ async function uploadEmployeeDocumentByCategory(browserWindow, employeeId, categ
       ...stored,
     });
   }
-  console.info('[documents-perf] sqlite insert/update ms', nowMs() - sqliteStartedAt);
+  console.info('[employee-doc-upload-perf] phase=db-upsert ms=%d', Math.round(nowMs() - sqliteStartedAt));
 
+  const readBackStartedAt = nowMs();
   const updatedDocument = getEmployeeDocumentByCategory(employeeId, category);
-  console.info('[documents-perf] total ms', nowMs() - startedAt);
+  console.info('[employee-doc-upload-perf] phase=readback-document ms=%d', Math.round(nowMs() - readBackStartedAt));
+  console.info('[employee-doc-upload-perf] phase=total ms=%d', Math.round(nowMs() - startedAt));
 
   return {
     canceled: false,
@@ -1441,7 +1719,7 @@ async function uploadHireDocumentForEmploymentPeriod(browserWindow, employeeId, 
   }
 
   const employerLabel = String(period.hired_by || 'rapporto').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase();
-  const stored = storeSelectedFile(
+  const stored = await storeSelectedFile(
     selectedPath,
     ['employees', String(employeeId), 'hire-documents', `period-${employmentPeriodId}`],
     `${employee.last_name}-${employee.first_name}-assunzione-${employerLabel}`
@@ -1691,8 +1969,10 @@ function bulkDeleteEmployees(ids = []) {
 
 module.exports = {
   addEmploymentPeriodToEmployee,
+  archiveExpiredContracts,
   archiveEmployee,
   bulkArchiveEmployees,
+  closeEmployeesEarly,
   bulkDeleteEmployees,
   deleteArt37Document,
   createEmployee,
@@ -1702,6 +1982,7 @@ module.exports = {
   deleteDpiDeliveryDocument,
   findEmployeeHistoryMatches,
   getEmployeeDocumentByCategory,
+  getEmployeeDocumentsSummary,
   getEmployeeById,
   getEmploymentPeriodHireDocument,
   getHireDocument,

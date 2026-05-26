@@ -14,6 +14,7 @@ let db;
 const DB_SCHEMA_VERSION = '1.0.0';
 let logWriter = () => {};
 let integrityCheckTimer = null;
+let dbReadOnlyMode = false;
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -156,6 +157,9 @@ function runCoreSchemaMigration(database) {
       notes TEXT,
       is_deleted INTEGER DEFAULT 0,
       deleted_at TEXT,
+      early_termination_date TEXT,
+      early_termination_reason TEXT,
+      archive_reason TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -570,6 +574,8 @@ function runCoreSchemaMigration(database) {
     CREATE INDEX IF NOT EXISTS idx_payroll_employee_year ON payroll_records(employee_id, substr(month, 1, 4));
     CREATE INDEX IF NOT EXISTS idx_payroll_archived ON payroll_records(archived_at, processed_at, month);
     CREATE INDEX IF NOT EXISTS idx_employee_documents_employee ON employee_documents(employee_id, category);
+    CREATE INDEX IF NOT EXISTS idx_employee_documents_uploaded_at ON employee_documents(uploaded_at, id);
+    CREATE INDEX IF NOT EXISTS idx_employee_documents_sha256 ON employee_documents(sha256);
     CREATE INDEX IF NOT EXISTS idx_payroll_documents_record ON payroll_documents(payroll_record_id, category);
     CREATE INDEX IF NOT EXISTS idx_payroll_advances_record ON payroll_advances(payroll_record_id, sort_order, id);
     CREATE INDEX IF NOT EXISTS idx_employee_financial_movements_lookup ON employee_financial_movements(employee_id, type, status, movement_date, id);
@@ -1163,6 +1169,21 @@ function runDpiSchemaMigration(database) {
   `);
 }
 
+function runEmployeeArchiveMetadataMigration(database) {
+  ensureColumnsWithLogging(database, 'employees', [
+    { name: 'early_termination_date', definition: 'TEXT' },
+    { name: 'early_termination_reason', definition: 'TEXT' },
+    { name: 'archive_reason', definition: 'TEXT' },
+  ]);
+}
+
+function runEmployeeDocumentPerformanceIndexesMigration(database) {
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_employee_documents_uploaded_at ON employee_documents(uploaded_at, id);
+    CREATE INDEX IF NOT EXISTS idx_employee_documents_sha256 ON employee_documents(sha256);
+  `);
+}
+
 const MIGRATIONS = [
   {
     id: '2026-04-20-core-schema',
@@ -1239,6 +1260,14 @@ const MIGRATIONS = [
   {
     id: '2026-05-21-dpi-schema',
     run: runDpiSchemaMigration,
+  },
+  {
+    id: '2026-05-26-employee-archive-metadata',
+    run: runEmployeeArchiveMetadataMigration,
+  },
+  {
+    id: '2026-05-26-employee-document-performance-indexes',
+    run: runEmployeeDocumentPerformanceIndexesMigration,
   },
 ];
 
@@ -1488,7 +1517,28 @@ function getDbPath() {
   return path.join(dataDir, 'presenze.sqlite');
 }
 
+function setReadOnlyMode(enabled) {
+  const nextValue = !!enabled;
+  if (dbReadOnlyMode === nextValue) {
+    return;
+  }
+
+  if (db) {
+    closeDb();
+  }
+
+  dbReadOnlyMode = nextValue;
+}
+
+function isReadOnlyMode() {
+  return dbReadOnlyMode;
+}
+
 function migrateLegacyDatabaseIfNeeded() {
+  if (dbReadOnlyMode) {
+    return;
+  }
+
   ensureAppStorageStructure();
 
   const newDbPath = getDbPath();
@@ -1506,12 +1556,19 @@ function getDb() {
   if (db) return db;
 
   migrateLegacyDatabaseIfNeeded();
-  db = new Database(getDbPath());
-  db.pragma('journal_mode = WAL');
+  db = dbReadOnlyMode
+    ? new Database(getDbPath(), { readonly: true, fileMustExist: true })
+    : new Database(getDbPath());
+
+  if (!dbReadOnlyMode) {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+  }
   db.pragma('foreign_keys = ON');
-  db.pragma('synchronous = NORMAL');
   db.pragma('busy_timeout = 5000');
-  runMigrations(db);
+  if (!dbReadOnlyMode) {
+    runMigrations(db);
+  }
   return db;
 }
 
@@ -1604,6 +1661,8 @@ module.exports = {
   getDb,
   getDatabaseRuntimeInfo,
   getDbPath,
+  isReadOnlyMode,
   runIntegrityCheck,
+  setReadOnlyMode,
   setLogger,
 };

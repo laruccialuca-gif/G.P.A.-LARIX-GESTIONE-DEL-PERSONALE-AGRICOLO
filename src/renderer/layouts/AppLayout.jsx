@@ -318,16 +318,22 @@ export default function AppLayout() {
             >
               <div>
                 <div className="demo-banner-kicker" style={{ color: 'rgba(255,255,255,0.78)' }}>
-                  Modalita sola lettura
+                  {licenseStatus.read_only_mode ? 'Modalità sola lettura' : 'Modalità sola lettura'}
                 </div>
                 <div className="demo-banner-title" style={{ color: '#ffffff' }}>
-                  {licenseStatus.message}
+                  {licenseStatus.read_only_mode
+                    ? (licenseStatus.message || 'Modalità sola lettura — archivio aperto su un altro PC')
+                    : licenseStatus.message}
                 </div>
               </div>
               <div className="demo-banner-meta" style={{ color: '#ffffff' }}>
-                {licenseStatus.verification?.backend_configured && licenseStatus.verification?.offline_days_remaining > 0
-                  ? `Tempo senza verifica: ${licenseStatus.verification.offline_days_remaining} giorni`
-                  : 'Modifiche bloccate'}
+                {licenseStatus.read_only_mode
+                  ? (licenseStatus.shared_lock?.machine
+                    ? `Archivio aperto su ${licenseStatus.shared_lock.machine}`
+                    : 'Scrittura disabilitata su archivio condiviso')
+                  : (licenseStatus.verification?.backend_configured && licenseStatus.verification?.offline_days_remaining > 0
+                    ? `Tempo senza verifica: ${licenseStatus.verification.offline_days_remaining} giorni`
+                    : 'Modifiche bloccate')}
               </div>
             </div>
           ) : null}

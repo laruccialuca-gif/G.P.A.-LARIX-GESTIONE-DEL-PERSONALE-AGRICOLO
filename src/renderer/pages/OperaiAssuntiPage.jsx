@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { formatDisplayDate } from '../utils/dateFormat';
 
 function sanitizeFileName(value) {
@@ -37,6 +37,19 @@ function hasAnyHireDocument(employee) {
   if (employee.legacy_hire_document) return true;
   if (employee.hire_document) return true;
   return !!findFirstPeriodWithDoc(employee);
+}
+
+function mergePeriodsWithDocs(basePeriods = [], freshPeriods = []) {
+  const freshById = new Map(
+    (Array.isArray(freshPeriods) ? freshPeriods : [])
+      .filter((period) => Number.isInteger(Number(period?.id)))
+      .map((period) => [Number(period.id), period])
+  );
+
+  return (Array.isArray(basePeriods) ? basePeriods : []).map((period) => {
+    const fresh = freshById.get(Number(period?.id));
+    return fresh ? { ...period, ...fresh, hire_document: fresh.hire_document || null } : period;
+  });
 }
 
 const NO_DOC_MESSAGE =
@@ -171,6 +184,7 @@ export default function OperaiAssuntiPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [showFiscalCodeInPrint, setShowFiscalCodeInPrint] = useState(false);
   const [customPrintTitle, setCustomPrintTitle] = useState('');
+  const detailOpenPerfRef = useRef(0);
 
   useEffect(() => {
     if (detailEmployeeId == null) {
@@ -179,22 +193,43 @@ export default function OperaiAssuntiPage() {
       return undefined;
     }
     let cancelled = false;
+    const baseEmployee = employees.find((item) => Number(item.id) === Number(detailEmployeeId)) || null;
+    if (!detailOpenPerfRef.current) {
+      detailOpenPerfRef.current = performance.now();
+    }
+    setDetailEmployee(baseEmployee);
     setDetailLoading(true);
+    console.info('[employee-open-perf] phase=operai-assunti-drawer-open ms=%d', Math.round(performance.now() - detailOpenPerfRef.current));
     (async () => {
       try {
-        const full = await window.api.employees.getById(detailEmployeeId, { includeDeleted: true });
+        const startedAt = performance.now();
+        const summary = await window.api.employees.getDocumentsSummary(detailEmployeeId);
         if (!cancelled) {
-          setDetailEmployee(full || null);
+          setDetailEmployee((current) => {
+            if (!current) return current;
+            return {
+              ...current,
+              hire_document: summary?.hire_document || null,
+              legacy_hire_document: summary?.legacy_hire_document || null,
+              art37_document: summary?.art37_document || null,
+              medical_visit_document: summary?.medical_visit_document || null,
+              dpi_delivery_document: summary?.dpi_delivery_document || null,
+              employment_periods: mergePeriodsWithDocs(current.employment_periods, summary?.employment_periods || []),
+            };
+          });
         }
+        console.info('[employee-docs-perf] phase=operai-assunti-docs-load ms=%d', Math.round(performance.now() - startedAt));
       } catch (err) {
         console.error(err);
-        if (!cancelled) setDetailEmployee(null);
       } finally {
-        if (!cancelled) setDetailLoading(false);
+        if (!cancelled) {
+          setDetailLoading(false);
+          console.info('[employee-open-perf] phase=operai-assunti-drawer-ready ms=%d', Math.round(performance.now() - detailOpenPerfRef.current));
+        }
       }
     })();
     return () => { cancelled = true; };
-  }, [detailEmployeeId]);
+  }, [detailEmployeeId, employees]);
 
   useEffect(() => {
     if (detailEmployeeId == null) return undefined;
@@ -709,13 +744,18 @@ export default function OperaiAssuntiPage() {
 
   async function handleOpen(employee) {
     if (!employee) return;
-    // Lista light: i flag dei singoli documenti non ci sono. Recuperiamo
-    // il dettaglio completo on-demand solo per decidere quale aprire.
+    // Lista light: recuperiamo solo i metadati documentali necessari ad aprire il file.
     let resolved = employee;
     if (!('legacy_hire_document' in employee) && !('hire_document' in employee)) {
       try {
-        const full = await window.api.employees.getById(employee.id, { includeDeleted: true });
-        if (full) resolved = full;
+        const summary = await window.api.employees.getDocumentsSummary(employee.id);
+        if (summary) {
+          resolved = {
+            ...employee,
+            ...summary,
+            employment_periods: mergePeriodsWithDocs(employee.employment_periods, summary.employment_periods || []),
+          };
+        }
       } catch (err) {
         console.error(err);
       }
@@ -1012,7 +1052,10 @@ export default function OperaiAssuntiPage() {
                         <td style={td} className="hired-workers-name-cell">
                           <button
                             type="button"
-                            onClick={() => setDetailEmployeeId(employee.id)}
+                            onClick={() => {
+                              detailOpenPerfRef.current = performance.now();
+                              setDetailEmployeeId(employee.id);
+                            }}
                             style={nameButtonStyle}
                             title="Apri scheda dipendente"
                           >

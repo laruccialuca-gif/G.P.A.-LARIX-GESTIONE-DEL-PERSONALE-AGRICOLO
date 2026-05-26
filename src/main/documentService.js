@@ -15,9 +15,14 @@ function ensureDir(dirPath) {
 }
 
 function hashFile(filePath) {
-  const hash = crypto.createHash('sha256');
-  hash.update(fs.readFileSync(filePath));
-  return hash.digest('hex');
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
 }
 
 function nowMs() {
@@ -71,7 +76,7 @@ async function selectLocalFile(browserWindow, title) {
   return result.filePaths[0];
 }
 
-function storeSelectedFile(sourcePath, targetDirSegments, targetBaseName) {
+async function storeSelectedFile(sourcePath, targetDirSegments, targetBaseName) {
   const sourceName = path.basename(sourcePath);
   const extension = path.extname(sourceName) || '';
   const storedName = `${sanitizeSegment(targetBaseName) || 'documento'}${extension.toLowerCase()}`;
@@ -82,17 +87,17 @@ function storeSelectedFile(sourcePath, targetDirSegments, targetBaseName) {
   ensureDir(path.dirname(absolutePath));
 
   const copyStartedAt = nowMs();
-  fs.copyFileSync(sourcePath, absolutePath);
-  console.info('[documents-perf] file copy ms', nowMs() - copyStartedAt);
+  await fs.promises.copyFile(sourcePath, absolutePath);
+  console.info('[employee-doc-upload-perf] phase=file-copy ms=%d', Math.round(nowMs() - copyStartedAt));
 
-  const stats = fs.statSync(absolutePath);
+  const stats = await fs.promises.stat(absolutePath);
   const createdAt = stats.birthtime instanceof Date && !Number.isNaN(stats.birthtime.getTime())
     ? stats.birthtime.toISOString()
     : new Date().toISOString();
 
   const hashStartedAt = nowMs();
-  const sha256 = hashFile(absolutePath);
-  console.info('[documents-perf] hash ms', nowMs() - hashStartedAt);
+  const sha256 = await hashFile(absolutePath);
+  console.info('[employee-doc-upload-perf] phase=file-hash ms=%d', Math.round(nowMs() - hashStartedAt));
 
   return {
     file_name: sourceName,

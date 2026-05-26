@@ -67,6 +67,14 @@ function formatCurrency(value) {
   }).format(Number(value || 0));
 }
 
+function getTodayIsoDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function logEmployeesPerf(event, details = {}) {
   try {
     console.info(`[employees-perf] ${event}`, details);
@@ -445,7 +453,28 @@ function TeamRow({ team, onClick, onArchive, actionsDisabled }) {
 const MemoEmployeeRow = React.memo(EmployeeRow);
 const MemoTeamRow = React.memo(TeamRow);
 
+function getArchiveReasonBadge(employee) {
+  const reason = String(employee?.archive_reason || '').trim().toLowerCase();
+  if (reason === 'early_termination') {
+    return {
+      label: 'Chiusura anticipata',
+      style: { background: 'rgba(245, 158, 11, 0.14)', color: '#b45309' },
+    };
+  }
+  if (reason === 'expired_contract_auto') {
+    return {
+      label: 'Scadenza contratto',
+      style: { background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' },
+    };
+  }
+  return {
+    label: 'Archiviato',
+    style: { background: 'rgba(107, 114, 128, 0.14)', color: '#4b5563' },
+  };
+}
+
 function ArchivedEmployeeRow({ employee, onRestore, onDelete, selected, onToggleSelected, selectionEnabled, actionsDisabled }) {
+  const archiveBadge = getArchiveReasonBadge(employee);
   return (
     <div className="employee-archived-row" style={{
       display: 'grid', alignItems: 'center', gap: 10,
@@ -475,6 +504,29 @@ function ArchivedEmployeeRow({ employee, onRestore, onDelete, selected, onToggle
         <div className="employee-secondary-text" style={{ fontSize: 12, color: '#9ca3af' }}>
           {employee.role || 'Nessuna mansione'} · archiviato il {formatDate(employee.deleted_at)}
         </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+          <span
+            className="soft-chip"
+            style={{
+              ...archiveBadge.style,
+              border: '1px solid rgba(15, 23, 42, 0.06)',
+              fontSize: 11,
+              fontWeight: 800,
+            }}
+          >
+            {archiveBadge.label}
+          </span>
+          {employee?.early_termination_date ? (
+            <span style={{ fontSize: 12, color: '#6b7280' }}>
+              Chiuso il {formatDate(employee.early_termination_date)}
+            </span>
+          ) : null}
+        </div>
+        {employee?.early_termination_reason ? (
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4, lineHeight: 1.35 }}>
+            {employee.early_termination_reason}
+          </div>
+        ) : null}
       </div>
       <div className="employee-archived-actions" style={{ display: 'flex', gap: 8, flexShrink: 0, width: '100%', justifyContent: 'flex-end' }}>
         <button
@@ -611,9 +663,14 @@ export default function EmployeesPage() {
   const [sortDirection, setSortDirection] = useState('asc');
   const [busyEmployeeIds, setBusyEmployeeIds] = useState([]);
   const [busyTeamIds, setBusyTeamIds] = useState([]);
+  const [showEarlyCloseModal, setShowEarlyCloseModal] = useState(false);
+  const [earlyCloseDate, setEarlyCloseDate] = useState(getTodayIsoDate());
+  const [earlyCloseReason, setEarlyCloseReason] = useState('');
+  const [earlyCloseSubmitting, setEarlyCloseSubmitting] = useState(false);
   const searchInputRef = useRef(null);
   const pdfImportOperationRef = useRef({ id: 0, cancelled: false });
   const mountedRef = useRef(false);
+  const employeeOpenPerfRef = useRef(0);
   const requestedEmployeeId = searchParams.get('employee');
 
   useEffect(() => {
@@ -793,6 +850,10 @@ export default function EmployeesPage() {
       setLoading(true);
     }
     try {
+      const expiredResult = await window.api.employees.archiveExpiredContracts();
+      if (mountedRef.current && expiredResult?.archived_count > 0) {
+        alert(`Archiviazione automatica completata per ${expiredResult.archived_count} dipendenti con contratto scaduto.`);
+      }
       await Promise.all([
         loadDirectoryData({ reason: 'initial-load' }),
         loadAuxiliaryData('initial-load'),
@@ -829,6 +890,7 @@ export default function EmployeesPage() {
     const target = employees.find((employee) => String(employee.id) === String(requestedEmployeeId));
     if (!target) return;
 
+    employeeOpenPerfRef.current = performance.now();
     setEditing(target);
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
@@ -934,6 +996,47 @@ export default function EmployeesPage() {
     } catch (err) {
       console.error(err);
       alert('Errore archiviazione multipla dipendenti');
+    }
+  }
+
+  function openEarlyCloseModal() {
+    if (!canCloseSelectedEmployees) return;
+    setEarlyCloseDate(getTodayIsoDate());
+    setEarlyCloseReason('');
+    setShowEarlyCloseModal(true);
+  }
+
+  function closeEarlyCloseModal() {
+    if (earlyCloseSubmitting) return;
+    setShowEarlyCloseModal(false);
+  }
+
+  async function handleConfirmEarlyClose() {
+    if (!canCloseSelectedEmployees) return;
+    if (!earlyCloseDate) {
+      alert('Inserisci la data di chiusura contratto.');
+      return;
+    }
+
+    setEarlyCloseSubmitting(true);
+    try {
+      const result = await window.api.employees.closeEarly(
+        closableSelectedEmployees.map((employee) => employee.id),
+        earlyCloseDate,
+        earlyCloseReason
+      );
+      setEmployees((current) => {
+        const updates = new Map((result?.employees || []).map((employee) => [Number(employee.id), employee]));
+        return current.map((employee) => updates.get(Number(employee.id)) || employee);
+      });
+      exitSelectionMode();
+      setShowEarlyCloseModal(false);
+      alert(`Chiusura anticipata completata per ${result?.archived_count || 0} dipendenti.`);
+    } catch (error) {
+      console.error(error);
+      alert(error?.message || 'Errore chiusura anticipata dipendenti');
+    } finally {
+      setEarlyCloseSubmitting(false);
     }
   }
 
@@ -1335,6 +1438,11 @@ export default function EmployeesPage() {
   const allVisibleEmployeeIds = sortedVisibleEmployees.map((employee) => employee.id);
   const visibleSelectedCount = allVisibleEmployeeIds.filter((id) => selectedEmployeeIds.includes(id)).length;
   const allVisibleSelected = allVisibleEmployeeIds.length > 0 && visibleSelectedCount === allVisibleEmployeeIds.length;
+  const closableSelectedEmployees = sortedVisibleEmployees.filter(
+    (employee) => selectedEmployeeIds.includes(employee.id) && employee.status === 'attivo'
+  );
+  const canCloseSelectedEmployees =
+    closableSelectedEmployees.length > 0 && closableSelectedEmployees.length === visibleSelectedCount;
   const archivedVisibleEmployeeIds = archivedEmployees.map((employee) => employee.id);
   const archivedVisibleSelectedCount = archivedVisibleEmployeeIds.filter((id) => selectedArchivedEmployeeIds.includes(id)).length;
   const allArchivedVisibleSelected =
@@ -1578,6 +1686,17 @@ export default function EmployeesPage() {
                     >
                       Archivia selezionati
                     </button>
+                    {canCloseSelectedEmployees ? (
+                      <button
+                        type="button"
+                        className="button"
+                        style={compactFilterButtonStyle}
+                        onClick={openEarlyCloseModal}
+                        disabled={isWriteBlocked}
+                      >
+                        Chiusura anticipata
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="button-secondary"
@@ -1648,7 +1767,10 @@ export default function EmployeesPage() {
                   <MemoEmployeeRow
                     key={employee.id}
                     employee={employee}
-                    onClick={setEditing}
+                    onClick={(target) => {
+                      employeeOpenPerfRef.current = performance.now();
+                      setEditing(target);
+                    }}
                     onArchive={handleArchive}
                     selectionEnabled={!isWriteBlocked}
                     actionsDisabled={isWriteBlocked || busyEmployeeIds.includes(employee.id)}
@@ -1915,6 +2037,7 @@ export default function EmployeesPage() {
           open={!!editing}
           onClose={() => setEditing(null)}
           employee={editing}
+          openPerfStartedAt={employeeOpenPerfRef.current}
           onSubmit={handleUpdate}
         />
       )}
@@ -1945,6 +2068,76 @@ export default function EmployeesPage() {
           importDiagnostics={pdfImportData?.importDiagnostics || null}
         />
       </ModalErrorBoundary>
+
+      {showEarlyCloseModal ? (
+        <div className="modal-backdrop" onClick={closeEarlyCloseModal}>
+          <div
+            className="modal-dialog"
+            style={{ width: 'min(760px, 96vw)', padding: 0, overflow: 'hidden' }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div>
+                <h3 style={{ margin: 0, fontSize: 22, color: '#111827' }}>Chiusura anticipata contratto</h3>
+                <p style={{ margin: '8px 0 0', color: '#64748b', fontSize: 14 }}>
+                  I dipendenti verranno archiviati e non compariranno piu tra gli attivi.
+                </p>
+              </div>
+              <button type="button" className="modal-close" onClick={closeEarlyCloseModal} disabled={earlyCloseSubmitting}>
+                ×
+              </button>
+            </div>
+
+            <div style={{ padding: '20px', display: 'grid', gap: 18 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 14 }}>
+                <label className="print-hub-field">
+                  <span>Data chiusura contratto</span>
+                  <input
+                    type="date"
+                    value={earlyCloseDate}
+                    onChange={(event) => setEarlyCloseDate(event.target.value)}
+                    disabled={earlyCloseSubmitting}
+                  />
+                </label>
+                <label className="print-hub-field">
+                  <span>Motivo / note chiusura anticipata</span>
+                  <input
+                    type="text"
+                    value={earlyCloseReason}
+                    onChange={(event) => setEarlyCloseReason(event.target.value)}
+                    placeholder="Motivo o nota opzionale"
+                    disabled={earlyCloseSubmitting}
+                  />
+                </label>
+              </div>
+
+              <div style={{ border: '1px solid #e5e7eb', borderRadius: 16, background: '#f8fafc', padding: '16px 18px' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748b', marginBottom: 10 }}>
+                  Dipendenti selezionati
+                </div>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {closableSelectedEmployees
+                    .map((employee) => (
+                      <div key={employee.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 14 }}>
+                        <strong style={{ color: '#111827' }}>{getEmployeeDisplayName(employee)}</strong>
+                        <span style={{ color: '#64748b' }}>{employee.role || 'Dipendente'}</span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-actions">
+              <button type="button" className="button-secondary" onClick={closeEarlyCloseModal} disabled={earlyCloseSubmitting}>
+                Annulla
+              </button>
+              <button type="button" className="button" onClick={handleConfirmEarlyClose} disabled={earlyCloseSubmitting}>
+                {earlyCloseSubmitting ? 'Chiusura in corso...' : 'Conferma chiusura'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
