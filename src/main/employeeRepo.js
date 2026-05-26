@@ -742,19 +742,8 @@ function getEmployeeDocumentsSummary(employeeId) {
       updated_at
     FROM employee_documents
     WHERE employee_id = ?
-      AND (
-        category IN (?, ?, ?, ?)
-        OR category LIKE ?
-      )
     ORDER BY uploaded_at DESC, id DESC
-  `).all(
-    normalizedEmployeeId,
-    DOCUMENT_CATEGORIES.hire,
-    DOCUMENT_CATEGORIES.art37,
-    DOCUMENT_CATEGORIES.medicalVisit,
-    DOCUMENT_CATEGORIES.dpiDelivery,
-    `${HIRE_PERIOD_CATEGORY_PREFIX}%`
-  );
+  `).all(normalizedEmployeeId);
   console.info('[employee-docs-perf] phase=query-metadata ms=%d', Math.round(nowMs() - docsQueryStartedAt));
 
   const periodsQueryStartedAt = nowMs();
@@ -776,6 +765,7 @@ function getEmployeeDocumentsSummary(employeeId) {
   const parseStartedAt = nowMs();
   const byCategory = new Map();
   const periodDocs = new Map();
+  const otherDocuments = [];
   for (const row of documentRows) {
     const document = describeStoredFile(row);
     if (!document) continue;
@@ -788,6 +778,17 @@ function getEmployeeDocumentsSummary(employeeId) {
     }
     if (!byCategory.has(row.category)) {
       byCategory.set(row.category, document);
+    }
+    if (
+      row.category !== DOCUMENT_CATEGORIES.hire &&
+      row.category !== DOCUMENT_CATEGORIES.art37 &&
+      row.category !== DOCUMENT_CATEGORIES.medicalVisit &&
+      row.category !== DOCUMENT_CATEGORIES.dpiDelivery
+    ) {
+      otherDocuments.push({
+        ...document,
+        category: row.category,
+      });
     }
   }
 
@@ -803,6 +804,28 @@ function getEmployeeDocumentsSummary(employeeId) {
   }));
   console.info('[employee-docs-perf] phase=parse-metadata ms=%d', Math.round(nowMs() - parseStartedAt));
   console.info('[employee-docs-perf] phase=repo-total ms=%d', Math.round(nowMs() - startedAt));
+  console.info(
+    '[employee-docs-perf] employeeId=%d count=%d ms=%d',
+    normalizedEmployeeId,
+    documentRows.length,
+    Math.round(nowMs() - startedAt)
+  );
+  console.info(
+    '[docs-debug:repo] employeeId=%d rows=%d categories=%s ids=%s',
+    normalizedEmployeeId,
+    documentRows.length,
+    [...new Set(documentRows.map((row) => row.category).filter(Boolean))].join(',') || '(none)',
+    documentRows.map((row) => row.id).join(',') || '(none)'
+  );
+  if (!documentRows.length) {
+    const categories = [...new Set(documentRows.map((row) => row.category).filter(Boolean))];
+    console.info(
+      '[employee-docs-debug] employeeId=%d rawRows=%d categories=%s',
+      normalizedEmployeeId,
+      documentRows.length,
+      categories.join(',') || '(none)'
+    );
+  }
 
   return {
     employee_id: normalizedEmployeeId,
@@ -812,7 +835,8 @@ function getEmployeeDocumentsSummary(employeeId) {
     art37_document: byCategory.get(DOCUMENT_CATEGORIES.art37) || null,
     medical_visit_document: byCategory.get(DOCUMENT_CATEGORIES.medicalVisit) || null,
     dpi_delivery_document: byCategory.get(DOCUMENT_CATEGORIES.dpiDelivery) || null,
-    employment_periods,
+    other_documents: otherDocuments,
+    employment_periods: employmentPeriods,
   };
 }
 
@@ -1177,17 +1201,38 @@ function createEmployee(employee) {
 }
 
 function updateEmployee(id, employee) {
+  const startedAt = nowMs();
   const db = getDb();
   const employeeId = Number(id);
+
+  const mapStartedAt = nowMs();
   const employeeData = mapEmployeeInput(employee);
+  console.info('[employee-update] phase=map-input ms=%d', Math.round(nowMs() - mapStartedAt));
+
+  const txStartedAt = nowMs();
   const tx = db.transaction(() => {
+    const dupStartedAt = nowMs();
     ensureNoDuplicateActiveEmployee(employeeData, employeeId);
+    console.info('[employee-update] phase=check-duplicate ms=%d', Math.round(nowMs() - dupStartedAt));
+
+    const updateStartedAt = nowMs();
     updateEmployeeRow(employeeId, employeeData);
+    console.info('[employee-update] phase=update-row ms=%d', Math.round(nowMs() - updateStartedAt));
+
+    const periodStartedAt = nowMs();
     upsertCurrentEmploymentPeriod(employeeId, employeeData, { forceNewPeriod: false });
+    console.info('[employee-update] phase=upsert-period ms=%d', Math.round(nowMs() - periodStartedAt));
   });
 
   tx();
-  return getEmployeeById(employeeId, { includeDeleted: true });
+  console.info('[employee-update] phase=transaction ms=%d', Math.round(nowMs() - txStartedAt));
+
+  const fetchStartedAt = nowMs();
+  const result = getEmployeeById(employeeId, { includeDeleted: true });
+  console.info('[employee-update] phase=fetch-result ms=%d', Math.round(nowMs() - fetchStartedAt));
+
+  console.info('[employee-update] total ms=%d', Math.round(nowMs() - startedAt));
+  return result;
 }
 
 function archiveEmployee(id) {
@@ -1469,17 +1514,21 @@ async function uploadEmployeeDocumentByCategory(browserWindow, employeeId, categ
   }
 
   const startedAt = nowMs();
-  console.info('[employee-doc-upload-perf] phase=start ms=0');
+  console.info('[employee-upload] phase=start ms=0');
 
+  const copyStartedAt = nowMs();
+  console.info('[employee-upload] phase=copy-start ms=0');
   const stored = await storeSelectedFile(
     selectedPath,
     ['employees', String(employeeId), meta.subdir],
     `${employee.last_name}-${employee.first_name}-${meta.nameSuffix}`
   );
+  console.info('[employee-upload] phase=copy-complete ms=%d size_bytes=%d', Math.round(nowMs() - copyStartedAt), stored.size_bytes || 0);
 
   const existing = getEmployeeDocumentRowByCategory(employeeId, category);
 
   if (existing?.relative_path && existing.relative_path !== stored.relative_path) {
+    console.info('[employee-upload] phase=old-file-remove ms=0');
     removeStoredFile(existing.relative_path);
   }
 
@@ -1513,17 +1562,35 @@ async function uploadEmployeeDocumentByCategory(browserWindow, employeeId, categ
       ...stored,
     });
   }
-  console.info('[employee-doc-upload-perf] phase=db-upsert ms=%d', Math.round(nowMs() - sqliteStartedAt));
+  const dbMs = Math.round(nowMs() - sqliteStartedAt);
+  console.info('[employee-upload] phase=db-upsert ms=%d', dbMs);
+  const totalMs = Math.round(nowMs() - startedAt);
+  console.info('[employee-upload] phase=total ms=%d', totalMs);
 
-  const readBackStartedAt = nowMs();
-  const updatedDocument = getEmployeeDocumentByCategory(employeeId, category);
-  console.info('[employee-doc-upload-perf] phase=readback-document ms=%d', Math.round(nowMs() - readBackStartedAt));
-  console.info('[employee-doc-upload-perf] phase=total ms=%d', Math.round(nowMs() - startedAt));
-
-  return {
+  const result = {
     canceled: false,
-    document: updatedDocument,
+    document: {
+      file_name: stored.file_name,
+      stored_name: stored.stored_name,
+      relative_path: stored.relative_path,
+      mime_type: stored.mime_type,
+      size_bytes: stored.size_bytes,
+      sha256: stored.sha256,
+      file_created_at: stored.file_created_at,
+    },
   };
+
+  (async () => {
+    try {
+      const readBackStartedAt = nowMs();
+      const updated = getEmployeeDocumentByCategory(employeeId, category);
+      console.info('[employee-upload] phase=async-readback ms=%d', Math.round(nowMs() - readBackStartedAt));
+    } catch (err) {
+      console.error('[employee-upload] phase=async-readback-error', err);
+    }
+  })();
+
+  return result;
 }
 
 function getEmploymentPeriodOrThrow(employeeId, employmentPeriodId) {
@@ -1673,6 +1740,34 @@ async function openEmployeeDocumentByCategory(employeeId, category) {
   `).get(employeeId, category);
 
   return openStoredDocument(row?.relative_path || null);
+}
+
+async function openEmployeeDocumentById(documentId) {
+  const db = getDb();
+  const startedAt = nowMs();
+
+  const row = db.prepare(`
+    SELECT id, employee_id, relative_path, file_name, category
+    FROM employee_documents
+    WHERE id = ?
+    LIMIT 1
+  `).get(documentId);
+
+  if (!row) {
+    console.warn('[open-doc-by-id] documentId=%d error=not-found', documentId);
+    return {
+      success: false,
+      message: 'Documento non trovato nel gestionale.',
+    };
+  }
+
+  console.info('[open-doc-by-id] documentId=%d employeeId=%d category=%s relativePath=%s', documentId, row.employee_id, row.category, row.relative_path);
+
+  const result = openStoredDocument(row.relative_path);
+
+  console.info('[open-doc-by-id] documentId=%d success=%s duration_ms=%d', documentId, result.success, Math.round(nowMs() - startedAt));
+
+  return result;
 }
 
 function deleteHireDocument(employeeId) {
@@ -1991,6 +2086,7 @@ module.exports = {
   listEmploymentYears,
   listEmployees,
   openArt37Document,
+  openEmployeeDocumentById,
   openHireDocument,
   openHireDocumentForEmploymentPeriod,
   openMedicalVisitDocument,

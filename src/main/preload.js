@@ -118,6 +118,7 @@ contextBridge.exposeInMainWorld('api', {
     openHireDocument: (employeeId) => ipcRenderer.invoke('employees:openHireDocument', employeeId),
     openHireDocumentForPeriod: (employeeId, employmentPeriodId) =>
       ipcRenderer.invoke('employees:openHireDocumentForPeriod', employeeId, employmentPeriodId),
+    openDocumentById: (documentId) => ipcRenderer.invoke('employees:openDocumentById', documentId),
     deleteHireDocument: (employeeId) => ipcRenderer.invoke('employees:deleteHireDocument', employeeId),
     deleteHireDocumentForPeriod: (employeeId, employmentPeriodId) =>
       ipcRenderer.invoke('employees:deleteHireDocumentForPeriod', employeeId, employmentPeriodId),

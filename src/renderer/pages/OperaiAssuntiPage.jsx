@@ -742,34 +742,112 @@ export default function OperaiAssuntiPage() {
     }
   }
 
+  function resolveHireDocumentFromSummary(summary) {
+    if (!summary) {
+      return null;
+    }
+
+    // 1. hire_document principale
+    if (summary.hire_document?.id) {
+      return {
+        source: 'hire_document',
+        document: summary.hire_document,
+      };
+    }
+
+    // 2. legacy
+    if (summary.legacy_hire_document?.id) {
+      return {
+        source: 'legacy_hire_document',
+        document: summary.legacy_hire_document,
+      };
+    }
+
+    // 3. PERIODI
+    const periods = Array.isArray(summary.employment_periods)
+      ? summary.employment_periods
+      : [];
+
+    for (const period of periods) {
+      if (period?.hire_document?.id) {
+        return {
+          source: 'employment_period',
+          periodId: period.id,
+          document: period.hire_document,
+        };
+      }
+    }
+
+    // 4. other_documents
+    const others = Array.isArray(summary.other_documents)
+      ? summary.other_documents
+      : [];
+
+    for (const doc of others) {
+      const category = String(doc?.category || '').toLowerCase();
+
+      if (
+        category.includes('hire') ||
+        category.includes('assun') ||
+        category.includes('contrat')
+      ) {
+        return {
+          source: 'other_documents',
+          document: doc,
+        };
+      }
+    }
+
+    return null;
+  }
+
   async function handleOpen(employee) {
     if (!employee) return;
     // Lista light: recuperiamo solo i metadati documentali necessari ad aprire il file.
     let resolved = employee;
+    let summary = null;
+
     if (!('legacy_hire_document' in employee) && !('hire_document' in employee)) {
       try {
-        const summary = await window.api.employees.getDocumentsSummary(employee.id);
+        summary = await window.api.employees.getDocumentsSummary(employee.id);
+        console.info('[FULL-DOC-SUMMARY]', employee.id, JSON.stringify(summary, null, 2));
+        console.info('[FULL-EMPLOYEE-ROW]', JSON.stringify(employee, null, 2));
+
         if (summary) {
           resolved = {
             ...employee,
             ...summary,
-            employment_periods: mergePeriodsWithDocs(employee.employment_periods, summary.employment_periods || []),
           };
         }
       } catch (err) {
         console.error(err);
       }
     }
-    if (resolved.legacy_hire_document) {
-      if (await tryOpenLegacy(resolved.id)) return;
+
+    const startLog = () => `[hired-workers-open] employeeId=${resolved.id}`;
+
+    // Usa il resolver semplice
+    const resolvedDocument = resolveHireDocumentFromSummary(resolved);
+
+    console.info(
+      '[hired-workers-open]',
+      JSON.stringify(resolvedDocument, null, 2)
+    );
+
+    if (resolvedDocument?.document?.id) {
+      try {
+        const result = await window.api.employees.openDocumentById(resolvedDocument.document.id);
+        if (result?.success) {
+          console.info(`${startLog()} success=true source=${resolvedDocument.source}`);
+          return;
+        }
+        console.warn(`${startLog()} open-failed message=${result?.message || 'unknown'}`);
+      } catch (err) {
+        console.error(`${startLog()} open-error:`, err);
+      }
     }
-    const period = findFirstPeriodWithDoc(resolved);
-    if (period) {
-      if (await tryOpenPeriod(resolved.id, period.id)) return;
-    }
-    if (!resolved.legacy_hire_document && !period) {
-      if (await tryOpenLegacy(resolved.id)) return;
-    }
+
+    console.warn(`${startLog()} error=no-document-found`);
     alert(NO_DOC_MESSAGE);
   }
 

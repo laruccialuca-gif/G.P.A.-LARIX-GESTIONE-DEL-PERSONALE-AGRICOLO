@@ -1666,6 +1666,10 @@ app.whenReady().then(async () => {
   }
   backupService.setLogger(logMainProcessEvent);
   diagnosticsService.setLogger(logMainProcessEvent);
+  diagnosticsService.setContextProviders({
+    getAppRuntimeInfo: () => buildAppRuntimeInfo(),
+    getLicenseStatus: () => getMergedLicenseStatus(),
+  });
   pdfImportService.setLogger(logMainProcessEvent);
   const dbModule = require('./db');
   dbModule.setLogger(logMainProcessEvent);
@@ -2072,6 +2076,18 @@ app.whenReady().then(async () => {
     const startedAt = Date.now();
     logMainProcessEvent('employees:getDocumentsSummary:start', { id: Number(id) });
     const result = employeeRepo.getEmployeeDocumentsSummary(id);
+    const resultCount = result
+      ? [
+          result.hire_document,
+          result.legacy_hire_document,
+          result.art37_document,
+          result.medical_visit_document,
+          result.dpi_delivery_document,
+          ...(result.other_documents || []),
+          ...((result.employment_periods || []).map((period) => period.hire_document).filter(Boolean)),
+        ].filter(Boolean).length
+      : 0;
+    console.info('[docs-debug:ipc] employeeId=%d resultCount=%d', Number(id), resultCount);
     logMainProcessEvent('employees:getDocumentsSummary:end', {
       id: Number(id),
       found: !!result,
@@ -2180,6 +2196,9 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle('employees:openHireDocumentForPeriod', async (_, employeeId, employmentPeriodId) =>
     employeeRepo.openHireDocumentForEmploymentPeriod(employeeId, employmentPeriodId)
+  );
+  ipcMain.handle('employees:openDocumentById', async (_, documentId) =>
+    employeeRepo.openEmployeeDocumentById(documentId)
   );
   ipcMain.handle('employees:deleteHireDocument', async (_, employeeId) => {
     requireWritableLicense('La modifica dei dipendenti');
