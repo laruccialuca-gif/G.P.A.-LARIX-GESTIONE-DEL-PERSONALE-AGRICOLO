@@ -40,6 +40,27 @@ function getEmployeeDisplayName(employee) {
   return composed || String(employee?.full_name || employee?.name || employee?.displayName || '').trim() || '—';
 }
 
+function compareEmployeesByLastNameThenFirstName(a, b) {
+  const lastNameCompare = compareStrings(a?.last_name || '', b?.last_name || '');
+  if (lastNameCompare !== 0) return lastNameCompare;
+  const firstNameCompare = compareStrings(a?.first_name || '', b?.first_name || '');
+  if (firstNameCompare !== 0) return firstNameCompare;
+  return compareStrings(getEmployeeDisplayName(a), getEmployeeDisplayName(b));
+}
+
+function getEmployeeTeamHistoryEntries(employee) {
+  return Array.isArray(employee?.team_history) ? employee.team_history : [];
+}
+
+function employeeMatchesTeamFilter(employee, teamFilter) {
+  if (!teamFilter || teamFilter === 'tutti') return true;
+  const teamEntries = getEmployeeTeamHistoryEntries(employee);
+  if (teamFilter === 'senza_squadra') {
+    return teamEntries.length === 0;
+  }
+  return teamEntries.some((entry) => String(entry?.team_id) === String(teamFilter));
+}
+
 function getContractLabel(contractType) {
   return CONTRACT_LABELS[contractType] || '—';
 }
@@ -654,6 +675,7 @@ export default function EmployeesPage() {
   const [employeeFilters, setEmployeeFilters] = useState({
     expiry: 'tutti',
     datore: 'tutti',
+    team: 'tutti',
     medicalMissing: false,
     trainingMissing: false,
   });
@@ -783,6 +805,7 @@ export default function EmployeesPage() {
       const employeesPromise = window.api.employees.listBasic({
         includeDeleted: true,
         includePeriods: true,
+        includeTeamHistory: true,
       });
       const teamsPromise = window.api.teams.list({ includeArchived: true });
       const employeeData = await employeesPromise;
@@ -1384,6 +1407,10 @@ export default function EmployeesPage() {
       return false;
     }
 
+    if (!employeeMatchesTeamFilter(employee, employeeFilters.team)) {
+      return false;
+    }
+
     if (employeeFilters.medicalMissing && employee.medical_visit_done) {
       return false;
     }
@@ -1403,7 +1430,7 @@ export default function EmployeesPage() {
       let result = 0;
 
       if (sortField === 'name') {
-        result = compareStrings(getEmployeeDisplayName(a), getEmployeeDisplayName(b));
+        result = compareEmployeesByLastNameThenFirstName(a, b);
       } else if (sortField === 'contract_type') {
         result = compareStrings(getContractLabel(a.contract_type), getContractLabel(b.contract_type));
       } else if (sortField === 'hire_date_from') {
@@ -1421,7 +1448,7 @@ export default function EmployeesPage() {
       }
 
       if (result === 0) {
-        result = compareStrings(getEmployeeDisplayName(a), getEmployeeDisplayName(b));
+        result = compareEmployeesByLastNameThenFirstName(a, b);
       }
 
       return result * directionFactor;
@@ -1435,14 +1462,17 @@ export default function EmployeesPage() {
   const renderedEmployees = sortedVisibleEmployees;
   const archivedEmployees = filtered.employees.filter((employee) => employee.is_deleted && employeeIsActiveInYear(employee, selectedYear));
   const isWriteBlocked = Boolean(licenseStatus?.is_write_blocked);
+  const allEmployeeIds = employees.map((employee) => employee.id);
   const allVisibleEmployeeIds = sortedVisibleEmployees.map((employee) => employee.id);
   const visibleSelectedCount = allVisibleEmployeeIds.filter((id) => selectedEmployeeIds.includes(id)).length;
   const allVisibleSelected = allVisibleEmployeeIds.length > 0 && visibleSelectedCount === allVisibleEmployeeIds.length;
-  const closableSelectedEmployees = sortedVisibleEmployees.filter(
-    (employee) => selectedEmployeeIds.includes(employee.id) && employee.status === 'attivo'
+  const selectedEmployees = employees.filter((employee) => selectedEmployeeIds.includes(employee.id));
+  const selectedEmployeesInYear = selectedEmployees.filter(
+    (employee) => !employee.is_deleted && employeeIsActiveInYear(employee, selectedYear)
   );
+  const closableSelectedEmployees = selectedEmployeesInYear.filter((employee) => employee.status === 'attivo');
   const canCloseSelectedEmployees =
-    closableSelectedEmployees.length > 0 && closableSelectedEmployees.length === visibleSelectedCount;
+    closableSelectedEmployees.length > 0 && closableSelectedEmployees.length === selectedEmployeesInYear.length;
   const archivedVisibleEmployeeIds = archivedEmployees.map((employee) => employee.id);
   const archivedVisibleSelectedCount = archivedVisibleEmployeeIds.filter((id) => selectedArchivedEmployeeIds.includes(id)).length;
   const allArchivedVisibleSelected =
@@ -1465,8 +1495,8 @@ export default function EmployeesPage() {
   }
 
   useEffect(() => {
-    setSelectedEmployeeIds((current) => current.filter((id) => allVisibleEmployeeIds.includes(id)));
-  }, [allVisibleEmployeeIds.join('|')]);
+    setSelectedEmployeeIds((current) => current.filter((id) => allEmployeeIds.includes(id)));
+  }, [allEmployeeIds.join('|')]);
 
   useEffect(() => {
     setSelectedArchivedEmployeeIds((current) => current.filter((id) => archivedVisibleEmployeeIds.includes(id)));
@@ -1484,6 +1514,33 @@ export default function EmployeesPage() {
       exitArchiveSelectionMode();
     }
   }, [isWriteBlocked]);
+
+  const availableTeamOptions = useMemo(() => {
+    const uniqueTeams = new Map();
+    teams.forEach((team) => {
+      const teamId = Number(team?.id);
+      if (!Number.isFinite(teamId)) return;
+      if (!String(team?.name || '').trim()) return;
+      if (!uniqueTeams.has(teamId)) {
+        uniqueTeams.set(teamId, {
+          id: teamId,
+          name: String(team.name).trim(),
+        });
+      }
+    });
+    return [...uniqueTeams.values()].sort((a, b) => compareStrings(a.name, b.name));
+  }, [teams]);
+
+  useEffect(() => {
+    console.info(
+      '[employees-filter] search=%s employer=%s team=%s visible=%d selected=%d',
+      search,
+      employeeFilters.datore,
+      employeeFilters.team,
+      filteredVisibleEmployees.length,
+      selectedEmployeeIds.length
+    );
+  }, [search, employeeFilters.datore, employeeFilters.team, filteredVisibleEmployees.length, selectedEmployeeIds.length]);
 
   const teamBuckets = useMemo(() => {
     const active = [], inactive = [], archived = [];
@@ -1592,11 +1649,15 @@ export default function EmployeesPage() {
                 logSearchEvent('click', { phase: 'pointerdown' });
                 focusSearchInput('pointerdown');
               }}
-              onClick={() => {
+              onClick={(event) => {
                 logSearchEvent('click', { phase: 'click' });
+                event.target.select();
                 focusSearchInput('click');
               }}
-              onFocus={() => logSearchEvent('focus')}
+              onFocus={(event) => {
+                event.target.select();
+                logSearchEvent('focus');
+              }}
               onBlur={() => logSearchEvent('blur')}
               onChange={e => setSearch(e.target.value)}
               style={{ maxWidth: 280, minHeight: 34, padding: '7px 12px' }}
@@ -1649,6 +1710,19 @@ export default function EmployeesPage() {
                   <option value="LC">LC</option>
                   <option value="LG">LG</option>
                 </select>
+                <select
+                  value={employeeFilters.team}
+                  onChange={(e) => setEmployeeFilters((current) => ({ ...current, team: e.target.value }))}
+                  style={compactFilterSelectStyle}
+                >
+                  <option value="tutti">Tutte le squadre</option>
+                  <option value="senza_squadra">Senza squadra</option>
+                  {availableTeamOptions.map((team) => (
+                    <option key={team.id} value={String(team.id)}>
+                      {team.name}
+                    </option>
+                  ))}
+                </select>
                 <label className="communication-checkbox" style={compactFilterCheckboxStyle}>
                   <input
                     type="checkbox"
@@ -1671,11 +1745,14 @@ export default function EmployeesPage() {
                 <span className="soft-chip" style={{ background: 'rgba(15, 118, 110, 0.12)', color: '#115e59', minHeight: 32, padding: '0 10px', fontSize: 12 }}>
                   {filteredVisibleEmployees.length} visibili
                 </span>
+                <span className="soft-chip" style={{ background: 'rgba(29, 78, 216, 0.12)', color: '#1d4ed8', minHeight: 32, padding: '0 10px', fontSize: 12, fontWeight: 700 }}>
+                  Selezionati: {selectedEmployeeIds.length}
+                </span>
 
-                {visibleSelectedCount > 0 ? (
+                {selectedEmployeeIds.length > 0 ? (
                   <>
                     <span className="soft-chip" style={{ background: 'rgba(15,118,110,0.12)', color: '#115e59', minHeight: 32, padding: '0 10px', fontSize: 12, fontWeight: 700 }}>
-                      {visibleSelectedCount} dipendenti selezionati
+                      {visibleSelectedCount} visibili nella lista corrente
                     </span>
                     <button
                       type="button"
@@ -1703,7 +1780,7 @@ export default function EmployeesPage() {
                       style={compactFilterButtonStyle}
                       onClick={exitSelectionMode}
                     >
-                      Deseleziona
+                      Deseleziona tutto
                     </button>
                   </>
                 ) : (

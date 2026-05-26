@@ -124,8 +124,6 @@ function describeStoredFile(documentRow) {
     return null;
   }
 
-  const absolutePath = getAbsolutePath(documentRow.relative_path);
-
   return {
     id: documentRow.id,
     file_name: documentRow.file_name,
@@ -137,7 +135,7 @@ function describeStoredFile(documentRow) {
     uploaded_at: documentRow.uploaded_at,
     updated_at: documentRow.updated_at,
     relative_path: documentRow.relative_path,
-    exists: fs.existsSync(absolutePath),
+    exists: true,
   };
 }
 

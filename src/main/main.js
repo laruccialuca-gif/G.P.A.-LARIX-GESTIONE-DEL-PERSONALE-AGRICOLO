@@ -1,9 +1,14 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const { getAppVariant, getRuntimeContext, getVariantConfig } = require('./runtimeContext');
+const {
+  closeSplashWindow,
+  createSplashWindow,
+  updateSplashWindowStatus,
+} = require('./splashWindow');
 
 if (!app || typeof app.whenReady !== 'function') {
   throw new Error(
@@ -307,8 +312,8 @@ const backupService = require('./backupService');
 const diagnosticsService = require('./diagnosticsService');
 const licenseService = require('./licenseService');
 const demoService = require('./demoService');
-const { getDb, getDbPath, closeDb, setReadOnlyMode } = require('./db');
-const { ensureAppStorageStructure, getDocumentsDir } = require('./storagePaths');
+const { getDb, getDbPath, closeDb, setReadOnlyMode, runIntegrityCheck } = require('./db');
+const { ensureAppStorageStructure, getDocumentsDir, getUserDataRoot } = require('./storagePaths');
 
 const runtime = getRuntimeContext();
 
@@ -352,6 +357,7 @@ function getAppIconPath() {
   return path.join(__dirname, '..', 'assets', 'larix-icon.png');
 }
 let mainWindow = null;
+let splashWindow = null;
 let isQuittingAfterExitBackup = false;
 const OPERATION_PROGRESS_CHANNEL = 'operations:progress';
 const activeOperations = new Map();
@@ -875,6 +881,458 @@ function getRendererAssetInfo() {
   };
 }
 
+function logSplashEvent(event, details = {}) {
+  try {
+    console.info(`[splash] ${event}`);
+  } catch {}
+  logMainProcessEvent(`splash:${event}`, details);
+}
+
+async function setSplashStatus(message, step, percent) {
+  if (!splashWindow || splashWindow.isDestroyed()) return;
+  await updateSplashWindowStatus(splashWindow, {
+    message,
+    step,
+    percent,
+  });
+}
+
+function destroySplashWindow() {
+  if (!splashWindow || splashWindow.isDestroyed()) return;
+  closeSplashWindow(splashWindow);
+  splashWindow = null;
+}
+
+function logAppMenu(type, details = {}) {
+  try {
+    console.info(`[app-menu] ${type}=${details.action || details.message || ''}`);
+  } catch {}
+  logMainProcessEvent(`app-menu:${type}`, details);
+}
+
+function getMainProcessLogPath() {
+  return path.join(app.getPath('userData'), 'main-process.log');
+}
+
+function getCurrentMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    return mainWindow;
+  }
+  const fallbackWindow = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed());
+  if (fallbackWindow) {
+    mainWindow = fallbackWindow;
+    return fallbackWindow;
+  }
+  return null;
+}
+
+async function runMenuAction(action, handler) {
+  logAppMenu('action', { action });
+  try {
+    const result = await handler();
+    logAppMenu('result', {
+      action,
+      result: typeof result === 'undefined' ? 'ok' : result,
+    });
+    return result;
+  } catch (error) {
+    logAppMenu('error', {
+      action,
+      message: error?.message || String(error),
+    });
+    const win = getCurrentMainWindow();
+    await dialog.showMessageBox(win || undefined, {
+      type: 'error',
+      title: 'Operazione non completata',
+      message: error?.message || String(error || 'Errore sconosciuto'),
+    });
+    return null;
+  }
+}
+
+async function showPlaceholderMenuDialog(actionLabel) {
+  const win = getCurrentMainWindow();
+  await dialog.showMessageBox(win || undefined, {
+    type: 'info',
+    title: 'Funzione in preparazione',
+    message: `${actionLabel} non e' ancora collegata in questa versione.`,
+  });
+}
+
+async function openPathWithShell(targetPath, missingMessage) {
+  if (!targetPath || !fs.existsSync(targetPath)) {
+    throw new Error(missingMessage || 'Percorso non trovato.');
+  }
+  const result = await shell.openPath(targetPath);
+  if (result) {
+    throw new Error(result);
+  }
+  return targetPath;
+}
+
+function extractRecentPerformanceSummary(limit = 15) {
+  const logPath = getMainProcessLogPath();
+  if (!fs.existsSync(logPath)) {
+    return { entries: [], slowEntries: [] };
+  }
+
+  const lines = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
+  const perfLines = lines.filter((line) =>
+    /\[nav-perf\]|\[report-perf\]|\[attendance-perf\]|\[employee-open-perf\]|\[employee-docs-perf\]|\[employee-doc-upload-perf\]|\[communication-perf\]|\[backup-perf\]/i.test(line)
+  );
+  const recent = perfLines.slice(-limit);
+  const slowEntries = recent.filter((line) => {
+    const match = line.match(/(?:loadMs|ms)=([0-9]+)/i);
+    return match ? Number(match[1]) > 1500 : false;
+  });
+  return {
+    entries: recent,
+    slowEntries,
+  };
+}
+
+async function buildAndSetApplicationMenu() {
+  const developerModeInfo = licenseService.getDeveloperModeInfo();
+  const isDeveloperMode = !!developerModeInfo?.enabled;
+  const appVersionLabel = `GPA ${app.getVersion()}`;
+
+  const template = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Backup rapido',
+          click: () => runMenuAction('backup-quick', async () => {
+            requireWritableLicense('Il backup rapido');
+            const result = await backupService.createBackup('manual');
+            const win = getCurrentMainWindow();
+            await dialog.showMessageBox(win || undefined, {
+              type: 'info',
+              title: 'Backup completato',
+              message: 'Backup rapido creato con successo.',
+              detail: result?.backup_dir || '',
+            });
+            return result?.backup_dir || 'created';
+          }),
+        },
+        {
+          label: 'Apri cartella backup',
+          click: () => runMenuAction('open-backup-dir', () => openPathWithShell(
+            backupService.getEffectiveBackupDir(),
+            'Cartella backup non trovata.'
+          )),
+        },
+        {
+          label: 'Apri cartella documenti',
+          click: () => runMenuAction('open-documents-dir', () => openPathWithShell(
+            getDocumentsDir(),
+            'Cartella documenti non trovata.'
+          )),
+        },
+        { type: 'separator' },
+        {
+          label: 'Stampa pagina corrente',
+          click: () => runMenuAction('print-current-page', async () => {
+            const win = getCurrentMainWindow();
+            if (!win) throw new Error('Finestra principale non disponibile.');
+            await win.webContents.print({ printBackground: true, silent: false });
+            return 'print-requested';
+          }),
+        },
+        { type: 'separator' },
+        {
+          label: 'Esci',
+          click: () => runMenuAction('app-quit', async () => {
+            app.quit();
+            return 'quit';
+          }),
+        },
+      ],
+    },
+    {
+      label: 'Operazioni',
+      submenu: [
+        {
+          label: 'Aggiorna dati',
+          click: () => runMenuAction('reload-data', async () => {
+            const win = getCurrentMainWindow();
+            if (!win) throw new Error('Finestra principale non disponibile.');
+            win.reload();
+            return 'reloaded';
+          }),
+        },
+        {
+          label: 'Archivia contratti scaduti',
+          click: () => runMenuAction('archive-expired-contracts', async () => {
+            requireWritableLicense("L'archiviazione dei contratti scaduti");
+            const win = getCurrentMainWindow();
+            const { response } = await dialog.showMessageBox(win || undefined, {
+              type: 'question',
+              buttons: ['Annulla', 'Conferma'],
+              defaultId: 1,
+              cancelId: 0,
+              title: 'Archivia contratti scaduti',
+              message: 'Vuoi archiviare i contratti a tempo determinato gia scaduti?',
+            });
+            if (response !== 1) return 'cancelled';
+            const result = employeeRepo.archiveExpiredContracts();
+            await dialog.showMessageBox(win || undefined, {
+              type: 'info',
+              title: 'Operazione completata',
+              message: `Archiviazione completata per ${result?.archived_count || 0} dipendenti.`,
+            });
+            return result;
+          }),
+        },
+        {
+          label: 'Verifica documenti mancanti',
+          click: () => runMenuAction('check-missing-documents', () => showPlaceholderMenuDialog('Verifica documenti mancanti')),
+        },
+        {
+          label: 'Controlla visite/formazione in scadenza',
+          click: () => runMenuAction('check-expiring-compliance', async () => {
+            const employees = employeeRepo.listBasic({
+              includeDeleted: false,
+              includePeriods: false,
+              includeTeamHistory: false,
+              includeHireDocFlag: false,
+            });
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const threshold = new Date(today);
+            threshold.setDate(threshold.getDate() + 30);
+            const expiringMedical = employees.filter((employee) => {
+              if (!employee.medical_visit_done || !employee.medical_visit_expiry) return false;
+              const target = new Date(`${String(employee.medical_visit_expiry).split('T')[0]}T00:00:00`);
+              return !Number.isNaN(target.getTime()) && target >= today && target <= threshold;
+            }).length;
+            const expiringTraining = employees.filter((employee) => {
+              if (!employee.art37_done || !employee.art37_expiry) return false;
+              const target = new Date(`${String(employee.art37_expiry).split('T')[0]}T00:00:00`);
+              return !Number.isNaN(target.getTime()) && target >= today && target <= threshold;
+            }).length;
+            const missingMedical = employees.filter((employee) => employee.medical_visit_required && !employee.medical_visit_done).length;
+            const missingTraining = employees.filter((employee) => employee.art37_required && !employee.art37_done).length;
+            const win = getCurrentMainWindow();
+            await dialog.showMessageBox(win || undefined, {
+              type: 'info',
+              title: 'Controllo adempimenti',
+              message: 'Riepilogo visite mediche e formazione.',
+              detail: [
+                `Visite in scadenza entro 30 giorni: ${expiringMedical}`,
+                `Formazioni in scadenza entro 30 giorni: ${expiringTraining}`,
+                `Visite mancanti: ${missingMedical}`,
+                `Formazioni mancanti: ${missingTraining}`,
+              ].join('\n'),
+            });
+            return { expiringMedical, expiringTraining, missingMedical, missingTraining };
+          }),
+        },
+      ],
+    },
+    {
+      label: 'Strumenti',
+      submenu: [
+        {
+          label: 'Genera diagnostico GPA',
+          click: () => runMenuAction('generate-diagnostics', async () => {
+            const result = diagnosticsService.generateReport();
+            const win = getCurrentMainWindow();
+            await dialog.showMessageBox(win || undefined, {
+              type: 'info',
+              title: 'Diagnostico generato',
+              message: result?.fileName || 'Diagnostico creato',
+              detail: result?.filePath || '',
+            });
+            return result?.filePath || 'generated';
+          }),
+        },
+        {
+          label: 'Apri log principale',
+          click: () => runMenuAction('open-main-log', () => openPathWithShell(
+            getMainProcessLogPath(),
+            'Log principale non trovato.'
+          )),
+        },
+        {
+          label: 'Apri cartella dati gestionale',
+          click: () => runMenuAction('open-userdata-dir', () => openPathWithShell(
+            getUserDataRoot(),
+            'Cartella dati gestionale non trovata.'
+          )),
+        },
+        {
+          label: 'Verifica database',
+          click: () => runMenuAction('verify-database', async () => {
+            const result = runIntegrityCheck();
+            const win = getCurrentMainWindow();
+            await dialog.showMessageBox(win || undefined, {
+              type: result?.ok ? 'info' : 'warning',
+              title: 'Verifica database',
+              message: result?.ok ? 'Integrity check completato con esito positivo.' : 'Integrity check con segnalazioni.',
+              detail: Array.isArray(result?.messages) && result.messages.length ? result.messages.join('\n') : 'Nessun dettaglio disponibile.',
+            });
+            return result;
+          }),
+        },
+        {
+          label: 'Mostra stato NAS / lock',
+          click: () => runMenuAction('show-nas-lock-status', async () => {
+            const win = getCurrentMainWindow();
+            await dialog.showMessageBox(win || undefined, {
+              type: 'info',
+              title: 'Stato NAS / lock condiviso',
+              message: sharedAccessState.readOnlyMode ? 'Applicazione aperta in sola lettura.' : 'Applicazione aperta in lettura/scrittura.',
+              detail: [
+                `Modalita corrente: ${sharedAccessState.readOnlyMode ? 'RO' : 'RW'}`,
+                `Lock posseduto: ${sharedAccessState.lockOwned ? 'si' : 'no'}`,
+                `Percorso lock: ${sharedAccessState.lockFilePath || getSharedLockFilePath()}`,
+                `Macchina lock: ${sharedAccessState.lockInfo?.machine || 'n/d'}`,
+                `Aperto il: ${sharedAccessState.lockInfo?.opened_at || 'n/d'}`,
+                sharedAccessState.lockMessage ? `Messaggio: ${sharedAccessState.lockMessage}` : '',
+              ].filter(Boolean).join('\n'),
+            });
+            return sharedAccessState.readOnlyMode ? 'readonly' : 'readwrite';
+          }),
+        },
+        {
+          label: 'Mostra prestazioni recenti',
+          click: () => runMenuAction('show-recent-performance', async () => {
+            const summary = extractRecentPerformanceSummary();
+            const win = getCurrentMainWindow();
+            await dialog.showMessageBox(win || undefined, {
+              type: 'info',
+              title: 'Prestazioni recenti',
+              message: summary.entries.length ? 'Ultimi eventi performance rilevati.' : 'Nessun evento performance recente trovato.',
+              detail: summary.entries.length
+                ? `${summary.entries.join('\n')}${summary.slowEntries.length ? `\n\nEventi oltre 1500 ms:\n${summary.slowEntries.join('\n')}` : ''}`
+                : 'Controllare main-process.log per nuovi eventi.',
+            });
+            return { total: summary.entries.length, slow: summary.slowEntries.length };
+          }),
+        },
+      ],
+    },
+    {
+      label: 'Vista',
+      submenu: [
+        {
+          label: 'Ricarica',
+          accelerator: 'CmdOrCtrl+R',
+          click: () => runMenuAction('view-reload', async () => {
+            const win = getCurrentMainWindow();
+            if (!win) throw new Error('Finestra principale non disponibile.');
+            win.reload();
+            return 'reloaded';
+          }),
+        },
+        {
+          label: 'Zoom avanti',
+          accelerator: 'CmdOrCtrl+=',
+          click: () => runMenuAction('zoom-in', async () => {
+            const win = getCurrentMainWindow();
+            if (!win) throw new Error('Finestra principale non disponibile.');
+            const factor = win.webContents.getZoomFactor();
+            win.webContents.setZoomFactor(Math.min(3, factor + 0.1));
+            return win.webContents.getZoomFactor();
+          }),
+        },
+        {
+          label: 'Zoom indietro',
+          accelerator: 'CmdOrCtrl+-',
+          click: () => runMenuAction('zoom-out', async () => {
+            const win = getCurrentMainWindow();
+            if (!win) throw new Error('Finestra principale non disponibile.');
+            const factor = win.webContents.getZoomFactor();
+            win.webContents.setZoomFactor(Math.max(0.5, factor - 0.1));
+            return win.webContents.getZoomFactor();
+          }),
+        },
+        {
+          label: 'Zoom normale',
+          accelerator: 'CmdOrCtrl+0',
+          click: () => runMenuAction('zoom-reset', async () => {
+            const win = getCurrentMainWindow();
+            if (!win) throw new Error('Finestra principale non disponibile.');
+            win.webContents.setZoomFactor(1);
+            return 1;
+          }),
+        },
+        {
+          label: 'Schermo intero',
+          accelerator: 'F11',
+          click: () => runMenuAction('toggle-fullscreen', async () => {
+            const win = getCurrentMainWindow();
+            if (!win) throw new Error('Finestra principale non disponibile.');
+            win.setFullScreen(!win.isFullScreen());
+            return win.isFullScreen();
+          }),
+        },
+        ...(isDeveloperMode ? [{
+          label: 'Nascondi/mostra DevTools',
+          accelerator: 'CmdOrCtrl+Shift+I',
+          click: () => runMenuAction('toggle-devtools', async () => {
+            const win = getCurrentMainWindow();
+            if (!win) throw new Error('Finestra principale non disponibile.');
+            win.webContents.toggleDevTools();
+            return 'toggled';
+          }),
+        }] : []),
+      ],
+    },
+    {
+      label: 'Aiuto',
+      submenu: [
+        {
+          label: 'Informazioni su GPA',
+          click: () => runMenuAction('about-gpa', async () => {
+            const win = getCurrentMainWindow();
+            await dialog.showMessageBox(win || undefined, {
+              type: 'info',
+              title: 'Informazioni su GPA',
+              message: variantConfig.productName,
+              detail: [
+                `Versione: ${app.getVersion()}`,
+                `Variante: ${variantConfig.variant}`,
+                `Percorso dati: ${getUserDataRoot()}`,
+              ].join('\n'),
+            });
+            return appVersionLabel;
+          }),
+        },
+        {
+          label: `Versione ${appVersionLabel}`,
+          enabled: false,
+        },
+        {
+          label: 'Stato licenza',
+          click: () => runMenuAction('license-status', async () => {
+            const status = getMergedLicenseStatus();
+            const win = getCurrentMainWindow();
+            await dialog.showMessageBox(win || undefined, {
+              type: 'info',
+              title: 'Stato licenza',
+              message: status?.is_write_blocked ? 'Licenza o accesso con scrittura bloccata.' : 'Licenza attiva.',
+              detail: [
+                `Write blocked: ${status?.is_write_blocked ? 'si' : 'no'}`,
+                `Read only mode: ${status?.read_only_mode ? 'si' : 'no'}`,
+                status?.message ? `Messaggio: ${status.message}` : '',
+              ].filter(Boolean).join('\n'),
+            });
+            return status?.is_write_blocked ? 'blocked' : 'ok';
+          }),
+        },
+        {
+          label: 'Manuale / guida rapida',
+          click: () => runMenuAction('quick-guide', () => showPlaceholderMenuDialog('Manuale / guida rapida')),
+        },
+      ],
+    },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 function getTargetYear(options = {}) {
   return Number(options?.targetYear) || new Date().getFullYear();
 }
@@ -989,6 +1447,8 @@ async function createWindow() {
   const preloadPath = getPreloadPath();
   const rendererEntryPath = getRendererEntryPath();
 
+  await setSplashStatus('Caricamento interfaccia...', 'Preparazione finestra principale', 82);
+
   mainWindow = new BrowserWindow({
     title: variantConfig.productName,
     width: 1400,
@@ -1003,8 +1463,49 @@ async function createWindow() {
       nodeIntegration: false,
     },
   });
+  mainWindow.setTitle(variantConfig.productName);
+
+  const readyToShowPromise = new Promise((resolve) => {
+    mainWindow.once('ready-to-show', async () => {
+      logSplashEvent('main-ready', {});
+      await setSplashStatus('Interfaccia pronta', 'Apertura finestra principale', 100);
+      destroySplashWindow();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.setOpacity(0);
+        } catch {}
+        mainWindow.show();
+        try {
+          let opacity = 0;
+          const fadeIn = setInterval(() => {
+            if (!mainWindow || mainWindow.isDestroyed()) {
+              clearInterval(fadeIn);
+              return;
+            }
+            opacity = Math.min(1, opacity + 0.2);
+            mainWindow.setOpacity(opacity);
+            if (opacity >= 1) {
+              clearInterval(fadeIn);
+            }
+          }, 24);
+        } catch {
+          mainWindow.show();
+        }
+      }
+      resolve();
+    });
+  });
 
   attachWindowDiagnostics(mainWindow);
+  mainWindow.webContents.on('did-finish-load', () => {
+    try {
+      mainWindow?.setTitle(variantConfig.productName);
+      mainWindow?.webContents.executeJavaScript(
+        `document.title = ${JSON.stringify(variantConfig.productName)};`,
+        true
+      ).catch(() => {});
+    } catch {}
+  });
 
   logMainProcessEvent('window:create', {
     ...buildAppIdentitySnapshot(),
@@ -1017,13 +1518,14 @@ async function createWindow() {
   if (!app.isPackaged) {
     const devUrl = 'http://localhost:5173';
     logMainProcessEvent('renderer:load-url', { target: devUrl });
+    await setSplashStatus('Caricamento gestionale...', 'Connessione al server di sviluppo', 88);
     await mainWindow.loadURL(devUrl);
   } else {
     logMainProcessEvent('renderer:load-file', { target: rendererEntryPath });
+    await setSplashStatus('Caricamento gestionale...', 'Lettura interfaccia di produzione', 88);
     await mainWindow.loadFile(rendererEntryPath);
   }
-
-  mainWindow.show();
+  await readyToShowPromise;
 }
 
 function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
@@ -1608,21 +2110,34 @@ async function persistCommunicationArtifacts(communicationId) {
 
 app.whenReady().then(async () => {
   configureAppIdentity();
+  splashWindow = await createSplashWindow({
+    version: app.getVersion(),
+    productName: variantConfig.productName,
+    iconPath: getAppIconPath(),
+    log: logSplashEvent,
+  });
+  await setSplashStatus('Caricamento gestionale...', 'Verifica archivio condiviso', 12);
   const shouldContinueStartup = await initializeSharedAccessMode();
   if (!shouldContinueStartup) {
+    destroySplashWindow();
     return;
   }
+  await setSplashStatus('Inizializzazione database...', 'Configurazione modalita di accesso', 26);
   setReadOnlyMode(sharedAccessState.readOnlyMode);
   if (!sharedAccessState.readOnlyMode) {
     cleanDemoBootstrapData();
   }
+  await setSplashStatus('Inizializzazione database...', 'Preparazione cartelle applicazione', 36);
   const storageLayout = ensureAppStorageStructure();
   if (!sharedAccessState.readOnlyMode) {
+    await setSplashStatus('Caricamento gestionale...', 'Verifica backup di sicurezza', 44);
     await backupService.checkAndHandleIncompleteRestore();
   }
+  await setSplashStatus('Inizializzazione database...', 'Apertura archivio dati', 54);
   getDb();
   if (!sharedAccessState.readOnlyMode) {
     try {
+      await setSplashStatus('Caricamento gestionale...', 'Controllo contratti scaduti', 62);
       const expiredArchiveResult = employeeRepo.archiveExpiredContracts();
       logMainProcessEvent('employees:archive-expired-contracts:startup', expiredArchiveResult);
     } catch (error) {
@@ -1631,6 +2146,7 @@ app.whenReady().then(async () => {
       });
     }
   }
+  await setSplashStatus('Caricamento gestionale...', 'Avvio servizi applicativi', 72);
   pdfImportService.init({ userDataDir: app.getPath('userData') });
   licenseService.setLogger(logMainProcessEvent);
   const bootRuntime = getRuntimeContext();
@@ -3259,6 +3775,7 @@ app.whenReady().then(async () => {
     });
   });
 
+  await buildAndSetApplicationMenu();
   await createWindow();
 
   app.on('activate', () => {
@@ -3267,6 +3784,7 @@ app.whenReady().then(async () => {
     }
   });
 }).catch((error) => {
+  destroySplashWindow();
   appendMainProcessLog('startup-failure', error);
   dialog.showErrorBox(APP_ERROR_TITLE, String(error?.message || error || 'Errore sconosciuto'));
   app.exit(1);
@@ -3289,6 +3807,7 @@ app.on('before-quit', (event) => {
 });
 
 app.on('will-quit', () => {
+  destroySplashWindow();
   releaseSharedLockFile();
 });
 

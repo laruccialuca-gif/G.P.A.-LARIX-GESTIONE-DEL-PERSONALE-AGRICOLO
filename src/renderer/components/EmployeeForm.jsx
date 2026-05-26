@@ -200,6 +200,18 @@ function mergeEmploymentPeriodsWithDocuments(basePeriods = [], freshPeriods = []
   return merged;
 }
 
+function uniqueDocumentsById(documents = []) {
+  const seen = new Set();
+  const result = [];
+  for (const document of Array.isArray(documents) ? documents : []) {
+    const key = String(document?.id || document?.relative_path || '');
+    if (!document || !key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(document);
+  }
+  return result;
+}
+
 const emptyForm = {
   first_name: '',
   last_name: '',
@@ -291,6 +303,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
     art37_document: null,
     medical_visit_document: null,
     dpi_delivery_document: null,
+    other_documents: [],
   });
   const [documentBusyKey, setDocumentBusyKey] = useState('');
   const [employmentPeriods, setEmploymentPeriods] = useState([]);
@@ -317,6 +330,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
       art37_document: employee?.art37_document || null,
       medical_visit_document: employee?.medical_visit_document || null,
       dpi_delivery_document: employee?.dpi_delivery_document || null,
+      other_documents: employee?.other_documents || [],
     });
     setEmploymentPeriods(employee?.employment_periods || []);
     setDpiAssignments([]);
@@ -444,89 +458,76 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
   useEffect(() => {
     let cancelled = false;
 
-    async function loadDpiAssignments() {
-      if (!open || !employee?.id) {
-        setDpiAssignments([]);
-        return;
-      }
-
-      try {
-        setDpiAssignmentsLoading(true);
-        const startedAt = nowMs();
-        const assignments = await window.api.dpi.getEmployeeAssignments(employee.id);
-        if (!cancelled) {
-          setDpiAssignments(Array.isArray(assignments) ? assignments : []);
-        }
-        console.info('[employee-docs-perf] phase=load-dpi-assignments ms=%d', Math.round(nowMs() - startedAt));
-      } catch (err) {
-        console.error(err);
-        if (!cancelled) {
-          setDpiAssignments([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setDpiAssignmentsLoading(false);
-        }
-      }
-    }
-
     if (!open || !employee?.id) {
-      return undefined;
-    }
-
-    const cancelIdleTask = scheduleIdleTask(() => {
-      if (!cancelled) {
-        loadDpiAssignments();
-      }
-    });
-
-    return () => {
-      cancelled = true;
-      cancelIdleTask();
-    };
-  }, [open, employee?.id]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!open || !employee?.id) {
+      setDpiAssignments([]);
       return undefined;
     }
 
     docsLoadStartedAtRef.current = nowMs();
-    console.info('[employee-docs-perf] phase=schedule-lazy-load ms=0');
-    const cancelIdleTask = scheduleIdleTask(async () => {
-      if (cancelled) return;
-      setDocumentsLoading(true);
-      const startedAt = nowMs();
-      try {
-        const summary = await window.api.employees.getDocumentsSummary(employee.id);
-        if (cancelled || !summary) return;
+    console.info('[employee-data-load] phase=start employeeId=%d', Number(employee.id));
 
-        setEmployeeDocuments({
-          hire_document: summary.hire_document || null,
-          legacy_hire_document: summary.legacy_hire_document || null,
-          art37_document: summary.art37_document || null,
-          medical_visit_document: summary.medical_visit_document || null,
-          dpi_delivery_document: summary.dpi_delivery_document || null,
-        });
-        setEmploymentPeriods((current) =>
-          mergeEmploymentPeriodsWithDocuments(current, summary.employment_periods || [])
-        );
-        setDocumentsLoaded(true);
-        console.info('[employee-docs-perf] phase=state-updated ms=%d', Math.round(nowMs() - startedAt));
+    (async () => {
+      try {
+        const startedAt = nowMs();
+        setDpiAssignmentsLoading(true);
+        setDocumentsLoading(true);
+
+        const [assignments, summary] = await Promise.all([
+          window.api.dpi.getEmployeeAssignments(employee.id),
+          window.api.employees.getDocumentsSummary(employee.id),
+        ]);
+        const parallelMs = Math.round(nowMs() - startedAt);
+
+        if (cancelled) return;
+
+        if (Array.isArray(assignments)) {
+          setDpiAssignments(assignments);
+          console.info('[employee-data-load] phase=dpi-loaded ms=%d count=%d', parallelMs, assignments.length);
+        }
+
+        if (summary) {
+          setEmployeeDocuments({
+            hire_document: summary.hire_document || null,
+            legacy_hire_document: summary.legacy_hire_document || null,
+            art37_document: summary.art37_document || null,
+            medical_visit_document: summary.medical_visit_document || null,
+            dpi_delivery_document: summary.dpi_delivery_document || null,
+            other_documents: summary.other_documents || [],
+          });
+          setEmploymentPeriods((current) =>
+            mergeEmploymentPeriodsWithDocuments(current, summary.employment_periods || [])
+          );
+          setDocumentsLoaded(true);
+
+          const docKeys = Object.entries({
+            hire_document: summary.hire_document || null,
+            legacy_hire_document: summary.legacy_hire_document || null,
+            art37_document: summary.art37_document || null,
+            medical_visit_document: summary.medical_visit_document || null,
+            dpi_delivery_document: summary.dpi_delivery_document || null,
+          })
+            .filter(([, value]) => !!value)
+            .map(([key]) => key);
+          console.info(
+            '[employee-data-load] phase=docs-loaded ms=%d docs=%d keys=%s',
+            parallelMs,
+            docKeys.length + Number(summary.other_documents?.length || 0),
+            docKeys.join(',') || '(none)'
+          );
+        }
       } catch (err) {
-        console.error(err);
+        console.error('[employee-data-load] error:', err);
       } finally {
         if (!cancelled) {
           setDocumentsLoading(false);
-          console.info('[employee-docs-perf] phase=total-lazy-load ms=%d', Math.round(nowMs() - docsLoadStartedAtRef.current));
+          setDpiAssignmentsLoading(false);
+          console.info('[employee-data-load] phase=complete ms=%d', Math.round(nowMs() - docsLoadStartedAtRef.current));
         }
       }
-    });
+    })();
 
     return () => {
       cancelled = true;
-      cancelIdleTask();
     };
   }, [open, employee?.id]);
 
@@ -612,6 +613,36 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
   const dailyPayLabel = `Retribuzione giornaliera (${UI_SYMBOLS.euro} / ${standardHoursLabel} ore)`;
   const exampleEarning = stdH > 0 && pay > 0 ? ((pay / stdH) * exampleHours).toFixed(2) : null;
   const hasEmployeeRecord = !!employee?.id;
+  const employeeDocumentsSummary = employeeDocuments;
+  const allEmployeeDocuments = useMemo(
+    () => uniqueDocumentsById([
+      employeeDocumentsSummary.medical_visit_document,
+      employeeDocumentsSummary.art37_document,
+      employeeDocumentsSummary.dpi_delivery_document,
+      employeeDocumentsSummary.legacy_hire_document,
+      ...((employmentPeriods || []).map((period) => period.hire_document).filter(Boolean)),
+      ...(Array.isArray(employeeDocumentsSummary.other_documents) ? employeeDocumentsSummary.other_documents : []),
+    ].filter(Boolean)),
+    [employeeDocumentsSummary, employmentPeriods]
+  );
+  const visibleAttachmentCount = [
+    ...allEmployeeDocuments,
+  ].filter(Boolean).length;
+  const groupedAttachmentCount = (employmentPeriods || []).filter((period) => !!period.hire_document).length;
+  useEffect(() => {
+    if (!open || !employee?.id) return;
+    console.info(
+      '[docs-debug:renderer] employeeId=%d docs=%d keys=%s',
+      Number(employee.id),
+      allEmployeeDocuments.length,
+      Object.keys(employeeDocumentsSummary || {}).join(',')
+    );
+    console.info(
+      '[docs-debug:render] visibleDocs=%d groupedDocs=%d',
+      visibleAttachmentCount,
+      groupedAttachmentCount
+    );
+  }, [open, employee?.id, visibleAttachmentCount, groupedAttachmentCount, allEmployeeDocuments.length, employeeDocumentsSummary]);
   const latestDpiAssignment = useMemo(() => {
     if (!dpiAssignments.length) return null;
     return [...dpiAssignments].sort((a, b) =>
@@ -661,11 +692,32 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
           art37_document: fresh.art37_document || null,
           medical_visit_document: fresh.medical_visit_document || null,
           dpi_delivery_document: fresh.dpi_delivery_document || null,
+          other_documents: fresh.other_documents || [],
         });
         setEmploymentPeriods((current) =>
           mergeEmploymentPeriodsWithDocuments(current, fresh.employment_periods || [])
         );
         setDocumentsLoaded(true);
+        console.info(
+          '[docs-debug:renderer] employeeId=%d docs=%d keys=%s',
+          Number(employee.id),
+          [
+            fresh.hire_document,
+            fresh.legacy_hire_document,
+            fresh.art37_document,
+            fresh.medical_visit_document,
+            fresh.dpi_delivery_document,
+            ...(fresh.other_documents || []),
+            ...((fresh.employment_periods || []).map((period) => period.hire_document).filter(Boolean)),
+          ].filter(Boolean).length,
+          Object.entries({
+            hire_document: fresh.hire_document || null,
+            legacy_hire_document: fresh.legacy_hire_document || null,
+            art37_document: fresh.art37_document || null,
+            medical_visit_document: fresh.medical_visit_document || null,
+            dpi_delivery_document: fresh.dpi_delivery_document || null,
+          }).filter(([, value]) => !!value).map(([key]) => key).join(',') || '(none)'
+        );
       }
     } catch (err) {
       console.error(err);
@@ -682,12 +734,12 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
     if (busyKey) {
       setDocumentBusyKey(busyKey);
     }
-    console.info('[employee-doc-upload-perf] phase=renderer-start ms=0');
+    console.info('[employee-upload] phase=renderer-start ms=0');
 
     try {
       const result = await action();
       if (!result?.canceled) {
-        console.info('[employee-doc-upload-perf] phase=main-process-complete ms=%d', Math.round(perf.now() - startedAt));
+        console.info('[employee-upload] phase=main-process-complete ms=%d', Math.round(perf.now() - startedAt));
 
         const uiStartedAt = perf.now();
         if (documentKey && Object.prototype.hasOwnProperty.call(result || {}, 'document')) {
@@ -699,7 +751,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
         } else {
           await refreshEmployeeDocuments();
         }
-        console.info('[employee-doc-upload-perf] phase=refresh-list ms=%d', Math.round(perf.now() - uiStartedAt));
+        console.info('[employee-upload] phase=refresh-list ms=%d', Math.round(perf.now() - uiStartedAt));
       }
     } catch (err) {
       console.error(err);
@@ -750,16 +802,16 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
 
           <div className="employee-form__grid employee-form__grid--2">
             <Field label="Nome *">
-              <input value={form.first_name} onChange={(e) => set('first_name', e.target.value)} required />
+              <input value={form.first_name ?? ''} onChange={(e) => set('first_name', e.target.value)} required />
             </Field>
             <Field label="Cognome *">
-              <input value={form.last_name} onChange={(e) => set('last_name', e.target.value)} required />
+              <input value={form.last_name ?? ''} onChange={(e) => set('last_name', e.target.value)} required />
             </Field>
           </div>
 
           <div className="employee-form__grid employee-form__grid--2">
             <Field label="Codice Fiscale">
-              <input value={form.fiscal_code} onChange={(e) => set('fiscal_code', e.target.value)} />
+              <input value={form.fiscal_code ?? ''} onChange={(e) => set('fiscal_code', e.target.value)} />
             </Field>
             <Field label="Mansione">
               <div style={{ display: 'grid', gap: 8 }}>
@@ -863,10 +915,10 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
 
           <div className="employee-form__grid employee-form__grid--2">
             <Field label="Telefono">
-              <input value={form.phone} onChange={(e) => set('phone', e.target.value)} />
+              <input value={form.phone ?? ''} onChange={(e) => set('phone', e.target.value)} />
             </Field>
             <Field label="Email">
-              <input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} />
+              <input type="email" value={form.email ?? ''} onChange={(e) => set('email', e.target.value)} />
             </Field>
           </div>
 
@@ -924,7 +976,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
                 type="number"
                 step="0.01"
                 min="0"
-                value={form.daily_pay}
+                value={form.daily_pay ?? ''}
                 onChange={(e) => set('daily_pay', e.target.value)}
                 placeholder="Inserisci importo retribuzione giornaliera"
               />
@@ -936,7 +988,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
                 min="1"
                 max="12"
                 step="0.5"
-                value={form.standard_hours}
+                value={form.standard_hours ?? ''}
                 onChange={(e) => set('standard_hours', e.target.value)}
               />
             </Field>
@@ -1061,7 +1113,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
                     <Field label="Data effettuata">
                       <input
                         type="date"
-                        value={form.medical_visit_date}
+                        value={form.medical_visit_date ?? ''}
                         onChange={(e) => handleMedicalVisitDateChange(e.target.value)}
                       />
                     </Field>
@@ -1069,7 +1121,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
                     <Field label="Scadenza visita medica">
                       <input
                         type="date"
-                        value={form.medical_visit_expiry}
+                        value={form.medical_visit_expiry ?? ''}
                         readOnly
                       />
                     </Field>
@@ -1078,7 +1130,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
 
                 <Field label="Note">
                   <input
-                    value={form.medical_visit_notes}
+                    value={form.medical_visit_notes ?? ''}
                     onChange={(e) => set('medical_visit_notes', e.target.value)}
                     placeholder="es. idoneo con prescrizioni…"
                   />
@@ -1155,7 +1207,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
                     <Field label="Data effettuata">
                       <input
                         type="date"
-                        value={form.art37_date}
+                        value={form.art37_date ?? ''}
                         onChange={(e) => handleArt37DateChange(e.target.value)}
                       />
                     </Field>
@@ -1163,7 +1215,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
                     <Field label="Scadenza formazione">
                       <input
                         type="date"
-                        value={form.art37_expiry}
+                        value={form.art37_expiry ?? ''}
                         readOnly
                       />
                     </Field>
@@ -1172,7 +1224,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
 
                 <Field label="Note">
                   <input
-                    value={form.art37_notes}
+                    value={form.art37_notes ?? ''}
                     onChange={(e) => set('art37_notes', e.target.value)}
                     placeholder="es. corso completato 8h…"
                   />
@@ -1321,7 +1373,7 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
             />
           </Field>
 
-          <SectionTitle>📎 Allegati</SectionTitle>
+          <SectionTitle>{`${UI_SYMBOLS.attachment} Allegati`}</SectionTitle>
 
           {employee?.id ? (
             <>
@@ -1329,6 +1381,167 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
               {documentsLoading && !documentsLoaded ? (
                 <div style={infoBoxStyle}>
                   Caricamento metadati allegati in corso...
+                </div>
+              ) : null}
+              {allEmployeeDocuments.length > 0 ? (
+                <div
+                  style={{
+                    display: 'grid',
+                    gap: 12,
+                    padding: 16,
+                    borderRadius: 18,
+                    border: '1px solid rgba(20, 33, 61, 0.08)',
+                    background: 'rgba(248, 250, 252, 0.92)',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={{ fontSize: 16, fontWeight: 800 }}>Documenti dipendente</div>
+                      <div style={{ fontSize: 13, color: '#667085' }}>
+                        Allegati già caricati per visita medica, formazione, DPI e altre categorie.
+                      </div>
+                    </div>
+                    <span
+                      className="soft-chip"
+                      style={{ background: 'rgba(15, 118, 110, 0.12)', color: '#115e59' }}
+                    >
+                      {allEmployeeDocuments.length} allegati
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    {allEmployeeDocuments.map((document) => (
+                      <DocumentActions
+                        key={`all-doc-${document.id}`}
+                        document={document}
+                        onUpload={null}
+                        onOpen={() =>
+                          handleOpenDocument(
+                            () => window.api.documents.open(document.relative_path),
+                            'Errore apertura allegato'
+                          )
+                        }
+                        onDelete={null}
+                        emptyLabel="Nessun allegato"
+                        compact
+                      />
+                    ))}
+                  </div>
+
+                  {employeeDocuments.medical_visit_document ? (
+                    <DocumentActions
+                      document={employeeDocuments.medical_visit_document}
+                      onUpload={() =>
+                        handleDocumentAction(
+                          () => window.api.employees.uploadMedicalVisitDocument(employee.id),
+                          'Errore caricamento allegato visita medica',
+                          { documentKey: 'medical_visit_document', busyKey: 'medical_visit_document' }
+                        )
+                      }
+                      onOpen={() =>
+                        handleOpenDocument(
+                          () => window.api.employees.openMedicalVisitDocument(employee.id),
+                          'Errore apertura allegato visita medica'
+                        )
+                      }
+                      onDelete={() =>
+                        handleDocumentAction(
+                          async () => {
+                            if (!window.confirm("Confermi l'eliminazione dell'allegato visita medica?")) {
+                              return { canceled: true };
+                            }
+                            return window.api.employees.deleteMedicalVisitDocument(employee.id);
+                          },
+                          'Errore eliminazione allegato visita medica',
+                          { documentKey: 'medical_visit_document', busyKey: 'medical_visit_document' }
+                        )
+                      }
+                      emptyLabel="Nessun allegato visita medica"
+                      loading={documentBusyKey === 'medical_visit_document'}
+                    />
+                  ) : null}
+
+                  {employeeDocuments.art37_document ? (
+                    <DocumentActions
+                      document={employeeDocuments.art37_document}
+                      onUpload={() =>
+                        handleDocumentAction(
+                          () => window.api.employees.uploadArt37Document(employee.id),
+                          'Errore caricamento allegato formazione art. 37',
+                          { documentKey: 'art37_document', busyKey: 'art37_document' }
+                        )
+                      }
+                      onOpen={() =>
+                        handleOpenDocument(
+                          () => window.api.employees.openArt37Document(employee.id),
+                          'Errore apertura allegato formazione art. 37'
+                        )
+                      }
+                      onDelete={() =>
+                        handleDocumentAction(
+                          async () => {
+                            if (!window.confirm("Confermi l'eliminazione dell'allegato formazione art. 37?")) {
+                              return { canceled: true };
+                            }
+                            return window.api.employees.deleteArt37Document(employee.id);
+                          },
+                          'Errore eliminazione allegato formazione art. 37',
+                          { documentKey: 'art37_document', busyKey: 'art37_document' }
+                        )
+                      }
+                      emptyLabel="Nessun allegato formazione art. 37"
+                      loading={documentBusyKey === 'art37_document'}
+                    />
+                  ) : null}
+
+                  {employeeDocuments.dpi_delivery_document ? (
+                    <DocumentActions
+                      document={employeeDocuments.dpi_delivery_document}
+                      onUpload={() =>
+                        handleDocumentAction(
+                          () => window.api.employees.uploadDpiDeliveryDocument(employee.id),
+                          'Errore caricamento allegato consegna DPI',
+                          { documentKey: 'dpi_delivery_document', busyKey: 'dpi_delivery_document' }
+                        )
+                      }
+                      onOpen={() =>
+                        handleOpenDocument(
+                          () => window.api.employees.openDpiDeliveryDocument(employee.id),
+                          'Errore apertura allegato consegna DPI'
+                        )
+                      }
+                      onDelete={() =>
+                        handleDocumentAction(
+                          async () => {
+                            if (!window.confirm("Confermi l'eliminazione dell'allegato consegna DPI?")) {
+                              return { canceled: true };
+                            }
+                            return window.api.employees.deleteDpiDeliveryDocument(employee.id);
+                          },
+                          'Errore eliminazione allegato consegna DPI',
+                          { documentKey: 'dpi_delivery_document', busyKey: 'dpi_delivery_document' }
+                        )
+                      }
+                      emptyLabel="Nessun allegato consegna DPI"
+                      loading={documentBusyKey === 'dpi_delivery_document'}
+                    />
+                  ) : null}
+
+                  {(Array.isArray(employeeDocuments.other_documents) ? employeeDocuments.other_documents : []).map((document) => (
+                    <DocumentActions
+                      key={`other-${document.id}`}
+                      document={document}
+                      onUpload={null}
+                      onOpen={() =>
+                        handleOpenDocument(
+                          () => window.api.documents.open(document.relative_path),
+                          'Errore apertura allegato'
+                        )
+                      }
+                      onDelete={null}
+                      emptyLabel="Nessun allegato"
+                    />
+                  ))}
                 </div>
               ) : null}
               {(employmentPeriods || []).length ? (
@@ -1440,6 +1653,12 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
                   }
                   emptyLabel="Nessun allegato assunzione legacy"
                 />
+              ) : null}
+
+              {!documentsLoading && documentsLoaded && visibleAttachmentCount === 0 ? (
+                <div style={infoBoxStyle}>
+                  Nessun allegato trovato per questo dipendente.
+                </div>
               ) : null}
 
             </div>

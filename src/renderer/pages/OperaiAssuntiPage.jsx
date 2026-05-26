@@ -627,11 +627,36 @@ export default function OperaiAssuntiPage() {
     setEarlyClosureOpen(true);
   }
 
-  async function handleGenerateEarlyClosurePdf(event) {
-    event.preventDefault();
+  function validateEarlyClosureSelection() {
     const list = getSelectedEmployees();
     if (!list.length) {
       alert('Nessun operaio selezionato.');
+      return null;
+    }
+    if (!earlyClosureDate) {
+      alert('Inserisci la data di chiusura anticipata.');
+      return null;
+    }
+
+    const invalidEmployees = list.filter((employee) => {
+      if (!employee.hire_date_from) return false;
+      return String(earlyClosureDate) < String(employee.hire_date_from).slice(0, 10);
+    });
+    if (invalidEmployees.length) {
+      const names = invalidEmployees
+        .map((employee) => `${employee.last_name || ''} ${employee.first_name || ''}`.trim())
+        .join(', ');
+      alert(`La data di chiusura è precedente alla data di assunzione per: ${names}`);
+      return null;
+    }
+
+    return list;
+  }
+
+  async function handleGenerateEarlyClosurePdf(event) {
+    event.preventDefault();
+    const list = validateEarlyClosureSelection();
+    if (!list) {
       return;
     }
     if (!earlyClosureDate) {
@@ -662,6 +687,42 @@ export default function OperaiAssuntiPage() {
     } catch (err) {
       console.error(err);
       alert('Errore generazione PDF operai da chiudere');
+    } finally {
+      setEarlyClosureGenerating(false);
+    }
+  }
+
+  async function handleConfirmEarlyClosure() {
+    const list = validateEarlyClosureSelection();
+    if (!list) {
+      return;
+    }
+
+    const employeeIds = list.map((employee) => Number(employee.id)).filter(Number.isFinite);
+    console.info('[hired-workers-close] selectedCount=%d', employeeIds.length);
+    console.info('[hired-workers-close] employeeIds=%s', employeeIds.join(','));
+    console.info('[hired-workers-close] terminationDate=%s', earlyClosureDate);
+
+    setEarlyClosureGenerating(true);
+    try {
+      const result = await window.api.employees.closeEarly(employeeIds, earlyClosureDate, earlyClosureNotes);
+      console.info(
+        '[hired-workers-close] result=%s',
+        JSON.stringify({
+          archived_count: result?.archived_count || 0,
+          employee_count: Array.isArray(result?.employees) ? result.employees.length : 0,
+        })
+      );
+      if (detailEmployeeId != null && employeeIds.includes(Number(detailEmployeeId))) {
+        setDetailEmployeeId(null);
+      }
+      setSelectedIds(new Set());
+      setEarlyClosureOpen(false);
+      await loadAll();
+      alert(`${result?.archived_count || employeeIds.length} operai chiusi e archiviati`);
+    } catch (err) {
+      console.error('[hired-workers-close] result=error', err);
+      alert(err?.message || 'Errore chiusura operai selezionati');
     } finally {
       setEarlyClosureGenerating(false);
     }
@@ -891,6 +952,7 @@ export default function OperaiAssuntiPage() {
   const filteredCount = filtered.length;
   const selectedCount = selectedIds.size;
   const hasSelection = selectedCount > 0;
+  const earlyClosureEmployeesPreview = earlyClosureOpen ? getSelectedEmployees() : [];
 
   return (
     <div className="page">
@@ -1224,13 +1286,13 @@ export default function OperaiAssuntiPage() {
           <form
             className="modal-dialog early-closure-modal"
             onClick={(event) => event.stopPropagation()}
-            onSubmit={handleGenerateEarlyClosurePdf}
+            onSubmit={(event) => event.preventDefault()}
           >
             <div className="modal-header">
               <div>
-                <h2>Operai da chiudere</h2>
+                <h2>Chiusura anticipata contratto</h2>
                 <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 13 }}>
-                  Genera una richiesta PDF per {selectedCount} operai selezionati.
+                  Scegli se stampare solo l'elenco oppure chiudere davvero e archiviare gli operai selezionati.
                 </p>
               </div>
               <button
@@ -1266,8 +1328,47 @@ export default function OperaiAssuntiPage() {
                 />
               </label>
 
-              <div className="soft-chip" style={{ justifySelf: 'start', background: 'rgba(245, 158, 11, 0.16)', color: '#92400e' }}>
-                Il PDF non modifica lo stato degli operai nel database.
+              <div
+                style={{
+                  display: 'grid',
+                  gap: 10,
+                  padding: 14,
+                  borderRadius: 16,
+                  border: '1px solid rgba(245, 158, 11, 0.28)',
+                  background: 'rgba(255, 247, 237, 0.95)',
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 900, letterSpacing: '0.04em', textTransform: 'uppercase', color: '#9a3412' }}>
+                  Riepilogo chiusura
+                </div>
+                <div style={{ fontSize: 13, color: '#7c2d12' }}>
+                  Questa operazione archivierà i dipendenti selezionati.
+                </div>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {earlyClosureEmployeesPreview.map((employee) => (
+                    <div
+                      key={employee.id}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        gap: 12,
+                        padding: '8px 10px',
+                        borderRadius: 12,
+                        background: 'rgba(255,255,255,0.8)',
+                        fontSize: 13,
+                        color: '#431407',
+                      }}
+                    >
+                      <span style={{ fontWeight: 700 }}>
+                        {`${employee.last_name || ''} ${employee.first_name || ''}`.trim() || `Operaio #${employee.id}`}
+                      </span>
+                      <span>{employee.hired_by || 'Datore non indicato'}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="soft-chip" style={{ justifySelf: 'start', background: 'rgba(245, 158, 11, 0.16)', color: '#92400e' }}>
+                  Vuoi solo stampare l'elenco oppure chiudere davvero gli operai selezionati?
+                </div>
               </div>
             </div>
 
@@ -1280,7 +1381,7 @@ export default function OperaiAssuntiPage() {
               >
                 Annulla
               </button>
-              <button type="submit" className="button" disabled={earlyClosureGenerating}>
+              <button type="button" className="button-secondary" onClick={handleGenerateEarlyClosurePdf} disabled={earlyClosureGenerating}>
                 {earlyClosureGenerating ? (
                   <>
                     <span
@@ -1294,11 +1395,14 @@ export default function OperaiAssuntiPage() {
                       }}
                       aria-hidden="true"
                     />
-                    Generazione...
+                    Elaborazione...
                   </>
                 ) : (
-                  'Genera PDF'
+                  "Vuoi solo stampare l'elenco?"
                 )}
+              </button>
+              <button type="button" className="button-warning" onClick={handleConfirmEarlyClosure} disabled={earlyClosureGenerating}>
+                {earlyClosureGenerating ? 'Elaborazione...' : 'Vuoi chiudere davvero gli operai selezionati?'}
               </button>
             </div>
           </form>
