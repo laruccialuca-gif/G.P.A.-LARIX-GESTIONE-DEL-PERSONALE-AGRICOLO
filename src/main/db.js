@@ -1135,6 +1135,48 @@ function runTeamAdvancesEmployerKeyMigration(database) {
   }
 }
 
+function runTeamReportRecordsMigration(database) {
+  console.info('[db-migration] [name=team-report-records] start');
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS team_report_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      transport_enabled INTEGER DEFAULT 0,
+      transport_description TEXT,
+      transport_amount REAL DEFAULT 0,
+      note TEXT,
+      processed_at TEXT,
+      archived_at TEXT,
+      report_html_snapshot TEXT,
+      report_snapshot_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      UNIQUE(team_id, month)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_team_report_records_lookup
+      ON team_report_records(team_id, month, processed_at, id);
+  `);
+
+  ensureColumn(database, 'team_report_records', 'transport_enabled', 'INTEGER DEFAULT 0');
+  ensureColumn(database, 'team_report_records', 'transport_description', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'transport_amount', 'REAL DEFAULT 0');
+  ensureColumn(database, 'team_report_records', 'note', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'processed_at', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'archived_at', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'report_html_snapshot', 'TEXT');
+  ensureColumn(database, 'team_report_records', 'report_snapshot_json', 'TEXT');
+
+  console.info('[db-migration] [name=team-report-records] ensured');
+  logDbEvent('schema-table-updated', {
+    migration_id: '2026-05-26-team-report-records',
+    table_name: 'team_report_records',
+    columns_added: ['ensured'],
+  });
+}
+
 function runDpiSchemaMigration(database) {
   database.exec(`
     CREATE TABLE IF NOT EXISTS dpi_items (
@@ -1256,6 +1298,10 @@ const MIGRATIONS = [
   {
     id: '2026-05-21-team-advances-employer-key',
     run: runTeamAdvancesEmployerKeyMigration,
+  },
+  {
+    id: '2026-05-26-team-report-records',
+    run: runTeamReportRecordsMigration,
   },
   {
     id: '2026-05-21-dpi-schema',

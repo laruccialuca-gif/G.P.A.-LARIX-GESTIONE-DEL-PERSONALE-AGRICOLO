@@ -991,6 +991,7 @@ function getPreviousBalance(employeeId, month) {
 
   if (openPrevious) {
     const carriedBalance = getCarriedForwardBalance(openPrevious);
+    console.info('[year-rollover] previous=%s current=%s previousBalance=%s carriedBalance=%s', openPrevious.month, month, Number(openPrevious.effective_balance || 0), carriedBalance);
     return {
       previousMonth: openPrevious.month,
       previousBalance: carriedBalance,
@@ -1030,6 +1031,7 @@ function getPreviousBalance(employeeId, month) {
   `).get(employeeId, month);
 
   if (!latestPrevious) {
+    console.info('[year-rollover] previous=%s current=%s previousBalance=%s carriedBalance=%s', null, month, 0, 0);
     return {
       previousMonth: null,
       previousBalance: 0,
@@ -1037,12 +1039,14 @@ function getPreviousBalance(employeeId, month) {
     };
   }
 
+  const paidCarriedBalance = getCarriedForwardBalance(latestPrevious);
+  console.info('[year-rollover] previous=%s current=%s previousBalance=%s carriedBalance=%s', latestPrevious.month, month, Number(latestPrevious.effective_balance || 0), paidCarriedBalance);
   return {
     previousMonth: null,
     previousBalance: 0,
-    alreadyPaid: Math.abs(getCarriedForwardBalance(latestPrevious)) <= 0.009,
+    alreadyPaid: Math.abs(paidCarriedBalance) <= 0.009,
     paidPreviousMonth: latestPrevious.month,
-    paidPreviousBalance: getCarriedForwardBalance(latestPrevious),
+    paidPreviousBalance: paidCarriedBalance,
     balanceStatus: normalizeBalanceStatus(
       latestPrevious.balance_status,
       latestPrevious.effective_balance,

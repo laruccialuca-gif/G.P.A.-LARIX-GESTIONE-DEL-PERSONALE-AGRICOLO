@@ -775,6 +775,7 @@ async function checkAndHandleIncompleteRestore() {
 }
 
 module.exports = {
+  BACKUP_RETENTION,
   checkAndHandleIncompleteRestore,
   chooseRestoreBackup,
   createBackup,

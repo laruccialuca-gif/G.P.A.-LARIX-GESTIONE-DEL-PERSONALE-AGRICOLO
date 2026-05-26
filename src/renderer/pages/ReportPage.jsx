@@ -319,6 +319,52 @@ function createLocalDraftKey(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+const REPORT_DRAFT_STORAGE_PREFIX = 'GPA_REPORT_DRAFT';
+
+function buildReportDraftStorageKey(type, monthKey, entityId) {
+  if (!type || !monthKey || !entityId) return '';
+  return `${REPORT_DRAFT_STORAGE_PREFIX}::${type}::${monthKey}::${entityId}`;
+}
+
+function readReportDraftFromStorage(storageKey) {
+  if (!storageKey || typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeReportDraftToStorage(storageKey, payload) {
+  if (!storageKey || typeof window === 'undefined' || !window.localStorage) return null;
+  const envelope = {
+    ...payload,
+    saved_at: new Date().toISOString(),
+  };
+  window.localStorage.setItem(storageKey, JSON.stringify(envelope));
+  return envelope;
+}
+
+function removeReportDraftFromStorage(storageKey) {
+  if (!storageKey || typeof window === 'undefined' || !window.localStorage) return;
+  window.localStorage.removeItem(storageKey);
+}
+
+function formatDraftSavedTime(savedAt) {
+  if (!savedAt) return '';
+  try {
+    return new Date(savedAt).toLocaleTimeString('it-IT', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return '';
+  }
+}
+
 function createEmptyAdvance() {
   return {
     amount: '',
@@ -882,6 +928,16 @@ export default function ReportPage() {
   const attendanceEditorClickTimeoutRef = useRef(null);
   const mountedRef = useRef(false);
   const employeeAutocompleteRef = useRef(null);
+  const employeeDraftTimeoutRef = useRef(null);
+  const teamDraftTimeoutRef = useRef(null);
+  const latestDraftSnapshotRef = useRef(null);
+  const [draftRestorePrompt, setDraftRestorePrompt] = useState(null);
+  const [draftFeedback, setDraftFeedback] = useState({
+    key: '',
+    tone: 'neutral',
+    text: '',
+    savedAt: '',
+  });
 
   const [teamPeriodStart, setTeamPeriodStart] = useState(formatLocalDate(startOfMonth(currentMonth)));
   const [teamPeriodEnd, setTeamPeriodEnd] = useState(formatLocalDate(endOfMonth(currentMonth)));
@@ -1019,6 +1075,14 @@ export default function ReportPage() {
     }
   }, [loading]);
   const selectedReportMonthKey = monthString(currentMonth);
+  const employeeDraftStorageKey = useMemo(
+    () => (isEmployeeMode && employee?.id ? buildReportDraftStorageKey('employee', selectedReportMonthKey, employee.id) : ''),
+    [employee?.id, isEmployeeMode, selectedReportMonthKey]
+  );
+  const teamDraftStorageKey = useMemo(
+    () => (isTeamMode && selectedTeam?.id ? buildReportDraftStorageKey('team', selectedReportMonthKey, selectedTeam.id) : ''),
+    [isTeamMode, selectedReportMonthKey, selectedTeam?.id]
+  );
   const attendanceBaseHours = useMemo(
     () => getSafeStandardHours(settings?.general?.standard_day_hours),
     [settings?.general?.standard_day_hours]
@@ -1189,9 +1253,21 @@ export default function ReportPage() {
     teamAdvances,
     teamPayrollComponents,
   });
+  const teamHasMeaningfulInput =
+    !!teamTransportEnabled ||
+    String(teamTransportDescription || '').trim() !== '' ||
+    normalizeCurrency(teamTransportAmount) > 0 ||
+    String(teamNotes || '').trim() !== '' ||
+    teamAdvances.some(isMeaningfulTeamAdvance) ||
+    teamPayrollComponents.some(isMeaningfulTeamPayrollComponent);
   const hasUnsavedTeamChanges =
-    savedTeamEconomicSnapshot !== null &&
-    currentTeamEconomicSnapshot !== savedTeamEconomicSnapshot;
+    isTeamMode &&
+    !!selectedTeam &&
+    (
+      savedTeamEconomicSnapshot === null
+        ? teamHasMeaningfulInput
+        : currentTeamEconomicSnapshot !== savedTeamEconomicSnapshot
+    );
   const isProcessedTeamRecord = !!currentTeamReportRecord?.processed_at;
   const isTeamEditingDisabled = isProcessedTeamRecord && !isTeamEditUnlocked;
 
@@ -1286,6 +1362,139 @@ export default function ReportPage() {
     });
   }
 
+  function setDraftFeedbackForKey(key, tone, text, savedAt = '') {
+    setDraftFeedback({
+      key,
+      tone,
+      text,
+      savedAt,
+    });
+  }
+
+  function persistDraftNow(type, storageKey, payload) {
+    if (!storageKey || !payload) return null;
+    const stored = writeReportDraftToStorage(storageKey, payload);
+    if (!stored) return null;
+    console.info('[report-draft] saved type=%s key=%s', type, storageKey);
+    setDraftFeedbackForKey(
+      storageKey,
+      'saved',
+      `Bozza salvata alle ${formatDraftSavedTime(stored.saved_at)}`,
+      stored.saved_at
+    );
+    return stored;
+  }
+
+  function discardDraft(storageKey) {
+    if (!storageKey) return;
+    removeReportDraftFromStorage(storageKey);
+    console.info('[report-draft] discarded key=%s', storageKey);
+    setDraftRestorePrompt((current) => (current?.key === storageKey ? null : current));
+    setDraftFeedbackForKey(storageKey, 'discarded', 'Bozza scartata', '');
+  }
+
+  function maybePrepareDraftRestore(type, storageKey) {
+    if (!storageKey) {
+      setDraftRestorePrompt(null);
+      return;
+    }
+    const draft = readReportDraftFromStorage(storageKey);
+    if (!draft) {
+      setDraftRestorePrompt((current) => (current?.key === storageKey ? null : current));
+      return;
+    }
+    setDraftRestorePrompt({
+      type,
+      key: storageKey,
+      payload: draft,
+    });
+  }
+
+  function clearDraftAfterSuccessfulSave(storageKey) {
+    if (!storageKey) return;
+    removeReportDraftFromStorage(storageKey);
+    setDraftRestorePrompt((current) => (current?.key === storageKey ? null : current));
+    setDraftFeedback((current) => (
+      current?.key === storageKey
+        ? { key: '', tone: 'neutral', text: '', savedAt: '' }
+        : current
+    ));
+  }
+
+  function applyEmployeeDraftPayload(draft) {
+    if (!draft) return;
+    setDatore(draft.datore || defaultEmployerValue);
+    setImportoBustaPaga(draft.importoBustaPaga || '');
+    setGiornateBustaPaga(draft.giornateBustaPaga || '');
+    setAdvances(Array.isArray(draft.advances) && draft.advances.length ? draft.advances : [createEmptyAdvance()]);
+    setRestoPrecedente(draft.restoPrecedente || '');
+    setTrasportoAttivo(!!draft.trasportoAttivo);
+    setNMacchineMese(draft.nMacchineMese || '');
+    setPrezzoPerMacchina(draft.prezzoPerMacchina || '');
+    setBalanceNotes(draft.balanceNotes || '');
+    setPayrollPaymentStatus(draft.payrollPaymentStatus || 'non_pagato');
+    setPayrollPaymentMethod(draft.payrollPaymentMethod || 'bonifico');
+    setPayrollPaymentDate(draft.payrollPaymentDate || '');
+    setBalanceStatus(draft.balanceStatus || 'non_pagato');
+    setPartialPaidAmount(draft.partialPaidAmount || '');
+    setBalanceClosedAt(draft.balanceClosedAt || '');
+    setGiftAmount(draft.giftAmount || '');
+    setGiftLabel(draft.giftLabel || '');
+    setDebtPlans(Array.isArray(draft.debtPlans) ? draft.debtPlans : []);
+    setResolvedDebtPlans(Array.isArray(draft.resolvedDebtPlans) ? draft.resolvedDebtPlans : []);
+    setShowOvertimeInReport(draft.showOvertimeInReport !== false);
+    setPayslipCalcDailyAmount(draft.payslipCalcDailyAmount || '');
+    setPayslipCalcSelectedOption(draft.payslipCalcSelectedOption || '');
+    setPayslipCustomDays(draft.payslipCustomDays || '');
+    setPreviousBalanceReference(draft.previousBalanceReference || null);
+    setSaveState('dirty');
+  }
+
+  function applyTeamDraftPayload(draft) {
+    if (!draft) return;
+    setTeamPeriodStart(draft.teamPeriodStart || formatLocalDate(startOfMonth(currentMonth)));
+    setTeamPeriodEnd(draft.teamPeriodEnd || formatLocalDate(endOfMonth(currentMonth)));
+    setTeamTransportEnabled(!!draft.teamTransportEnabled);
+    setTeamTransportDescription(draft.teamTransportDescription || '');
+    setTeamTransportAmount(draft.teamTransportAmount || '');
+    setTeamNotes(draft.teamNotes || '');
+    setTeamAdvances(Array.isArray(draft.teamAdvances) && draft.teamAdvances.length ? draft.teamAdvances : [createEmptyTeamAdvance()]);
+    setTeamPayrollComponents(
+      Array.isArray(draft.teamPayrollComponents) && draft.teamPayrollComponents.length
+        ? draft.teamPayrollComponents
+        : buildTeamPayrollComponentRows(selectedTeamMembers, [])
+    );
+    setTeamSaveState('dirty');
+  }
+
+  function restoreDraftFromPrompt() {
+    if (!draftRestorePrompt?.key || !draftRestorePrompt?.payload) return;
+    if (draftRestorePrompt.type === 'team') {
+      applyTeamDraftPayload(draftRestorePrompt.payload);
+    } else {
+      applyEmployeeDraftPayload(draftRestorePrompt.payload);
+    }
+    console.info('[report-draft] restored type=%s key=%s', draftRestorePrompt.type, draftRestorePrompt.key);
+    setDraftFeedbackForKey(draftRestorePrompt.key, 'restored', 'Bozza ripristinata', draftRestorePrompt.payload.saved_at || '');
+    setDraftRestorePrompt(null);
+  }
+
+  function discardDraftFromPrompt() {
+    if (!draftRestorePrompt?.key) return;
+    discardDraft(draftRestorePrompt.key);
+    setDraftRestorePrompt(null);
+  }
+
+  function saveCurrentDraftNow() {
+    if (isTeamMode && selectedTeam?.id && hasUnsavedTeamChanges) {
+      return persistDraftNow('team', teamDraftStorageKey, teamDraftPayload);
+    }
+    if (isEmployeeMode && employee?.id && hasUnsavedChanges) {
+      return persistDraftNow('employee', employeeDraftStorageKey, employeeDraftPayload);
+    }
+    return null;
+  }
+
   const reloadAttendanceData = useCallback(async () => {
     const [attendanceChunks, teamAttendanceChunks] = await Promise.all([
       Promise.all(queryMonths.map((entry) => window.api.attendance.listByMonth(entry.year, entry.month))),
@@ -1359,6 +1568,18 @@ export default function ReportPage() {
   useEffect(() => () => {
     if (autosaveTimeoutRef.current) {
       clearTimeout(autosaveTimeoutRef.current);
+    }
+    if (employeeDraftTimeoutRef.current) {
+      clearTimeout(employeeDraftTimeoutRef.current);
+    }
+    if (teamDraftTimeoutRef.current) {
+      clearTimeout(teamDraftTimeoutRef.current);
+    }
+    const latest = latestDraftSnapshotRef.current;
+    if (latest?.isTeamMode && latest?.teamId && latest?.hasUnsavedTeamChanges) {
+      persistDraftNow('team', latest.teamDraftStorageKey, latest.teamDraftPayload);
+    } else if (latest?.isEmployeeMode && latest?.employeeId && latest?.hasUnsavedChanges) {
+      persistDraftNow('employee', latest.employeeDraftStorageKey, latest.employeeDraftPayload);
     }
   }, []);
 
@@ -1774,6 +1995,7 @@ export default function ReportPage() {
         setSavedEconomicSnapshot(null);
         setSaveState('idle');
         setPreviousBalanceWarning('');
+        setDraftRestorePrompt((current) => (current?.type === 'employee' ? null : current));
         return;
       }
 
@@ -1821,6 +2043,7 @@ export default function ReportPage() {
             })
           );
           setSaveState('idle');
+          maybePrepareDraftRestore('employee', employeeDraftStorageKey);
           return;
         }
 
@@ -1864,10 +2087,12 @@ export default function ReportPage() {
         );
         setSaveState('idle');
         setPreviousBalanceWarning('');
+        maybePrepareDraftRestore('employee', employeeDraftStorageKey);
       } catch (err) {
         console.error(err);
         if (!cancelled && mountedRef.current) {
           alert('Errore caricamento saldo precedente');
+          maybePrepareDraftRestore('employee', employeeDraftStorageKey);
         }
       }
     }
@@ -1876,7 +2101,7 @@ export default function ReportPage() {
     return () => {
       cancelled = true;
     };
-  }, [isEmployeeMode, employee, currentMonth, defaultEmployerValue, location.key]);
+  }, [isEmployeeMode, employee, currentMonth, defaultEmployerValue, employeeDraftStorageKey, location.key]);
 
   useEffect(() => {
     const isProcessed = !!currentPayrollRecord?.processed_at;
@@ -1965,6 +2190,7 @@ export default function ReportPage() {
           setSavedTeamEconomicSnapshot(null);
           setTeamSaveState('idle');
           setIsTeamEditUnlocked(false);
+          setDraftRestorePrompt((current) => (current?.type === 'team' ? null : current));
         }
         return;
       }
@@ -2033,6 +2259,7 @@ export default function ReportPage() {
         );
         setTeamSaveState('idle');
         setIsTeamEditUnlocked(false);
+        maybePrepareDraftRestore('team', teamDraftStorageKey);
       } catch (err) {
         console.error(err);
         if (!cancelled && mountedRef.current) {
@@ -2045,6 +2272,8 @@ export default function ReportPage() {
           setCurrentTeamReportRecord(null);
           setSavedTeamEditorState(null);
           setSavedTeamEconomicSnapshot(null);
+          setTeamSaveState('idle');
+          maybePrepareDraftRestore('team', teamDraftStorageKey);
         }
       }
     }
@@ -2053,7 +2282,7 @@ export default function ReportPage() {
     return () => {
       cancelled = true;
     };
-  }, [isTeamMode, selectedReportMonthKey, selectedTeam?.id, selectedTeamMembers, selectedTeam]);
+  }, [isTeamMode, selectedReportMonthKey, selectedTeam?.id, selectedTeamMembers, selectedTeam, teamDraftStorageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2615,6 +2844,7 @@ export default function ReportPage() {
       setSaveState('saved');
       setImportedFinancialMovementIds([]);
       await refreshFinancialImportCounts(employee.id);
+      clearDraftAfterSuccessfulSave(employeeDraftStorageKey);
 
       if (!options.silent) {
         alert('Report processato e salvato nello storico');
@@ -2623,7 +2853,11 @@ export default function ReportPage() {
       return saved;
     } catch (err) {
       console.error(err);
-      alert('Errore salvataggio storico');
+      persistDraftNow('employee', employeeDraftStorageKey, employeeDraftPayload);
+      console.info('[report-draft] save-failed-but-draft-kept key=%s', employeeDraftStorageKey);
+      if (!options.silent) {
+        alert('Salvataggio non riuscito, ma la bozza è stata conservata.');
+      }
       return null;
     }
   }
@@ -3210,6 +3444,7 @@ export default function ReportPage() {
       );
       setTeamSaveState('saved');
       setIsTeamEditUnlocked(false);
+      clearDraftAfterSuccessfulSave(teamDraftStorageKey);
 
       if (!options.silent) {
         alert('Report squadra salvato nel registro');
@@ -3218,7 +3453,11 @@ export default function ReportPage() {
     } catch (err) {
       console.error(err);
       setTeamSaveState('idle');
-      alert(err?.message || 'Errore salvataggio report squadra');
+      persistDraftNow('team', teamDraftStorageKey, teamDraftPayload);
+      console.info('[report-draft] save-failed-but-draft-kept key=%s', teamDraftStorageKey);
+      if (!options.silent) {
+        alert('Salvataggio non riuscito, ma la bozza è stata conservata.');
+      }
       return null;
     }
   }
@@ -3616,11 +3855,155 @@ export default function ReportPage() {
     payslipCalcSelectedOption,
     payslipCustomDays,
   });
+  const employeeDraftPayload = useMemo(
+    () => ({
+      type: 'employee',
+      month: selectedReportMonthKey,
+      employeeId: employee?.id || null,
+      datore,
+      importoBustaPaga,
+      giornateBustaPaga,
+      advances,
+      restoPrecedente,
+      trasportoAttivo,
+      nMacchineMese,
+      prezzoPerMacchina,
+      balanceNotes,
+      payrollPaymentStatus,
+      payrollPaymentMethod,
+      payrollPaymentDate,
+      balanceStatus,
+      partialPaidAmount,
+      balanceClosedAt,
+      giftAmount,
+      giftLabel,
+      debtPlans,
+      resolvedDebtPlans,
+      showOvertimeInReport,
+      payslipCalcDailyAmount,
+      payslipCalcSelectedOption,
+      payslipCustomDays,
+      previousBalanceReference,
+      report_snapshot_json: {
+        economic_snapshot: currentEconomicSnapshot,
+      },
+    }),
+    [
+      advances,
+      balanceClosedAt,
+      balanceNotes,
+      balanceStatus,
+      currentEconomicSnapshot,
+      datore,
+      debtPlans,
+      employee?.id,
+      giornateBustaPaga,
+      giftAmount,
+      giftLabel,
+      importoBustaPaga,
+      nMacchineMese,
+      partialPaidAmount,
+      payrollPaymentDate,
+      payrollPaymentMethod,
+      payrollPaymentStatus,
+      payslipCalcDailyAmount,
+      payslipCalcSelectedOption,
+      payslipCustomDays,
+      previousBalanceReference,
+      prezzoPerMacchina,
+      resolvedDebtPlans,
+      restoPrecedente,
+      selectedReportMonthKey,
+      showOvertimeInReport,
+      trasportoAttivo,
+    ]
+  );
   const hasUnsavedChanges =
     isEmployeeMode &&
     !!employee &&
     savedEconomicSnapshot !== null &&
     currentEconomicSnapshot !== savedEconomicSnapshot;
+  const teamDraftPayload = useMemo(
+    () => ({
+      type: 'team',
+      month: selectedReportMonthKey,
+      teamId: selectedTeam?.id || null,
+      teamPeriodStart,
+      teamPeriodEnd,
+      teamDailyRate,
+      teamCompensationSummary,
+      teamGrossCompensation,
+      teamHeadcountTotals,
+      teamFinalBalance,
+      teamTransportEnabled,
+      teamTransportDescription,
+      teamTransportAmount,
+      teamAdvances,
+      teamPayrollComponents,
+      teamNotes,
+      teamSaveState,
+      report_snapshot_json: {
+        team_id: selectedTeam?.id || null,
+        team_name: selectedTeam?.name || '',
+        month: selectedReportMonthKey,
+        total_hours: teamHeadcountTotals.totalHours,
+        equivalent_days: teamHeadcountTotals.equivalentDays,
+        gross_compensation: teamGrossCompensation,
+        transport_total: teamTransportEnabled ? normalizeCurrency(teamTransportAmount) : 0,
+        advances_total: teamAdvancesTotal,
+        payroll_components_total: teamPayrollComponentsTotal,
+        final_balance: teamFinalBalance,
+        note: teamNotes || '',
+      },
+    }),
+    [
+      selectedReportMonthKey,
+      selectedTeam?.id,
+      selectedTeam?.name,
+      teamAdvances,
+      teamAdvancesTotal,
+      teamCompensationSummary,
+      teamDailyRate,
+      teamFinalBalance,
+      teamGrossCompensation,
+      teamHeadcountTotals,
+      teamNotes,
+      teamPayrollComponents,
+      teamPayrollComponentsTotal,
+      teamPeriodEnd,
+      teamPeriodStart,
+      teamSaveState,
+      teamTransportAmount,
+      teamTransportDescription,
+      teamTransportEnabled,
+    ]
+  );
+
+  useEffect(() => {
+    latestDraftSnapshotRef.current = {
+      isEmployeeMode,
+      isTeamMode,
+      hasUnsavedChanges,
+      hasUnsavedTeamChanges,
+      employeeId: employee?.id || null,
+      teamId: selectedTeam?.id || null,
+      employeeDraftStorageKey,
+      teamDraftStorageKey,
+      employeeDraftPayload,
+      teamDraftPayload,
+    };
+  }, [
+    employee?.id,
+    employeeDraftPayload,
+    employeeDraftStorageKey,
+    hasUnsavedChanges,
+    hasUnsavedTeamChanges,
+    isEmployeeMode,
+    isTeamMode,
+    selectedTeam?.id,
+    teamDraftPayload,
+    teamDraftStorageKey,
+  ]);
 
   useEffect(() => {
     setPayslipCalcDailyAmount('');
@@ -3655,14 +4038,53 @@ export default function ReportPage() {
 
   useEffect(() => {
     const handleBeforeUnload = (event) => {
-      if (!hasUnsavedChanges) return;
+      if (!hasUnsavedChanges && !hasUnsavedTeamChanges) return;
+      saveCurrentDraftNow();
       event.preventDefault();
       event.returnValue = '';
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [hasUnsavedChanges]);
+  }, [hasUnsavedChanges, hasUnsavedTeamChanges, isEmployeeMode, isTeamMode, employee?.id, selectedTeam?.id, employeeDraftStorageKey, teamDraftStorageKey, employeeDraftPayload, teamDraftPayload]);
+
+  useEffect(() => {
+    if (!isEmployeeMode || !employee?.id || !hasUnsavedChanges) {
+      if (employeeDraftTimeoutRef.current) {
+        clearTimeout(employeeDraftTimeoutRef.current);
+      }
+      return undefined;
+    }
+
+    employeeDraftTimeoutRef.current = setTimeout(() => {
+      persistDraftNow('employee', employeeDraftStorageKey, employeeDraftPayload);
+    }, 900);
+
+    return () => {
+      if (employeeDraftTimeoutRef.current) {
+        clearTimeout(employeeDraftTimeoutRef.current);
+      }
+    };
+  }, [employee?.id, employeeDraftPayload, employeeDraftStorageKey, hasUnsavedChanges, isEmployeeMode]);
+
+  useEffect(() => {
+    if (!isTeamMode || !selectedTeam?.id || !hasUnsavedTeamChanges) {
+      if (teamDraftTimeoutRef.current) {
+        clearTimeout(teamDraftTimeoutRef.current);
+      }
+      return undefined;
+    }
+
+    teamDraftTimeoutRef.current = setTimeout(() => {
+      persistDraftNow('team', teamDraftStorageKey, teamDraftPayload);
+    }, 900);
+
+    return () => {
+      if (teamDraftTimeoutRef.current) {
+        clearTimeout(teamDraftTimeoutRef.current);
+      }
+    };
+  }, [hasUnsavedTeamChanges, isTeamMode, selectedTeam?.id, teamDraftPayload, teamDraftStorageKey]);
 
   useEffect(() => {
     if (!isEmployeeMode || !employee || !hasUnsavedChanges) {
@@ -3734,9 +4156,8 @@ export default function ReportPage() {
   }
 
   function guardUnsavedChanges(callback) {
-    if (hasUnsavedChanges) {
-      alert('Salva prima di uscire');
-      return;
+    if (hasUnsavedChanges || hasUnsavedTeamChanges) {
+      saveCurrentDraftNow();
     }
     callback();
   }
@@ -3813,6 +4234,13 @@ export default function ReportPage() {
 
   const monthName = MONTH_NAMES[currentMonth.getMonth()];
   const yearStr = String(currentMonth.getFullYear());
+  const activeDraftStorageKey = isTeamMode ? teamDraftStorageKey : employeeDraftStorageKey;
+  const activeDraftFeedback =
+    draftFeedback.key && draftFeedback.key === activeDraftStorageKey ? draftFeedback : null;
+  const shouldShowDraftRestorePrompt =
+    !!draftRestorePrompt?.key &&
+    draftRestorePrompt.key === activeDraftStorageKey &&
+    ((draftRestorePrompt.type === 'team' && isTeamMode) || (draftRestorePrompt.type === 'employee' && isEmployeeMode));
 
   return (
     <div className="page report-page">
@@ -3998,6 +4426,40 @@ export default function ReportPage() {
           ) : null}
         </div>
       </div>
+
+      {shouldShowDraftRestorePrompt ? (
+        <div
+          className="no-print"
+          style={{
+            marginBottom: 16,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 14,
+            flexWrap: 'wrap',
+            padding: '14px 16px',
+            borderRadius: 18,
+            background: 'rgba(245, 158, 11, 0.12)',
+            border: '1px solid rgba(245, 158, 11, 0.22)',
+            color: '#92400e',
+          }}
+        >
+          <div style={{ display: 'grid', gap: 4 }}>
+            <strong style={{ fontSize: 14 }}>E presente una bozza non salvata. Vuoi ripristinarla?</strong>
+            <span style={{ fontSize: 12, color: '#a16207' }}>
+              La bozza verra mantenuta finche non scegli se ripristinarla o scartarla.
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button type="button" className="button-secondary" onClick={discardDraftFromPrompt}>
+              Scarta
+            </button>
+            <button type="button" className="button" onClick={restoreDraftFromPrompt}>
+              Ripristina
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {isEmployeeMode && employee ? (
         <div className="report-workspace">
@@ -4846,6 +5308,20 @@ export default function ReportPage() {
                   Dati sincronizzati
                 </span>
               )}
+              {activeDraftFeedback && isEmployeeMode ? (
+                <span
+                  className="soft-chip"
+                  style={
+                    activeDraftFeedback.tone === 'restored'
+                      ? { background: 'rgba(59, 130, 246, 0.14)', color: '#1d4ed8', borderColor: 'rgba(59, 130, 246, 0.18)' }
+                      : activeDraftFeedback.tone === 'discarded'
+                        ? { background: 'rgba(148, 163, 184, 0.16)', color: '#334155', borderColor: 'rgba(148, 163, 184, 0.18)' }
+                        : { background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', borderColor: 'rgba(245, 158, 11, 0.18)' }
+                  }
+                >
+                  {activeDraftFeedback.text}
+                </span>
+              ) : null}
             </div>
 
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -5165,6 +5641,20 @@ export default function ReportPage() {
                       Report non ancora salvato
                     </span>
                   )}
+                  {activeDraftFeedback && isTeamMode ? (
+                    <span
+                      className="soft-chip"
+                      style={
+                        activeDraftFeedback.tone === 'restored'
+                          ? { background: 'rgba(59, 130, 246, 0.14)', color: '#1d4ed8', borderColor: 'rgba(59, 130, 246, 0.18)' }
+                          : activeDraftFeedback.tone === 'discarded'
+                            ? { background: 'rgba(148, 163, 184, 0.16)', color: '#334155', borderColor: 'rgba(148, 163, 184, 0.18)' }
+                            : { background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', borderColor: 'rgba(245, 158, 11, 0.18)' }
+                      }
+                    >
+                      {activeDraftFeedback.text}
+                    </span>
+                  ) : null}
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
