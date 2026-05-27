@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Template Report Squadra</title>
+    <style>
+      @page {
+        size: A4 portrait;
+        margin: 10mm;
+      }
+
+      * {
+        box-sizing: border-box;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #eef4f0;
+        color: #14213d;
+        font-family: "Segoe UI", Arial, sans-serif;
+      }
+
+      body {
+        padding: 18px;
+      }
+
+      .sheet {
+        width: 100%;
+        background: #ffffff;
+        border: 1px solid #d8e2dc;
+        border-radius: 18px;
+        padding: 18px 20px;
+        box-shadow: 0 16px 34px rgba(15, 23, 42, 0.08);
+      }
+
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .brand {
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: #0f766e;
+      }
+
+      .title {
+        margin: 6px 0 2px;
+        font-size: 28px;
+        line-height: 1;
+        font-weight: 900;
+      }
+
+      .subtitle {
+        font-size: 13px;
+        color: #64748b;
+      }
+
+      .meta-chip {
+        padding: 8px 12px;
+        border-radius: 999px;
+        border: 1px solid #d1fae5;
+        background: #ecfdf5;
+        color: #166534;
+        font-size: 11px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .summary-card {
+        border: 1px solid #dbe4f0;
+        border-radius: 14px;
+        padding: 12px 14px;
+        background: linear-gradient(180deg, #fbfffc 0%, #f7faf8 100%);
+      }
+
+      .summary-label {
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b;
+      }
+
+      .summary-value {
+        margin-top: 5px;
+        font-size: 24px;
+        line-height: 1.05;
+        font-weight: 900;
+      }
+
+      .summary-sub {
+        margin-top: 4px;
+        font-size: 11px;
+        color: #64748b;
+      }
+
+      .section-card {
+        border: 1px solid #dbe4f0;
+        border-radius: 14px;
+        padding: 14px 15px;
+        margin-bottom: 12px;
+        background: #ffffff;
+      }
+
+      .section-label {
+        margin-bottom: 10px;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b;
+      }
+
+      .econ-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 14px;
+      }
+
+      .econ-label {
+        font-size: 15px;
+        font-weight: 800;
+        color: #111827;
+      }
+
+      .econ-sub {
+        margin-top: 3px;
+        font-size: 12px;
+        color: #6b7280;
+      }
+
+      .econ-amount {
+        font-size: 20px;
+        font-weight: 900;
+        white-space: nowrap;
+      }
+
+      .accent-positive { color: #15803d; }
+      .accent-transport { color: #0369a1; }
+      .accent-gift { color: #7c3aed; }
+      .accent-negative { color: #b91c1c; }
+
+      .formula-box {
+        border-radius: 14px;
+        padding: 12px 14px;
+        background: #f8fafc;
+        border: 1px dashed #cbd5e1;
+        font-size: 13px;
+        color: #334155;
+        margin-bottom: 12px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th, td {
+        padding: 9px 10px;
+        border-bottom: 1px solid #e5e7eb;
+        font-size: 12px;
+        text-align: left;
+      }
+
+      th {
+        font-size: 11px;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .num {
+        text-align: right;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .muted-cell {
+        text-align: center;
+        color: #64748b;
+      }
+
+      .result-card {
+        margin-top: 14px;
+        padding: 16px 18px;
+        border-radius: 16px;
+        background: linear-gradient(180deg, #ecfdf5 0%, #f0fdf4 100%);
+        border: 1px solid #bbf7d0;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+      }
+
+      .result-label {
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #166534;
+      }
+
+      .result-formula {
+        margin-top: 5px;
+        font-size: 12px;
+        color: #166534;
+      }
+
+      .result-value {
+        font-size: 28px;
+        font-weight: 900;
+        line-height: 1;
+        color: #166534;
+        white-space: nowrap;
+      }
+
+      .note-box {
+        margin-top: 12px;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid #e5e7eb;
+        background: #fafafa;
+        font-size: 12px;
+        color: #4b5563;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="sheet">
+      <header class="header">
+        <div>
+          <div class="brand">{{BRAND}}</div>
+          <h1 class="title">{{TEAM_NAME}}</h1>
+          <div class="subtitle">Report squadra - {{MONTH_LABEL}}</div>
+        </div>
+        <div class="meta-chip">Generato: {{GENERATED_AT}}</div>
+      </header>
+
+      <section class="summary-grid">
+        <div class="summary-card">
+          <div class="summary-label">Ore totali</div>
+          <div class="summary-value">{{TOTAL_HOURS}}</div>
+          <div class="summary-sub">Somma ore reali della squadra</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">Presenze uomo</div>
+          <div class="summary-value">{{PRESENCES}}</div>
+          <div class="summary-sub">Headcount operativo del mese</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">Giornate equivalenti</div>
+          <div class="summary-value">{{EQUIVALENT_DAYS}}</div>
+          <div class="summary-sub">Su giornata standard {{STANDARD_DAY_HOURS}}h</div>
+        </div>
+        <div class="summary-card">
+          <div class="summary-label">Compenso squadra</div>
+          <div class="summary-value">{{GROSS_COMPENSATION}}</div>
+          <div class="summary-sub">Retribuzione calcolata</div>
+        </div>
+      </section>
+
+      {{TRANSPORT_BLOCK}}
+      {{GIFT_BLOCK}}
+
+      <section class="section-card">
+        <div class="section-label">Buste paga componenti</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Componente</th>
+              <th class="num">Giornate</th>
+              <th class="num">Importo</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{COMPONENT_ROWS}}
+          </tbody>
+        </table>
+      </section>
+
+      <section class="formula-box">
+        Formula saldo: {{FORMULA_LABEL}}
+      </section>
+
+      <section class="section-card">
+        <div class="section-label">Riepilogo economico</div>
+        <div class="econ-row">
+          <div>
+            <div class="econ-label">Acconti squadra</div>
+            <div class="econ-sub">Totale acconti inseriti nel report</div>
+          </div>
+          <div class="econ-amount accent-negative">- {{ADVANCES_TOTAL}}</div>
+        </div>
+        <div class="econ-row" style="margin-top: 10px;">
+          <div>
+            <div class="econ-label">Buste componenti</div>
+            <div class="econ-sub">Totale buste paghe componenti squadra</div>
+          </div>
+          <div class="econ-amount accent-negative">- {{PAYROLL_COMPONENTS_TOTAL}}</div>
+        </div>
+      </section>
+
+      <section class="result-card">
+        <div>
+          <div class="result-label">Saldo finale squadra</div>
+          <div class="result-formula">{{FORMULA_LABEL}}</div>
+        </div>
+        <div class="result-value">{{FINAL_BALANCE}}</div>
+      </section>
+
+      <section class="note-box">
+        {{NOTE}}
+      </section>
+    </main>
+  </body>
+</html>
