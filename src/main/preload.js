@@ -238,6 +238,16 @@ contextBridge.exposeInMainWorld('api', {
     printHtml: (payload) => ipcRenderer.invoke('reports:printHtml', payload),
   },
 
+  teamReport: {
+    previewTemplate: (payload) => ipcRenderer.invoke('teamReport:previewTemplate', payload),
+    generatePdfTemplate: (payload) => ipcRenderer.invoke('teamReport:generatePdfTemplate', payload),
+  },
+
+  employeeReport: {
+    previewTemplate: (payload) => ipcRenderer.invoke('employeeReport:previewTemplate', payload),
+    generatePdfTemplate: (payload) => ipcRenderer.invoke('employeeReport:generatePdfTemplate', payload),
+  },
+
   printDocuments: {
     listDocuments: (filters) => ipcRenderer.invoke('printDocuments:listDocuments', filters),
     openDocument: (relativePath) => ipcRenderer.invoke('printDocuments:openDocument', relativePath),

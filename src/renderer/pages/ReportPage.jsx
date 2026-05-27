@@ -45,6 +45,8 @@ const PAYROLL_PAYMENT_METHOD_OPTIONS = [
   { value: 'assegno', label: 'Assegno' },
   { value: 'contanti', label: 'Contanti' },
 ];
+const USE_TEAM_REPORT_TEMPLATE = true;
+const USE_EMPLOYEE_REPORT_TEMPLATE = true;
 
 function formatLocalDate(date) {
   const year = date.getFullYear();
@@ -84,6 +86,100 @@ function getMonthDays(fromDate, toDate) {
 
   return days;
 }
+
+const TEAM_TEMPLATE_A4_WIDTH = 794;
+const TEAM_TEMPLATE_A4_HEIGHT = 1117;
+
+const TeamTemplatePreviewFrame = React.memo(function TeamTemplatePreviewFrame({ html, teamName, mode = 'fit-width' }) {
+  const viewportRef = useRef(null);
+  const [previewScale, setPreviewScale] = useState(1);
+  const [scaledSize, setScaledSize] = useState({
+    width: TEAM_TEMPLATE_A4_WIDTH,
+    height: TEAM_TEMPLATE_A4_HEIGHT,
+  });
+
+  useEffect(() => {
+    if (html) {
+      console.info('[team-template-preview] render-once');
+      console.info('[team-template-preview] teamName=', teamName || '');
+    }
+  }, [html, teamName]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      return undefined;
+    }
+
+    const updateScale = () => {
+      const bounds = viewport.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) {
+        return;
+      }
+
+      const availableWidth = Math.max(bounds.width - 16, 1);
+      const availableHeight = Math.max(bounds.height - 16, 1);
+      const widthScale = availableWidth / TEAM_TEMPLATE_A4_WIDTH;
+      const heightScale = availableHeight / TEAM_TEMPLATE_A4_HEIGHT;
+      const scale = mode === 'fit-page'
+        ? Math.min(widthScale, heightScale, 1)
+        : widthScale;
+      const nextScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+      const nextWidth = Math.round(TEAM_TEMPLATE_A4_WIDTH * nextScale);
+      const nextHeight = Math.round(TEAM_TEMPLATE_A4_HEIGHT * nextScale);
+
+      setPreviewScale((current) => (Math.abs(current - nextScale) < 0.001 ? current : nextScale));
+      setScaledSize((current) => (
+        current.width === nextWidth && current.height === nextHeight
+          ? current
+          : { width: nextWidth, height: nextHeight }
+      ));
+    };
+
+    updateScale();
+    const observer = new ResizeObserver(() => {
+      updateScale();
+    });
+    observer.observe(viewport);
+    return () => {
+      observer.disconnect();
+    };
+  }, [mode]);
+
+  if (!html) {
+    return null;
+  }
+
+  return (
+    <div className="team-template-preview-shell">
+      <div
+        ref={viewportRef}
+        className={`team-template-preview-viewport ${mode === 'fit-page' ? 'team-template-preview-viewport--fit-page' : 'team-template-preview-viewport--fit-width'}`}
+      >
+        <div
+          className="team-template-preview-stage"
+          style={{
+            width: `${scaledSize.width}px`,
+            height: `${scaledSize.height}px`,
+          }}
+        >
+          <iframe
+            title="Anteprima report template"
+            srcDoc={html}
+            scrolling="no"
+            className="team-template-preview-frame"
+            style={{
+              width: `${TEAM_TEMPLATE_A4_WIDTH}px`,
+              height: `${TEAM_TEMPLATE_A4_HEIGHT}px`,
+              transform: `scale(${previewScale})`,
+              transformOrigin: 'top center',
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+});
 
 function getCalendarWeeks(days) {
   const weeks = [];
@@ -441,6 +537,9 @@ function buildTeamReportSnapshot({
   teamTransportEnabled,
   teamTransportDescription,
   teamTransportAmount,
+  teamGiftEnabled,
+  teamGiftDescription,
+  teamGiftAmount,
   teamNotes,
   teamAdvances,
   teamPayrollComponents,
@@ -449,6 +548,9 @@ function buildTeamReportSnapshot({
     transport_enabled: !!teamTransportEnabled,
     transport_description: String(teamTransportDescription || ''),
     transport_amount: Number(teamTransportAmount || 0),
+    gift_enabled: !!teamGiftEnabled,
+    gift_description: String(teamGiftDescription || ''),
+    gift_amount: Number(teamGiftAmount || 0),
     note: String(teamNotes || ''),
     advances: (Array.isArray(teamAdvances) ? teamAdvances : [])
       .filter(isMeaningfulTeamAdvance)
@@ -938,12 +1040,22 @@ export default function ReportPage() {
     text: '',
     savedAt: '',
   });
+  const [employeeTemplatePreviewHtml, setEmployeeTemplatePreviewHtml] = useState('');
+  const [employeeTemplatePreviewLoading, setEmployeeTemplatePreviewLoading] = useState(false);
+  const [employeeTemplatePreviewError, setEmployeeTemplatePreviewError] = useState('');
+  const lastEmployeeTemplatePreviewKeyRef = useRef('');
+  const employeeTemplatePreviewTimeoutRef = useRef(null);
+  const [employeeTemplatePreviewMode, setEmployeeTemplatePreviewMode] = useState('fit-page');
+  const [teamTemplatePreviewMode, setTeamTemplatePreviewMode] = useState('fit-page');
 
   const [teamPeriodStart, setTeamPeriodStart] = useState(formatLocalDate(startOfMonth(currentMonth)));
   const [teamPeriodEnd, setTeamPeriodEnd] = useState(formatLocalDate(endOfMonth(currentMonth)));
   const [teamTransportEnabled, setTeamTransportEnabled] = useState(false);
   const [teamTransportDescription, setTeamTransportDescription] = useState('');
   const [teamTransportAmount, setTeamTransportAmount] = useState('');
+  const [teamGiftEnabled, setTeamGiftEnabled] = useState(false);
+  const [teamGiftDescription, setTeamGiftDescription] = useState('');
+  const [teamGiftAmount, setTeamGiftAmount] = useState('');
   const [teamAdvances, setTeamAdvances] = useState([createEmptyTeamAdvance()]);
   const [teamAdvanceBusyKey, setTeamAdvanceBusyKey] = useState('');
   const [teamAdvanceImportModal, setTeamAdvanceImportModal] = useState({
@@ -958,6 +1070,12 @@ export default function ReportPage() {
   const [savedTeamEditorState, setSavedTeamEditorState] = useState(null);
   const [savedTeamEconomicSnapshot, setSavedTeamEconomicSnapshot] = useState(null);
   const [teamSaveState, setTeamSaveState] = useState('idle');
+  const [teamTemplatePreviewHtml, setTeamTemplatePreviewHtml] = useState('');
+  const [teamTemplatePreviewData, setTeamTemplatePreviewData] = useState(null);
+  const [teamTemplatePreviewLoading, setTeamTemplatePreviewLoading] = useState(false);
+  const [teamTemplatePreviewError, setTeamTemplatePreviewError] = useState('');
+  const lastTeamTemplatePreviewKeyRef = useRef('');
+  const teamTemplatePreviewTimeoutRef = useRef(null);
   const [isTeamEditUnlocked, setIsTeamEditUnlocked] = useState(false);
   const [teamPayrollMap, setTeamPayrollMap] = useState({});
   const [processedEmployeeIdsForMonth, setProcessedEmployeeIdsForMonth] = useState(() => new Set());
@@ -1075,6 +1193,9 @@ export default function ReportPage() {
     }
   }, [loading]);
   const selectedReportMonthKey = monthString(currentMonth);
+  const monthName = MONTH_NAMES[currentMonth.getMonth()];
+  const yearStr = String(currentMonth.getFullYear());
+  console.info('[report-template] monthName', monthName);
   const employeeDraftStorageKey = useMemo(
     () => (isEmployeeMode && employee?.id ? buildReportDraftStorageKey('employee', selectedReportMonthKey, employee.id) : ''),
     [employee?.id, isEmployeeMode, selectedReportMonthKey]
@@ -1176,24 +1297,32 @@ export default function ReportPage() {
     [selectedTeamAttendanceRows]
   );
   const teamDailyRate = Number(selectedTeam?.team_daily_rate || 0);
-  const filteredTeamAdvances = teamAdvances
-    .map((advance, index) => ({
-      id: advance.id || `team-advance-${index}`,
-      amount: Number(advance.amount || 0),
-      date: advance.date || '',
-      notes: advance.notes || '',
-    }))
-    .filter((advance) => advance.amount > 0);
-  const filteredTeamPayrollComponents = teamPayrollComponents
-    .map((component, index) => ({
-      id: component.id || `team-payroll-component-${index}`,
-      employee_id: component.employee_id ? Number(component.employee_id) : null,
-      employee_label: component.employee_label || '',
-      days: Number(component.days || 0),
-      amount: Number(component.amount || 0),
-      notes: component.notes || '',
-    }))
-    .filter((component) => component.amount > 0 || component.days > 0 || component.notes);
+  const filteredTeamAdvances = useMemo(
+    () =>
+      teamAdvances
+        .map((advance, index) => ({
+          id: advance.id || `team-advance-${index}`,
+          amount: Number(advance.amount || 0),
+          date: advance.date || '',
+          notes: advance.notes || '',
+        }))
+        .filter((advance) => advance.amount > 0),
+    [teamAdvances]
+  );
+  const filteredTeamPayrollComponents = useMemo(
+    () =>
+      teamPayrollComponents
+        .map((component, index) => ({
+          id: component.id || `team-payroll-component-${index}`,
+          employee_id: component.employee_id ? Number(component.employee_id) : null,
+          employee_label: component.employee_label || '',
+          days: Number(component.days || 0),
+          amount: Number(component.amount || 0),
+          notes: component.notes || '',
+        }))
+        .filter((component) => component.amount > 0 || component.days > 0 || component.notes),
+    [teamPayrollComponents]
+  );
   const teamHeadcountTotals = useMemo(() => {
     return selectedTeamAttendanceRows.reduce((acc, record) => {
       const headcount = Number(record.headcount || 0);
@@ -1215,6 +1344,7 @@ export default function ReportPage() {
     });
   }, [attendanceBaseHours, selectedTeamAttendanceRows]);
   const teamTransportTotal = teamTransportEnabled ? normalizeCurrency(teamTransportAmount) : 0;
+  const teamGiftTotal = teamGiftEnabled ? normalizeCurrency(teamGiftAmount) : 0;
   const teamAdvancesTotal = filteredTeamAdvances.reduce((sum, advance) => sum + advance.amount, 0);
   const teamPayrollComponentsTotal = filteredTeamPayrollComponents.reduce((sum, component) => sum + component.amount, 0);
   const teamTotals = useMemo(
@@ -1238,17 +1368,89 @@ export default function ReportPage() {
     [teamRows]
   );
   const teamGrossCompensation = teamHeadcountTotals.equivalentDays * teamDailyRate;
-  const teamFinalBalance = teamGrossCompensation - teamAdvancesTotal - teamPayrollComponentsTotal;
+  const teamFinalBalance = teamGrossCompensation + teamTransportTotal + teamGiftTotal - teamAdvancesTotal - teamPayrollComponentsTotal;
   const teamCompensationSummary = formatWorkedSummary(
     teamHeadcountTotals.totalHours,
     attendanceBaseHours,
     hoursFormat
   );
   const teamCompensationDetail = `${formatReportHoursValue(teamHeadcountTotals.equivalentDays)} gg x ${formatCurrency(teamDailyRate)}`;
+  const teamTemplateSource = useMemo(() => ({
+    teamId: selectedTeam?.id || null,
+    teamName: selectedTeam?.name || '',
+    brandMark: selectedTeam?.name || 'gpa',
+    monthLabel: teamPeriodLabel || `${monthName} ${yearStr}`,
+    year: currentMonth.getFullYear(),
+    month: currentMonth.getMonth() + 1,
+    standardDayHours: attendanceBaseHours,
+    dailyRate: teamDailyRate,
+    totalHours: teamHeadcountTotals.totalHours,
+    headcountPresences: teamHeadcountTotals.totalHeadcount,
+    equivalentDays: teamHeadcountTotals.equivalentDays,
+    grossCompensation: teamGrossCompensation,
+    transportEnabled: teamTransportEnabled,
+    transportDescription: teamTransportDescription,
+    transportAmount: teamTransportEnabled ? normalizeCurrency(teamTransportAmount) : 0,
+    giftEnabled: teamGiftEnabled,
+    giftDescription: teamGiftDescription,
+    giftAmount: teamGiftEnabled ? normalizeCurrency(teamGiftAmount) : 0,
+    advancesTotal: teamAdvancesTotal,
+    payrollComponentsTotal: teamPayrollComponentsTotal,
+    note: [selectedTeam?.notes, teamNotes].filter(Boolean).join(' - '),
+    periodStart: teamPeriodStart,
+    periodEnd: teamPeriodEnd,
+    calendarEntries: selectedTeamAttendanceRows.map((record) => ({
+      date: record.date,
+      headcount: Number(record.headcount || 0),
+      hours_per_person: Number(record.hours_per_person || attendanceBaseHours),
+    })),
+    payrollComponents: filteredTeamPayrollComponents.map((component) => ({
+      label: component.employee_label || 'Componente squadra',
+      days: Number(component.days || 0),
+      amount: Number(component.amount || 0),
+    })),
+    advances: filteredTeamAdvances.map((advance) => ({
+      date: advance.date || advance.advance_date || '',
+      amount: Number(advance.amount || 0),
+      notes: advance.notes || '',
+    })),
+    generatedBy: 'ReportPage',
+    debugRenderLabel: `team-${selectedTeam?.id || 'unknown'}-${selectedTeam?.name || ''}-${selectedReportMonthKey}`,
+  }), [
+    attendanceBaseHours,
+    currentMonth,
+    filteredTeamAdvances,
+    filteredTeamPayrollComponents,
+    monthName,
+    selectedReportMonthKey,
+    selectedTeam?.id,
+    selectedTeam?.name,
+    selectedTeam?.notes,
+    selectedTeamAttendanceRows,
+    teamAdvancesTotal,
+    teamDailyRate,
+    teamGiftAmount,
+    teamGiftDescription,
+    teamGiftEnabled,
+    teamGrossCompensation,
+    teamHeadcountTotals,
+    teamNotes,
+    teamPayrollComponentsTotal,
+    teamPeriodEnd,
+    teamPeriodLabel,
+    teamPeriodStart,
+    teamTransportAmount,
+    teamTransportDescription,
+    teamTransportEnabled,
+    yearStr,
+  ]);
   const currentTeamEconomicSnapshot = buildTeamReportSnapshot({
     teamTransportEnabled,
     teamTransportDescription,
     teamTransportAmount,
+    teamGiftEnabled,
+    teamGiftDescription,
+    teamGiftAmount,
     teamNotes,
     teamAdvances,
     teamPayrollComponents,
@@ -1257,6 +1459,9 @@ export default function ReportPage() {
     !!teamTransportEnabled ||
     String(teamTransportDescription || '').trim() !== '' ||
     normalizeCurrency(teamTransportAmount) > 0 ||
+    !!teamGiftEnabled ||
+    String(teamGiftDescription || '').trim() !== '' ||
+    normalizeCurrency(teamGiftAmount) > 0 ||
     String(teamNotes || '').trim() !== '' ||
     teamAdvances.some(isMeaningfulTeamAdvance) ||
     teamPayrollComponents.some(isMeaningfulTeamPayrollComponent);
@@ -1457,6 +1662,9 @@ export default function ReportPage() {
     setTeamTransportEnabled(!!draft.teamTransportEnabled);
     setTeamTransportDescription(draft.teamTransportDescription || '');
     setTeamTransportAmount(draft.teamTransportAmount || '');
+    setTeamGiftEnabled(!!draft.teamGiftEnabled);
+    setTeamGiftDescription(draft.teamGiftDescription || '');
+    setTeamGiftAmount(draft.teamGiftAmount || '');
     setTeamNotes(draft.teamNotes || '');
     setTeamAdvances(Array.isArray(draft.teamAdvances) && draft.teamAdvances.length ? draft.teamAdvances : [createEmptyTeamAdvance()]);
     setTeamPayrollComponents(
@@ -1558,6 +1766,9 @@ export default function ReportPage() {
     setTeamTransportEnabled(false);
     setTeamTransportDescription('');
     setTeamTransportAmount('');
+    setTeamGiftEnabled(false);
+    setTeamGiftDescription('');
+    setTeamGiftAmount('');
     setTeamNotes('');
   }, [selectedTeam?.id, currentMonth, isTeamMode]);
 
@@ -2184,6 +2395,9 @@ export default function ReportPage() {
           setTeamTransportEnabled(false);
           setTeamTransportDescription('');
           setTeamTransportAmount('');
+          setTeamGiftEnabled(false);
+          setTeamGiftDescription('');
+          setTeamGiftAmount('');
           setTeamNotes('');
           setCurrentTeamReportRecord(null);
           setSavedTeamEditorState(null);
@@ -2233,6 +2447,12 @@ export default function ReportPage() {
             record?.transport_amount === null || record?.transport_amount === undefined || Number(record.transport_amount) === 0
               ? ''
               : String(record.transport_amount),
+          teamGiftEnabled: !!record?.gift_enabled,
+          teamGiftDescription: record?.gift_description || '',
+          teamGiftAmount:
+            record?.gift_amount === null || record?.gift_amount === undefined || Number(record.gift_amount) === 0
+              ? ''
+              : String(record.gift_amount),
           teamNotes: record?.note || '',
           teamAdvances: nextAdvances,
           teamPayrollComponents: nextComponents,
@@ -2242,6 +2462,9 @@ export default function ReportPage() {
         setTeamTransportEnabled(nextEditorState.teamTransportEnabled);
         setTeamTransportDescription(nextEditorState.teamTransportDescription);
         setTeamTransportAmount(nextEditorState.teamTransportAmount);
+        setTeamGiftEnabled(nextEditorState.teamGiftEnabled);
+        setTeamGiftDescription(nextEditorState.teamGiftDescription);
+        setTeamGiftAmount(nextEditorState.teamGiftAmount);
         setTeamNotes(nextEditorState.teamNotes);
         setTeamAdvances(nextEditorState.teamAdvances);
         setTeamPayrollComponents(nextEditorState.teamPayrollComponents);
@@ -2252,6 +2475,9 @@ export default function ReportPage() {
             teamTransportEnabled: nextEditorState.teamTransportEnabled,
             teamTransportDescription: nextEditorState.teamTransportDescription,
             teamTransportAmount: nextEditorState.teamTransportAmount,
+            teamGiftEnabled: nextEditorState.teamGiftEnabled,
+            teamGiftDescription: nextEditorState.teamGiftDescription,
+            teamGiftAmount: nextEditorState.teamGiftAmount,
             teamNotes: nextEditorState.teamNotes,
             teamAdvances: nextEditorState.teamAdvances,
             teamPayrollComponents: nextEditorState.teamPayrollComponents,
@@ -2268,6 +2494,9 @@ export default function ReportPage() {
           setTeamTransportEnabled(false);
           setTeamTransportDescription('');
           setTeamTransportAmount('');
+          setTeamGiftEnabled(false);
+          setTeamGiftDescription('');
+          setTeamGiftAmount('');
           setTeamNotes('');
           setCurrentTeamReportRecord(null);
           setSavedTeamEditorState(null);
@@ -2402,12 +2631,6 @@ export default function ReportPage() {
   }
 
   async function handleSavePdf() {
-    const printArea = document.querySelector('.print-area');
-    if (!printArea) {
-      alert('Area report non trovata');
-      return;
-    }
-
     const suggestedName = isTeamMode && selectedTeam
       ? sanitizeFileName(`${selectedTeam.name} - ${teamPeriodStart}_${teamPeriodEnd}.pdf`)
       : employee
@@ -2415,6 +2638,39 @@ export default function ReportPage() {
       : 'report.pdf';
 
     try {
+      if (isTeamMode && selectedTeam && USE_TEAM_REPORT_TEMPLATE) {
+        try {
+          await window.api.teamReport.generatePdfTemplate({
+            ...teamTemplateSource,
+            fileName: suggestedName,
+          });
+          console.info('[team-print-template] pdf');
+          return;
+        } catch (error) {
+          console.error('[team-print-template] error', error);
+          console.info('[team-print-template] fallback-legacy');
+        }
+      }
+
+      if (isEmployeeMode && employee && USE_EMPLOYEE_REPORT_TEMPLATE) {
+        try {
+          await window.api.employeeReport.generatePdfTemplate({
+            ...employeeTemplateSource,
+            fileName: suggestedName,
+          });
+          console.info('[employee-template-pdf]');
+          return;
+        } catch (error) {
+          console.error('[employee-template-fallback]', error);
+        }
+      }
+
+      const printArea = document.querySelector('.print-area');
+      if (!printArea) {
+        alert('Area report non trovata');
+        return;
+      }
+
       await window.api.reports.savePdf({
         fileName: suggestedName,
         html: printArea.outerHTML,
@@ -2427,13 +2683,15 @@ export default function ReportPage() {
   }
 
   async function handleSavePdfToFolder() {
-    const printArea = document.querySelector('.print-area');
-    if (!printArea) {
-      alert('Area report non trovata');
-      return;
-    }
     if (!employee || isTeamMode) {
       alert('Seleziona un dipendente per salvare il PDF nella cartella report operai');
+      return;
+    }
+
+    const templateHtml = USE_EMPLOYEE_REPORT_TEMPLATE ? employeeTemplatePreviewHtml : '';
+    const printArea = document.querySelector('.print-area');
+    if (!templateHtml && !printArea) {
+      alert('Area report non trovata');
       return;
     }
 
@@ -2446,7 +2704,7 @@ export default function ReportPage() {
       const result = await window.api.reports.savePdfToFolder({
         fileName,
         monthFolderName,
-        html: printArea.outerHTML,
+        html: templateHtml || printArea.outerHTML,
         debugRenderLabel: '',
       });
       if (!result?.canceled) {
@@ -3375,6 +3633,9 @@ export default function ReportPage() {
       );
 
       const snapshotHtml =
+        (isTeamMode && USE_TEAM_REPORT_TEMPLATE && teamTemplatePreviewHtml
+          ? teamTemplatePreviewHtml
+          : null) ||
         document.querySelector('.report-preview-column .print-area')?.outerHTML ||
         document.querySelector('.print-area')?.outerHTML ||
         null;
@@ -3384,6 +3645,9 @@ export default function ReportPage() {
         transport_enabled: teamTransportEnabled,
         transport_description: teamTransportDescription,
         transport_amount: teamTransportEnabled ? normalizeCurrency(teamTransportAmount) : 0,
+        gift_enabled: teamGiftEnabled,
+        gift_description: teamGiftDescription,
+        gift_amount: teamGiftEnabled ? normalizeCurrency(teamGiftAmount) : 0,
         note: teamNotes,
         processed_at: new Date().toISOString(),
         report_html_snapshot: snapshotHtml,
@@ -3396,6 +3660,9 @@ export default function ReportPage() {
           total_hours: teamHeadcountTotals.totalHours,
           gross_compensation: teamGrossCompensation,
           transport_total: teamTransportEnabled ? normalizeCurrency(teamTransportAmount) : 0,
+          gift_enabled: teamGiftEnabled,
+          gift_description: teamGiftDescription,
+          gift_amount: teamGiftEnabled ? normalizeCurrency(teamGiftAmount) : 0,
           advances_total: teamAdvancesTotal,
           payroll_components_total: teamPayrollComponentsTotal,
           final_balance: teamFinalBalance,
@@ -3422,6 +3689,9 @@ export default function ReportPage() {
         teamTransportEnabled,
         teamTransportDescription,
         teamTransportAmount,
+        teamGiftEnabled,
+        teamGiftDescription,
+        teamGiftAmount,
         teamNotes,
         teamAdvances: nextAdvances,
         teamPayrollComponents: nextComponents,
@@ -3437,6 +3707,9 @@ export default function ReportPage() {
           teamTransportEnabled: nextSavedState.teamTransportEnabled,
           teamTransportDescription: nextSavedState.teamTransportDescription,
           teamTransportAmount: nextSavedState.teamTransportAmount,
+          teamGiftEnabled: nextSavedState.teamGiftEnabled,
+          teamGiftDescription: nextSavedState.teamGiftDescription,
+          teamGiftAmount: nextSavedState.teamGiftAmount,
           teamNotes: nextSavedState.teamNotes,
           teamAdvances: nextSavedState.teamAdvances,
           teamPayrollComponents: nextSavedState.teamPayrollComponents,
@@ -3496,6 +3769,7 @@ export default function ReportPage() {
   const totalOvertimePay = employeeTotals.totalOvertimeHours * overtimeHourlyRate;
   const totalCalculatedPay = totalRegularPay + totalOvertimePay;
   const totalCalculatedPayForReport = showOvertimeInReport ? totalCalculatedPay : totalRegularPay;
+  const displayTotalHours = showOvertimeInReport ? employeeTotals.totalHours : employeeTotals.totalRegularHours;
   const showPayCalculationDetail = !!settings?.report?.show_pay_calculation_detail;
   const equivalentWorkedDays = attendanceBaseHours > 0
     ? employeeTotals.totalHours / attendanceBaseHours
@@ -3938,6 +4212,9 @@ export default function ReportPage() {
       teamTransportEnabled,
       teamTransportDescription,
       teamTransportAmount,
+      teamGiftEnabled,
+      teamGiftDescription,
+      teamGiftAmount,
       teamAdvances,
       teamPayrollComponents,
       teamNotes,
@@ -3950,6 +4227,9 @@ export default function ReportPage() {
         equivalent_days: teamHeadcountTotals.equivalentDays,
         gross_compensation: teamGrossCompensation,
         transport_total: teamTransportEnabled ? normalizeCurrency(teamTransportAmount) : 0,
+        gift_enabled: teamGiftEnabled,
+        gift_description: teamGiftDescription,
+        gift_amount: teamGiftEnabled ? normalizeCurrency(teamGiftAmount) : 0,
         advances_total: teamAdvancesTotal,
         payroll_components_total: teamPayrollComponentsTotal,
         final_balance: teamFinalBalance,
@@ -3973,11 +4253,103 @@ export default function ReportPage() {
       teamPeriodEnd,
       teamPeriodStart,
       teamSaveState,
+      teamGiftAmount,
+      teamGiftDescription,
+      teamGiftEnabled,
       teamTransportAmount,
       teamTransportDescription,
       teamTransportEnabled,
     ]
   );
+  const teamTemplatePreviewRequestKey = useMemo(
+    () => JSON.stringify({
+      teamId: teamTemplateSource.teamId || null,
+      teamName: teamTemplateSource.teamName || '',
+      month: teamTemplateSource.month || null,
+      year: teamTemplateSource.year || null,
+      totalHours: teamTemplateSource.totalHours || 0,
+      finalBalance:
+        teamTemplateSource.grossCompensation +
+        (teamTemplateSource.transportEnabled ? teamTemplateSource.transportAmount : 0) +
+        (teamTemplateSource.giftEnabled ? teamTemplateSource.giftAmount : 0) -
+        (teamTemplateSource.advancesTotal || 0) -
+        (teamTemplateSource.payrollComponentsTotal || 0),
+      transportAmount: teamTemplateSource.transportEnabled ? teamTemplateSource.transportAmount : 0,
+      giftAmount: teamTemplateSource.giftEnabled ? teamTemplateSource.giftAmount : 0,
+      payrollComponentsTotal: teamTemplateSource.payrollComponentsTotal || 0,
+      attendanceEntries: Array.isArray(teamTemplateSource.calendarEntries) ? teamTemplateSource.calendarEntries : [],
+    }),
+    [teamTemplateSource]
+  );
+
+  useEffect(() => {
+    if (!USE_TEAM_REPORT_TEMPLATE || !isTeamMode || !selectedTeam?.id) {
+      if (teamTemplatePreviewTimeoutRef.current) {
+        clearTimeout(teamTemplatePreviewTimeoutRef.current);
+        teamTemplatePreviewTimeoutRef.current = null;
+      }
+      lastTeamTemplatePreviewKeyRef.current = '';
+      setTeamTemplatePreviewHtml('');
+      setTeamTemplatePreviewData(null);
+      setTeamTemplatePreviewError('');
+      setTeamTemplatePreviewLoading(false);
+      return;
+    }
+
+    if (lastTeamTemplatePreviewKeyRef.current === teamTemplatePreviewRequestKey) {
+      return;
+    }
+    console.info('[team-template-data] teamId=%s teamName=%s', selectedTeam?.id || '', selectedTeam?.name || '');
+    lastTeamTemplatePreviewKeyRef.current = teamTemplatePreviewRequestKey;
+
+    let cancelled = false;
+
+    async function loadTeamTemplatePreview() {
+      try {
+        setTeamTemplatePreviewLoading(true);
+        const result = await window.api.teamReport.previewTemplate(teamTemplateSource);
+        if (cancelled) {
+          return;
+        }
+        setTeamTemplatePreviewHtml((current) => (current === (result?.html || '') ? current : (result?.html || '')));
+        setTeamTemplatePreviewData(result?.data || null);
+        setTeamTemplatePreviewError('');
+        console.info('[team-print-template] preview');
+        console.info('[team-template-preview] teamName=%s', result?.data?.team?.name || teamTemplateSource.teamName || '');
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        lastTeamTemplatePreviewKeyRef.current = '';
+        console.error('[team-print-template] error', error);
+        console.info('[team-print-template] fallback-legacy');
+        setTeamTemplatePreviewHtml('');
+        setTeamTemplatePreviewData(null);
+        setTeamTemplatePreviewError(error?.message || 'Template non disponibile');
+      } finally {
+        if (!cancelled) {
+          setTeamTemplatePreviewLoading(false);
+        }
+      }
+    }
+
+    if (teamTemplatePreviewTimeoutRef.current) {
+      clearTimeout(teamTemplatePreviewTimeoutRef.current);
+    }
+
+    teamTemplatePreviewTimeoutRef.current = setTimeout(() => {
+      teamTemplatePreviewTimeoutRef.current = null;
+      loadTeamTemplatePreview();
+    }, 250);
+
+    return () => {
+      if (teamTemplatePreviewTimeoutRef.current) {
+        clearTimeout(teamTemplatePreviewTimeoutRef.current);
+        teamTemplatePreviewTimeoutRef.current = null;
+      }
+      cancelled = true;
+    };
+  }, [isTeamMode, selectedTeam?.id, teamTemplatePreviewRequestKey]);
 
   useEffect(() => {
     latestDraftSnapshotRef.current = {
@@ -4187,6 +4559,212 @@ export default function ReportPage() {
   );
   const remainingBalanceNum = balanceSettlement.remainingBalance;
 
+  const employeeTemplateSource = useMemo(() => {
+    if (!employee) {
+      return null;
+    }
+
+    const periodStart = startOfMonth(currentMonth);
+    const periodEnd = endOfMonth(currentMonth);
+    const employeeName = [
+      employee.first_name,
+      employee.last_name,
+    ].filter(Boolean).join(' ').trim() || employee.full_name || employee.name || 'Dipendente';
+    const markerLabel = datore || employee.employer || employee.role || 'Presenza';
+    const presenze = reportAttendanceDays
+      .map((date) => {
+        const dateStr = formatLocalDate(date);
+        const dayNumber = date.getDate();
+        const normalized = attendanceMap[dateStr]
+          ? normalizeReportAttendanceEntry(attendanceMap[dateStr])
+          : null;
+
+        if (!normalized) {
+          return date.getDay() === 0 ? { data: dayNumber, tipo: 'rest' } : null;
+        }
+
+        if (normalized.status === 'assente') {
+          return { data: dayNumber, tipo: 'absent' };
+        }
+
+        const regularHours = Number(normalized.hours_worked || 0);
+        const overtimeHours = Number(normalized.overtime_hours || 0);
+        const hasPresenceMarker = !!(normalized.marker_code || normalized.entry_code);
+        if (regularHours > 0 || overtimeHours > 0 || hasPresenceMarker) {
+          return {
+            data: dayNumber,
+            tipo: 'worked',
+            ore: regularHours > 0 ? regularHours : (overtimeHours > 0 ? overtimeHours : attendanceBaseHours),
+            task: normalized.marker_code || normalized.entry_code || markerLabel,
+            isOvertime: overtimeHours > 0,
+          };
+        }
+
+        return date.getDay() === 0 ? { data: dayNumber, tipo: 'rest' } : { data: dayNumber, tipo: 'absent' };
+      })
+      .filter(Boolean);
+
+    const normalizedPayrollStatus = normalizePayrollPaymentStatus(payrollPaymentStatus);
+    const payrollStatusLabel = normalizedPayrollStatus === 'pagato' ? 'Pagato' : 'Non pagato';
+    const overtimeAmountForTemplate = showOvertimeInReport ? totalOvertimePay : 0;
+
+    return {
+      employeeId: employee.id,
+      squadra: markerLabel,
+      generatoDa: 'GPA 1.0.5',
+      periodo: {
+        inizioISO: formatLocalDate(periodStart),
+        fineISO: formatLocalDate(periodEnd),
+      },
+      dipendente: {
+        nome: employeeName,
+        ruolo: employee.role || employee.job_title || employee.mansione || 'Nessuna mansione',
+        markerLabel,
+        markerLegendLabel: markerLabel,
+        paymentStatus: normalizedPayrollStatus === 'pagato' ? 'paid' : 'unpaid',
+        paymentStatusLabel: payrollStatusLabel,
+        dailyRate: dailyPay,
+        overtimeRate: showOvertimeInReport ? overtimeHourlyRate : 0,
+        standardHours,
+      },
+      kpi: {
+        giornateIntere: workedDays,
+        oreResidue: employeeTotals.remainingTotalHours,
+        oreTotali: displayTotalHours,
+        straordinari: showOvertimeInReport ? employeeTotals.totalOvertimeHours : 0,
+        giornateEquivalenti: equivalentWorkedDays,
+        compensoLordo: totalRegularPay,
+      },
+      compenso: {
+        retribuzione: totalRegularPay,
+        straordinariImporto: overtimeAmountForTemplate,
+        regalo: giftAmountNum,
+        trasporto: trasportoAttivo ? totaleTrasporto : 0,
+        creditoPrecedente: Math.max(restoPrecedenteNum, 0),
+        bustaPaga: {
+          importo: importoBustaPagaNum,
+          giornate: Number(giornateBustaPaga || 0),
+          note: [
+            payrollStatusLabel,
+            payrollPaymentMethod,
+            payrollPaymentDate ? formatDisplayDate(payrollPaymentDate) : '',
+          ].filter(Boolean).join(' - '),
+        },
+        acconti: {
+          importo: totalAdvances,
+          count: normalizedAdvances.length,
+        },
+        rate: {
+          importo: currentInstallmentTotal + Math.abs(Math.min(restoPrecedenteNum, 0)),
+          note: currentInstallments.length
+            ? `${currentInstallments.length} rata/e nel mese`
+            : (restoPrecedenteNum < 0 ? 'Debito precedente riportato' : 'nessuna rata'),
+        },
+        saldoFinale: remainingBalanceNum,
+        balanceStatusLabel: getPaymentStatusLabel(balanceSettlement.status),
+      },
+      presenze,
+      note: balanceNotes || '',
+    };
+  }, [
+    attendanceBaseHours,
+    attendanceMap,
+    balanceNotes,
+    balanceSettlement.status,
+    currentInstallmentTotal,
+    currentInstallments.length,
+    currentMonth,
+    dailyPay,
+    datore,
+    displayTotalHours,
+    employee,
+    employeeTotals.remainingTotalHours,
+    employeeTotals.totalOvertimeHours,
+    equivalentWorkedDays,
+    giftAmountNum,
+    giornateBustaPaga,
+    importoBustaPagaNum,
+    normalizedAdvances.length,
+    overtimeHourlyRate,
+    payrollPaymentDate,
+    payrollPaymentMethod,
+    payrollPaymentStatus,
+    remainingBalanceNum,
+    reportAttendanceDays,
+    restoPrecedenteNum,
+    showOvertimeInReport,
+    standardHours,
+    totalAdvances,
+    totalOvertimePay,
+    totalRegularPay,
+    totaleTrasporto,
+    trasportoAttivo,
+    workedDays,
+  ]);
+
+  const employeeTemplatePreviewRequestKey = useMemo(
+    () => (employeeTemplateSource ? JSON.stringify(employeeTemplateSource) : ''),
+    [employeeTemplateSource]
+  );
+
+  useEffect(() => {
+    if (!USE_EMPLOYEE_REPORT_TEMPLATE || !isEmployeeMode || !employee?.id || !employeeTemplateSource) {
+      if (employeeTemplatePreviewTimeoutRef.current) {
+        clearTimeout(employeeTemplatePreviewTimeoutRef.current);
+        employeeTemplatePreviewTimeoutRef.current = null;
+      }
+      lastEmployeeTemplatePreviewKeyRef.current = '';
+      setEmployeeTemplatePreviewHtml('');
+      setEmployeeTemplatePreviewError('');
+      setEmployeeTemplatePreviewLoading(false);
+      return;
+    }
+
+    if (lastEmployeeTemplatePreviewKeyRef.current === employeeTemplatePreviewRequestKey) {
+      return;
+    }
+    lastEmployeeTemplatePreviewKeyRef.current = employeeTemplatePreviewRequestKey;
+
+    let cancelled = false;
+    setEmployeeTemplatePreviewLoading(true);
+
+    if (employeeTemplatePreviewTimeoutRef.current) {
+      clearTimeout(employeeTemplatePreviewTimeoutRef.current);
+    }
+
+    employeeTemplatePreviewTimeoutRef.current = setTimeout(async () => {
+      try {
+        const result = await window.api.employeeReport.previewTemplate(employeeTemplateSource);
+        if (cancelled) {
+          return;
+        }
+        setEmployeeTemplatePreviewHtml((current) => (current === (result?.html || '') ? current : (result?.html || '')));
+        setEmployeeTemplatePreviewError('');
+        console.info('[employee-template-preview]', employeeTemplateSource?.dipendente?.nome || '');
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        lastEmployeeTemplatePreviewKeyRef.current = '';
+        setEmployeeTemplatePreviewHtml('');
+        setEmployeeTemplatePreviewError(error?.message || 'Template dipendente non disponibile');
+        console.error('[employee-template-fallback]', error);
+      } finally {
+        if (!cancelled) {
+          setEmployeeTemplatePreviewLoading(false);
+        }
+      }
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      if (employeeTemplatePreviewTimeoutRef.current) {
+        clearTimeout(employeeTemplatePreviewTimeoutRef.current);
+        employeeTemplatePreviewTimeoutRef.current = null;
+      }
+    };
+  }, [employee?.id, employeeTemplatePreviewRequestKey, employeeTemplateSource, isEmployeeMode]);
+
   useEffect(() => {
     if (!employee) {
       return;
@@ -4231,9 +4809,6 @@ export default function ReportPage() {
     totalRegularPay,
     workedDays,
   ]);
-
-  const monthName = MONTH_NAMES[currentMonth.getMonth()];
-  const yearStr = String(currentMonth.getFullYear());
   const activeDraftStorageKey = isTeamMode ? teamDraftStorageKey : employeeDraftStorageKey;
   const activeDraftFeedback =
     draftFeedback.key && draftFeedback.key === activeDraftStorageKey ? draftFeedback : null;
@@ -4462,7 +5037,7 @@ export default function ReportPage() {
       ) : null}
 
       {isEmployeeMode && employee ? (
-        <div className="report-workspace">
+        <div className="report-workspace report-workspace--team-template">
           <div className="report-editor-column no-print">
             <div className="report-editor-panel">
           {isProcessedRecord ? (
@@ -5351,52 +5926,86 @@ export default function ReportPage() {
             </div>
           </div>
 
-          <div className="report-preview-column">
+          <div className="report-preview-column report-preview-column--team-template">
             <div className="report-preview-sticky">
+              {USE_EMPLOYEE_REPORT_TEMPLATE ? (
+                <div className="team-template-preview-toolbar no-print">
+                  <div className="team-template-preview-toolbar__title">Anteprima dipendente</div>
+                  <div className="team-template-preview-toolbar__actions">
+                    <button
+                      type="button"
+                      className={`team-template-preview-toggle ${employeeTemplatePreviewMode === 'fit-page' ? 'is-active' : ''}`}
+                      onClick={() => setEmployeeTemplatePreviewMode('fit-page')}
+                    >
+                      Pagina intera
+                    </button>
+                    <button
+                      type="button"
+                      className={`team-template-preview-toggle ${employeeTemplatePreviewMode === 'fit-width' ? 'is-active' : ''}`}
+                      onClick={() => setEmployeeTemplatePreviewMode('fit-width')}
+                    >
+                      Larghezza pagina
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               {loading ? (
                 <div style={emptyBoxStyle}>Caricamento...</div>
-              ) : (
-                <EmployeePrintArea
-                  employee={employee}
-                  currentMonth={currentMonth}
-                  datore={datore}
-                  employerOptions={employerOptions}
-                  attendanceBaseHours={attendanceBaseHours}
-                  hoursFormat={hoursFormat}
-                  attendanceMap={attendanceMap}
-                  dayMarkers={settings?.general?.attendance_markers || []}
-                  employeeTotals={employeeTotals}
-                  dailyPay={dailyPay}
-                  overtimeHourlyRate={overtimeHourlyRate}
-                  overtimeView={overtimeView}
-                  showOvertimeInReport={showOvertimeInReport}
-                  showPayCalculationDetail={showPayCalculationDetail}
-                  workedDays={workedDays}
-                  equivalentWorkedDays={equivalentWorkedDays}
-                  regularHourlyRate={regularHourlyRate}
-                  totalRegularPay={totalRegularPay}
-                  totalOvertimePay={totalOvertimePay}
-                  totalCalculatedPay={totalCalculatedPayForReport}
-                  importoBustaPagaNum={importoBustaPagaNum}
-                  giornateBustaPaga={giornateBustaPaga}
-                  totalAdvances={totalAdvances}
-                  visibleAdvances={visibleAdvances}
-                  currentInstallments={currentInstallments}
-                  currentInstallmentTotal={currentInstallmentTotal}
-                  giftAmountNum={giftAmountNum}
-                  giftLabel={giftLabel}
-                  restoPrecedenteNum={restoPrecedenteNum}
-                  trasportoAttivo={trasportoAttivo}
-                  nMacchineMeseNum={nMacchineMeseNum}
-                  prezzoPerMacchinaNum={prezzoPerMacchinaNum}
-                  totaleTrasporto={totaleTrasporto}
-                  differenzaFinale={differenzaFinale}
-                  balanceNotes={balanceNotes}
-                  payrollPaymentStatus={payrollPaymentStatus}
-                  balanceStatus={balanceStatus}
-                  partialPaidAmount={partialPaidAmount}
-                  balanceClosedAt={balanceClosedAt}
+              ) : USE_EMPLOYEE_REPORT_TEMPLATE && employeeTemplatePreviewHtml ? (
+                <TeamTemplatePreviewFrame
+                  html={employeeTemplatePreviewHtml}
+                  teamName={employeeTemplateSource?.dipendente?.nome || ''}
+                  mode={employeeTemplatePreviewMode}
                 />
+              ) : (
+                <>
+                  {USE_EMPLOYEE_REPORT_TEMPLATE && (employeeTemplatePreviewLoading || employeeTemplatePreviewError) ? (
+                    <div className="template-preview-status no-print">
+                      {employeeTemplatePreviewLoading ? 'Preparazione anteprima dipendente...' : `Fallback anteprima legacy: ${employeeTemplatePreviewError}`}
+                    </div>
+                  ) : null}
+                  <EmployeePrintArea
+                    employee={employee}
+                    currentMonth={currentMonth}
+                    datore={datore}
+                    employerOptions={employerOptions}
+                    attendanceBaseHours={attendanceBaseHours}
+                    hoursFormat={hoursFormat}
+                    attendanceMap={attendanceMap}
+                    dayMarkers={settings?.general?.attendance_markers || []}
+                    employeeTotals={employeeTotals}
+                    dailyPay={dailyPay}
+                    overtimeHourlyRate={overtimeHourlyRate}
+                    overtimeView={overtimeView}
+                    showOvertimeInReport={showOvertimeInReport}
+                    showPayCalculationDetail={showPayCalculationDetail}
+                    workedDays={workedDays}
+                    equivalentWorkedDays={equivalentWorkedDays}
+                    regularHourlyRate={regularHourlyRate}
+                    totalRegularPay={totalRegularPay}
+                    totalOvertimePay={totalOvertimePay}
+                    totalCalculatedPay={totalCalculatedPayForReport}
+                    importoBustaPagaNum={importoBustaPagaNum}
+                    giornateBustaPaga={giornateBustaPaga}
+                    totalAdvances={totalAdvances}
+                    visibleAdvances={visibleAdvances}
+                    currentInstallments={currentInstallments}
+                    currentInstallmentTotal={currentInstallmentTotal}
+                    giftAmountNum={giftAmountNum}
+                    giftLabel={giftLabel}
+                    restoPrecedenteNum={restoPrecedenteNum}
+                    trasportoAttivo={trasportoAttivo}
+                    nMacchineMeseNum={nMacchineMeseNum}
+                    prezzoPerMacchinaNum={prezzoPerMacchinaNum}
+                    totaleTrasporto={totaleTrasporto}
+                    differenzaFinale={differenzaFinale}
+                    balanceNotes={balanceNotes}
+                    payrollPaymentStatus={payrollPaymentStatus}
+                    balanceStatus={balanceStatus}
+                    partialPaidAmount={partialPaidAmount}
+                    balanceClosedAt={balanceClosedAt}
+                  />
+                </>
               )}
             </div>
           </div>
@@ -5410,7 +6019,7 @@ export default function ReportPage() {
       ) : loading && !isEmployeeMode ? (
         <div>Caricamento...</div>
       ) : isTeamMode && selectedTeam ? (
-        <div className="report-workspace">
+        <div className="report-workspace report-workspace--team-template">
           <div className="report-editor-column no-print">
             <div className="report-editor-panel">
               <fieldset
@@ -5478,8 +6087,27 @@ export default function ReportPage() {
               </div>
 
               <div style={editorBlockStyle}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 10, margin: 0, gridColumn: '1 / -1' }}>
+                  <input type="checkbox" checked={teamGiftEnabled} onChange={(e) => setTeamGiftEnabled(e.target.checked)} style={{ width: 16, height: 16 }} />
+                  <div style={editorBlockTitleStyle}>4. Regalo squadra</div>
+                </label>
+                {teamGiftEnabled && (
+                  <div style={{ ...editorBlockGridStyle, marginTop: 10 }}>
+                    <div>
+                      <div style={fieldLabelStyle}>Etichetta regalo</div>
+                      <input value={teamGiftDescription} onChange={(e) => setTeamGiftDescription(e.target.value)} placeholder="Es. Premio raccolta" style={fieldStyle} />
+                    </div>
+                    <div>
+                      <div style={fieldLabelStyle}>Importo regalo (EUR)</div>
+                      <input type="number" step="0.01" min="0" value={teamGiftAmount} onChange={(e) => setTeamGiftAmount(e.target.value)} placeholder="0.00" style={fieldStyle} />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div style={editorBlockStyle}>
                 <div style={sectionToolbarStyle}>
-                  <div style={editorBlockTitleStyle}>4. Acconti squadra</div>
+                  <div style={editorBlockTitleStyle}>5. Acconti squadra</div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <button type="button" className="button-secondary" onClick={openTeamAdvanceImportModal}>
                       Importa acconto
@@ -5546,7 +6174,7 @@ export default function ReportPage() {
 
               <div style={editorBlockStyle}>
                 <div style={sectionToolbarStyle}>
-                  <div style={editorBlockTitleStyle}>5. Buste paga componenti</div>
+                  <div style={editorBlockTitleStyle}>6. Buste paga componenti</div>
                 </div>
                 {teamPayrollComponents.length ? (
                   <div style={{ display: 'grid', gap: 10, gridColumn: '1 / -1', marginTop: 8 }}>
@@ -5605,12 +6233,20 @@ export default function ReportPage() {
               </div>
 
               <div style={editorBlockStyle}>
-                <div style={editorBlockTitleStyle}>6. Note report squadra</div>
+                <div style={editorBlockTitleStyle}>7. Note report squadra</div>
                 <textarea rows={3} value={teamNotes} onChange={(e) => setTeamNotes(e.target.value)} placeholder="Note per il titolare o dettagli del pagamento..." style={{ ...fieldStyle, gridColumn: '1 / -1' }} />
               </div>
               <div style={editorBlockStyle}>
-                <div style={editorBlockTitleStyle}>7. Saldo squadra</div>
+                <div style={editorBlockTitleStyle}>8. Saldo squadra</div>
                 <div style={{ ...editorBlockGridStyle, marginTop: 14 }}>
+                  <div>
+                    <div style={fieldLabelStyle}>Trasporto squadra</div>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: '#111827' }}>{formatCurrency(teamTransportTotal)}</div>
+                  </div>
+                  <div>
+                    <div style={fieldLabelStyle}>Regalo squadra</div>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: '#111827' }}>{formatCurrency(teamGiftTotal)}</div>
+                  </div>
                   <div>
                     <div style={fieldLabelStyle}>Totale acconti</div>
                     <div style={{ fontSize: 15, fontWeight: 800, color: '#111827' }}>{formatCurrency(teamAdvancesTotal)}</div>
@@ -5684,67 +6320,116 @@ export default function ReportPage() {
             </div>
           </div>
 
-          <div className="report-preview-column">
+          <div className="report-preview-column report-preview-column--team-template">
             <div className="report-preview-sticky">
-              <EmployeePrintArea
-                currentMonth={currentMonth}
-                isTeamReport
-                team={selectedTeam}
-                teamPeriodLabel={teamPeriodLabel}
-                datore=""
-                employerOptions={[]}
-                weekGroups={teamWeekGroups}
-                attendanceMap={{}}
-                dayMarkers={[]}
-                employeeTotals={emptyPreviewAttendanceSummary}
-                dailyPay={0}
-                overtimeHourlyRate={0}
-                overtimeView={null}
-                showOvertimeInReport={false}
-                showPayCalculationDetail={false}
-                workedDays={0}
-                equivalentWorkedDays={0}
-                regularHourlyRate={0}
-                totalRegularPay={0}
-                totalOvertimePay={0}
-                totalCalculatedPay={0}
-                importoBustaPagaNum={0}
-                giornateBustaPaga={0}
-                totalAdvances={0}
-                visibleAdvances={[]}
-                currentInstallments={[]}
-                currentInstallmentTotal={0}
-                giftAmountNum={0}
-                giftLabel=""
-                restoPrecedenteNum={0}
-                trasportoAttivo={false}
-                nMacchineMeseNum={0}
-                prezzoPerMacchinaNum={0}
-                totaleTrasporto={0}
-                differenzaFinale={0}
-                balanceNotes=""
-                payrollPaymentStatus="non_pagato"
-                balanceStatus="non_pagato"
-                partialPaidAmount=""
-                balanceClosedAt=""
-                teamAttendanceByDate={selectedTeamAttendanceByDate}
-                teamHeadcountTotals={teamHeadcountTotals}
-                teamDailyRate={teamDailyRate}
-                teamGrossCompensation={teamGrossCompensation}
-                teamCompensationSummary={teamCompensationSummary}
-                teamCompensationDetail={teamCompensationDetail}
-                attendanceBaseHours={attendanceBaseHours}
-                hoursFormat={hoursFormat}
-                teamTransportEnabled={teamTransportEnabled}
-                teamTransportDescription={teamTransportDescription}
-                teamTransportTotal={teamTransportTotal}
-                filteredTeamAdvances={filteredTeamAdvances}
-                teamAdvancesTotal={teamAdvancesTotal}
-                filteredTeamPayrollComponents={filteredTeamPayrollComponents}
-                teamPayrollComponentsTotal={teamPayrollComponentsTotal}
-                teamFinalBalance={teamFinalBalance}
-                teamNotes={teamNotes}
-              />
+              {USE_TEAM_REPORT_TEMPLATE ? (
+                <div className="team-template-preview-toolbar no-print">
+                  <div className="team-template-preview-toolbar__title">Anteprima squadra</div>
+                  <div className="team-template-preview-toolbar__actions">
+                    <button
+                      type="button"
+                      className={`team-template-preview-toggle ${teamTemplatePreviewMode === 'fit-page' ? 'is-active' : ''}`}
+                      onClick={() => setTeamTemplatePreviewMode('fit-page')}
+                    >
+                      Adatta pagina
+                    </button>
+                    <button
+                      type="button"
+                      className={`team-template-preview-toggle ${teamTemplatePreviewMode === 'fit-width' ? 'is-active' : ''}`}
+                      onClick={() => setTeamTemplatePreviewMode('fit-width')}
+                    >
+                      Larghezza pagina
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {USE_TEAM_REPORT_TEMPLATE && teamTemplatePreviewHtml ? (
+                <TeamTemplatePreviewFrame
+                  html={teamTemplatePreviewHtml}
+                  teamName={selectedTeam?.name || ''}
+                  mode={teamTemplatePreviewMode}
+                />
+              ) : (
+                <>
+                  {USE_TEAM_REPORT_TEMPLATE && (teamTemplatePreviewLoading || teamTemplatePreviewError) ? (
+                    <div style={{
+                      marginBottom: 12,
+                      padding: '10px 12px',
+                      borderRadius: 12,
+                      background: teamTemplatePreviewError ? 'rgba(245, 158, 11, 0.12)' : 'rgba(14, 165, 233, 0.08)',
+                      color: teamTemplatePreviewError ? '#b45309' : '#0f766e',
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}>
+                      {teamTemplatePreviewLoading
+                        ? 'Caricamento anteprima template squadra...'
+                        : `Template squadra non disponibile, uso anteprima legacy. ${teamTemplatePreviewError}`}
+                    </div>
+                  ) : null}
+                  <EmployeePrintArea
+                    currentMonth={currentMonth}
+                    isTeamReport
+                    team={selectedTeam}
+                    teamPeriodLabel={teamPeriodLabel}
+                    datore=""
+                    employerOptions={[]}
+                    weekGroups={teamWeekGroups}
+                    attendanceMap={{}}
+                    dayMarkers={[]}
+                    employeeTotals={emptyPreviewAttendanceSummary}
+                    dailyPay={0}
+                    overtimeHourlyRate={0}
+                    overtimeView={null}
+                    showOvertimeInReport={false}
+                    showPayCalculationDetail={false}
+                    workedDays={0}
+                    equivalentWorkedDays={0}
+                    regularHourlyRate={0}
+                    totalRegularPay={0}
+                    totalOvertimePay={0}
+                    totalCalculatedPay={0}
+                    importoBustaPagaNum={0}
+                    giornateBustaPaga={0}
+                    totalAdvances={0}
+                    visibleAdvances={[]}
+                    currentInstallments={[]}
+                    currentInstallmentTotal={0}
+                    giftAmountNum={0}
+                    giftLabel=""
+                    restoPrecedenteNum={0}
+                    trasportoAttivo={false}
+                    nMacchineMeseNum={0}
+                    prezzoPerMacchinaNum={0}
+                    totaleTrasporto={0}
+                    differenzaFinale={0}
+                    balanceNotes=""
+                    payrollPaymentStatus="non_pagato"
+                    balanceStatus="non_pagato"
+                    partialPaidAmount=""
+                    balanceClosedAt=""
+                    teamAttendanceByDate={selectedTeamAttendanceByDate}
+                    teamHeadcountTotals={teamHeadcountTotals}
+                    teamDailyRate={teamDailyRate}
+                    teamGrossCompensation={teamGrossCompensation}
+                    teamCompensationSummary={teamCompensationSummary}
+                    teamCompensationDetail={teamCompensationDetail}
+                    attendanceBaseHours={attendanceBaseHours}
+                    hoursFormat={hoursFormat}
+                    teamTransportEnabled={teamTransportEnabled}
+                    teamTransportDescription={teamTransportDescription}
+                    teamTransportTotal={teamTransportTotal}
+                    teamGiftEnabled={teamGiftEnabled}
+                    teamGiftDescription={teamGiftDescription}
+                    teamGiftTotal={teamGiftTotal}
+                    filteredTeamAdvances={filteredTeamAdvances}
+                    teamAdvancesTotal={teamAdvancesTotal}
+                    filteredTeamPayrollComponents={filteredTeamPayrollComponents}
+                    teamPayrollComponentsTotal={teamPayrollComponentsTotal}
+                    teamFinalBalance={teamFinalBalance}
+                    teamNotes={teamNotes}
+                  />
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -6385,6 +7070,9 @@ function EmployeePrintArea({
   teamTransportEnabled,
   teamTransportDescription,
   teamTransportTotal,
+  teamGiftEnabled,
+  teamGiftDescription,
+  teamGiftTotal,
   nMacchineMeseNum,
   prezzoPerMacchinaNum,
   totaleTrasporto,
@@ -6612,12 +7300,12 @@ function EmployeePrintArea({
   const debitSectionLabel = isTeamReport ? 'Acconti e buste componenti' : "Debiti / Trattenute dell'operaio";
   const creditRows = isTeamReport ? teamCreditRows : employeeCreditRows;
   const debitRows = isTeamReport ? teamDebitRows : employeeDebitRows;
-  const totalCredits = isTeamReport ? teamGrossCompensation : employeeTotalCredits;
+  const totalCredits = isTeamReport ? (teamGrossCompensation + teamTransportTotal + teamGiftTotal) : employeeTotalCredits;
   const totalDebits = isTeamReport ? (Number(teamAdvancesTotal || 0) + Number(teamPayrollComponentsTotal || 0)) : employeeTotalDebits;
   const resultBalance = isTeamReport ? Number(teamFinalBalance || 0) : employeeBalanceSettlement.remainingBalance;
   const mainBalanceLabel = isTeamReport ? 'Saldo finale squadra' : employeeBalanceLabel;
   const balanceFormulaLabel = isTeamReport
-    ? `${formatCurrency(teamGrossCompensation)} - ${formatCurrency(teamAdvancesTotal)} - ${formatCurrency(teamPayrollComponentsTotal)}`
+    ? `${formatCurrency(teamGrossCompensation)} + ${formatCurrency(teamTransportTotal)} + ${formatCurrency(teamGiftTotal)} - ${formatCurrency(teamAdvancesTotal)} - ${formatCurrency(teamPayrollComponentsTotal)}`
     : employeeBalanceFormulaLabel;
   const previewNote = isTeamReport ? [team?.notes, teamNotes].filter(Boolean).join(' - ') : balanceNotes;
 
@@ -6743,9 +7431,24 @@ function EmployeePrintArea({
               <div style={rp2EconRowStyle()}>
                 <div>
                   <div style={rp2EconLabelStyle()}>{teamTransportDescription || 'Trasporto squadra'}</div>
-                  <div style={rp2EconSubStyle}>Voce operativa separata dal saldo squadra</div>
+                  <div style={rp2EconSubStyle}>Voce positiva inclusa nel saldo finale squadra</div>
                 </div>
                 <div style={rp2EconAmountStyle('base')}>+ {formatCurrency(teamTransportTotal)}</div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {isTeamReport && teamGiftEnabled && teamGiftTotal !== 0 ? (
+          <div className="print-block employee-print-section" style={rp2SectionBoxStyle}>
+            <div style={rp2SectionLabelStyle}>Regalo squadra</div>
+            <div style={rp2EconomicTableStyle}>
+              <div style={rp2EconRowStyle()}>
+                <div>
+                  <div style={rp2EconLabelStyle()}>{teamGiftDescription || 'Regalo squadra'}</div>
+                  <div style={rp2EconSubStyle}>Voce positiva inclusa nel saldo finale squadra</div>
+                </div>
+                <div style={rp2EconAmountStyle('base')}>+ {formatCurrency(teamGiftTotal)}</div>
               </div>
             </div>
           </div>

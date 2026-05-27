@@ -1,100 +1,96 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 function getTeamReportTemplatePath() {
   return path.resolve(__dirname, '../../renderer/printTemplates/TeamReportTemplate.html');
 }
 
-function replaceTokens(template, replacements) {
-  return Object.entries(replacements).reduce(
-    (output, [token, value]) => output.replaceAll(`{{${token}}}`, value),
-    template
-  );
+function getEmployeeReportTemplatePath() {
+  return path.resolve(__dirname, '../../renderer/printTemplates/EmployeeReportTemplate.html');
 }
 
-function buildComponentsRows(data) {
-  const rows = Array.isArray(data?.items?.payrollComponents) ? data.items.payrollComponents : [];
-  if (!rows.length) {
-    return '<tr><td colspan="3" class="muted-cell">Nessuna busta componente registrata.</td></tr>';
-  }
-
-  return rows
-    .map((item) => `
-      <tr>
-        <td>${escapeHtml(item.label)}</td>
-        <td class="num">${escapeHtml(item.daysLabel)}</td>
-        <td class="num">${escapeHtml(item.amountLabel)}</td>
-      </tr>
-    `)
-    .join('');
-}
-
-function buildOptionalBlock({ enabled, title, description, amountLabel, accentClass }) {
-  if (!enabled) {
-    return '';
-  }
-
-  return `
-    <section class="section-card">
-      <div class="section-label">${escapeHtml(title)}</div>
-      <div class="econ-row">
-        <div>
-          <div class="econ-label">${escapeHtml(description)}</div>
-          <div class="econ-sub">Voce positiva inclusa nel saldo finale squadra</div>
-        </div>
-        <div class="econ-amount ${escapeHtml(accentClass)}">+ ${escapeHtml(amountLabel)}</div>
-      </div>
-    </section>
-  `;
+function serializeForInlineScript(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/<\/script/gi, '<\\/script');
 }
 
 function renderTeamReportHtml(data) {
   const templatePath = getTeamReportTemplatePath();
   const template = fs.readFileSync(templatePath, 'utf8');
+  const title = String(data?.title || `Report Squadra · ${data?.team?.name || ''}`).trim();
 
-  return replaceTokens(template, {
-    BRAND: escapeHtml(data?.meta?.brand || 'GPA 1.0.5'),
-    GENERATED_AT: escapeHtml(data?.meta?.generatedAt || ''),
-    TEAM_NAME: escapeHtml(data?.team?.name || ''),
-    MONTH_LABEL: escapeHtml(data?.team?.monthLabel || ''),
-    TOTAL_HOURS: escapeHtml(data?.team?.totalHoursLabel || ''),
-    PRESENCES: escapeHtml(data?.team?.headcountPresencesLabel || ''),
-    EQUIVALENT_DAYS: escapeHtml(data?.team?.equivalentDaysLabel || ''),
-    STANDARD_DAY_HOURS: escapeHtml(String(data?.team?.standardDayHours || 7)),
-    GROSS_COMPENSATION: escapeHtml(data?.economics?.grossCompensationLabel || ''),
-    FORMULA_LABEL: escapeHtml(data?.economics?.formulaLabel || ''),
-    TRANSPORT_BLOCK: buildOptionalBlock({
-      enabled: !!data?.economics?.transportEnabled && Number(data?.economics?.transportAmount || 0) > 0,
-      title: 'Trasporto squadra',
-      description: data?.economics?.transportDescription || 'Trasporto squadra',
-      amountLabel: data?.economics?.transportAmountLabel || '€ 0,00',
-      accentClass: 'accent-transport',
-    }),
-    GIFT_BLOCK: buildOptionalBlock({
-      enabled: !!data?.economics?.giftEnabled && Number(data?.economics?.giftAmount || 0) > 0,
-      title: 'Regalo squadra',
-      description: data?.economics?.giftDescription || 'Regalo squadra',
-      amountLabel: data?.economics?.giftAmountLabel || '€ 0,00',
-      accentClass: 'accent-gift',
-    }),
-    ADVANCES_TOTAL: escapeHtml(data?.economics?.advancesTotalLabel || ''),
-    PAYROLL_COMPONENTS_TOTAL: escapeHtml(data?.economics?.payrollComponentsTotalLabel || ''),
-    FINAL_BALANCE: escapeHtml(data?.economics?.finalBalanceLabel || ''),
-    COMPONENT_ROWS: buildComponentsRows(data),
-    NOTE: escapeHtml(data?.note || 'Nessuna nota aggiuntiva.'),
+  return template
+    .replaceAll('{{TEAM_REPORT_TITLE}}', title)
+    .replaceAll('{{TEAM_REPORT_DATA_JSON}}', serializeForInlineScript(data));
+}
+
+function renderEmployeeReportHtml(data) {
+  const templatePath = getEmployeeReportTemplatePath();
+  const cssPath = path.resolve(__dirname, '../../renderer/printTemplates/employee-report.css');
+  const template = fs.readFileSync(templatePath, 'utf8');
+  const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8') : '';
+  const injectedDataScript = `<script>window.REPORT_DATA=${serializeForInlineScript(data)};</script>`;
+
+  return template
+    .replace(
+      /<link\s+rel=["']stylesheet["']\s+href=["']\.\/employee-report\.css["']\s*\/?>/i,
+      `<style>${css}</style>`
+    )
+    .replace('</head>', `${injectedDataScript}\n</head>`);
+}
+
+async function renderToPDF(templatePath, data, options = {}) {
+  const { BrowserWindow } = require('electron');
+
+  const win = new BrowserWindow({
+    show: false,
+    width: options.width || 1240,
+    height: options.height || 1754,
+    webPreferences: {
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: false,
+    },
   });
+
+  try {
+    await win.loadFile(templatePath);
+    await win.webContents.executeJavaScript(
+      `window.loadData(${serializeForInlineScript(data)}); true;`
+    );
+
+    await win.webContents.executeJavaScript(`
+      new Promise((resolve) => {
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(resolve).catch(resolve);
+        } else {
+          resolve();
+        }
+      });
+    `);
+
+    return await win.webContents.printToPDF({
+      printBackground: true,
+      preferCSSPageSize: true,
+      pageSize: 'A4',
+      margins: { top: 0, bottom: 0, left: 0, right: 0 },
+      ...options.printOptions,
+    });
+  } finally {
+    if (!win.isDestroyed()) {
+      win.destroy();
+    }
+  }
 }
 
 module.exports = {
+  getEmployeeReportTemplatePath,
   getTeamReportTemplatePath,
+  renderEmployeeReportHtml,
   renderTeamReportHtml,
+  renderToPDF,
 };

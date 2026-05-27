@@ -4,6 +4,9 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 const { getAppVariant, getRuntimeContext, getVariantConfig } = require('./runtimeContext');
+const { buildTeamReportData } = require('./print/buildTeamReportData');
+const { buildEmployeeReportData } = require('./print/buildEmployeeReportData');
+const { renderEmployeeReportHtml, renderTeamReportHtml } = require('./print/printTemplate');
 const {
   closeSplashWindow,
   createSplashWindow,
@@ -17,6 +20,8 @@ if (!app || typeof app.whenReady !== 'function') {
 }
 
 const variantConfig = getVariantConfig();
+const USE_TEAM_REPORT_TEMPLATE = true;
+const USE_EMPLOYEE_REPORT_TEMPLATE = true;
 const APP_ERROR_TITLE = variantConfig.variant === 'demo'
   ? 'Errore avvio GPA versione 1 demo'
   : 'Errore avvio Gestionale';
@@ -1529,6 +1534,10 @@ async function createWindow() {
 }
 
 function buildPdfHtml(contentHtml, landscape = false, debugRenderLabel = '') {
+  if (/^\s*(?:<!doctype\s+html|<html[\s>])/i.test(String(contentHtml || ''))) {
+    return contentHtml;
+  }
+
   const pageWidthMm = landscape ? 297 : 210;
   const pageHeightMm = landscape ? 210 : 297;
   const pageMarginMm = 6;
@@ -2077,6 +2086,40 @@ async function printHtmlDocument({ html, landscape = false, fileName, onProgress
     canceled: false,
     preview_file_path: tempPdfPath,
   };
+}
+
+function buildTeamTemplateRenderResult(payload = {}) {
+  if (!USE_TEAM_REPORT_TEMPLATE) {
+    throw new Error('Template report squadra disattivato');
+  }
+
+  console.info('[team-template-ipc] teamName=%s', payload?.teamName || '');
+  const data = buildTeamReportData(payload);
+  console.info('[team-print-template] data-built', {
+    teamId: data?.team?.id || null,
+    team: data?.team?.name || '',
+    month: data?.team?.monthLabel || '',
+    totalHours: data?.team?.totalHours || 0,
+    equivalentDays: data?.team?.equivalentDays || 0,
+    finalBalance: data?.economics?.finalBalance || 0,
+  });
+  const html = renderTeamReportHtml(data);
+  return { data, html };
+}
+
+function buildEmployeeTemplateRenderResult(payload = {}) {
+  if (!USE_EMPLOYEE_REPORT_TEMPLATE) {
+    throw new Error('Template report dipendente disattivato');
+  }
+
+  console.info('[employee-template-preview]', {
+    employeeId: payload?.employeeId || null,
+    employeeName: payload?.dipendente?.nome || payload?.employeeName || '',
+    month: payload?.periodo?.inizioISO || '',
+  });
+  const data = buildEmployeeReportData(payload);
+  const html = renderEmployeeReportHtml(data);
+  return { data, html };
 }
 
 async function persistCommunicationArtifacts(communicationId) {
@@ -3729,6 +3772,113 @@ app.whenReady().then(async () => {
       debugRenderLabel: payload?.debugRenderLabel || '',
     });
     return { canceled: false, file_path: filePath };
+  });
+
+  ipcMain.handle('teamReport:previewTemplate', async (_, payload) => {
+    try {
+      const result = buildTeamTemplateRenderResult(payload || {});
+      return result;
+    } catch (error) {
+      console.error('[team-print-template] error', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('teamReport:generatePdfTemplate', async (_, payload) => {
+    try {
+      return runExclusiveOperation({
+        type: 'report-export',
+        startMessage: 'Preparazione report squadra template...',
+        fn: async (progress) => {
+          const result = buildTeamTemplateRenderResult(payload || {});
+          const defaultFileName = payload?.fileName || 'report-squadra-template.pdf';
+          progress({
+            status: 'running',
+            step: 'document_generation',
+            percent: 35,
+            message: 'Generazione template report squadra...',
+            file_name: defaultFileName,
+            concurrent_error_message: "Generazione report giÃ  in corso. Attendi il completamento prima di avviarne un'altra.",
+          });
+          const tempPdfPath = buildTempPdfPath(defaultFileName);
+          await renderPdfToFile({
+            html: result.html,
+            filePath: tempPdfPath,
+            landscape: false,
+            debugRenderLabel: 'team-template',
+            onProgress: progress,
+          });
+
+          const openResult = await shell.openPath(tempPdfPath);
+          if (openResult) {
+            throw new Error(openResult);
+          }
+
+          console.info('[team-print-template] pdf');
+          return {
+            canceled: false,
+            preview_file_path: tempPdfPath,
+            data: result.data,
+          };
+        },
+      });
+    } catch (error) {
+      console.error('[team-print-template] error', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('employeeReport:previewTemplate', async (_, payload) => {
+    try {
+      return buildEmployeeTemplateRenderResult(payload || {});
+    } catch (error) {
+      console.error('[employee-template-fallback]', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('employeeReport:generatePdfTemplate', async (_, payload) => {
+    try {
+      return runExclusiveOperation({
+        type: 'report-export',
+        startMessage: 'Preparazione report dipendente template...',
+        fn: async (progress) => {
+          const result = buildEmployeeTemplateRenderResult(payload || {});
+          const defaultFileName = payload?.fileName || 'report-dipendente-template.pdf';
+          progress({
+            status: 'running',
+            step: 'document_generation',
+            percent: 35,
+            message: 'Generazione template report dipendente...',
+            file_name: defaultFileName,
+            concurrent_error_message: "Generazione report già in corso. Attendi il completamento prima di avviarne un'altra.",
+          });
+          const tempPdfPath = buildTempPdfPath(defaultFileName);
+          await renderPdfToFile({
+            html: result.html,
+            filePath: tempPdfPath,
+            landscape: false,
+            debugRenderLabel: '',
+            onProgress: progress,
+          });
+
+          const openResult = await shell.openPath(tempPdfPath);
+          if (openResult) {
+            throw new Error(openResult);
+          }
+
+          console.info('[employee-template-pdf]');
+          return {
+            canceled: false,
+            preview_file_path: tempPdfPath,
+            data: result.data,
+          };
+        },
+      });
+    } catch (error) {
+      console.error('[employee-template-fallback]', error);
+      throw error;
+    }
   });
 
   ipcMain.handle('reports:printHtml', async (_, payload) => {
