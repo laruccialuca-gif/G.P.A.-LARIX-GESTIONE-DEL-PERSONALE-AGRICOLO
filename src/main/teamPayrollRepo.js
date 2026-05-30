@@ -67,7 +67,13 @@ function normalizePayrollComponentPayload(payload = {}) {
   const month = normalizeMonth(payload.month);
   const employeeId = normalizeNullableId(payload.employee_id || payload.employeeId);
   const employeeLabel = String(payload.employee_label || payload.employeeLabel || '').trim();
-  const days = normalizeAmount(payload.days);
+  const selectedPayrollDays = normalizeSelectedPayrollDays(
+    payload.selected_payroll_days_json ??
+      payload.selectedPayrollDaysJson ??
+      payload.selected_payroll_days ??
+      payload.selectedPayrollDays
+  );
+  const days = selectedPayrollDays.length ? selectedPayrollDays.length : normalizeAmount(payload.days);
   const amount = normalizeAmount(payload.amount);
   const notes = String(payload.notes || '').trim();
   const sortOrder = Number(payload.sort_order ?? payload.sortOrder ?? 0) || 0;
@@ -93,8 +99,35 @@ function normalizePayrollComponentPayload(payload = {}) {
     days,
     amount,
     notes: notes || null,
+    selected_payroll_days_json: JSON.stringify(selectedPayrollDays),
     sort_order: sortOrder,
   };
+}
+
+function normalizeSelectedPayrollDays(value) {
+  let source = value;
+  if (typeof source === 'string') {
+    const text = source.trim();
+    if (!text) {
+      source = [];
+    } else {
+      try {
+        source = JSON.parse(text);
+      } catch {
+        source = text.split(/[,\s;]+/);
+      }
+    }
+  }
+
+  if (!Array.isArray(source)) {
+    return [];
+  }
+
+  return [...new Set(
+    source
+      .map((day) => Number(day))
+      .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31)
+  )].sort((a, b) => a - b);
 }
 
 function mapTeamAdvance(row) {
@@ -116,15 +149,18 @@ function mapTeamAdvance(row) {
 
 function mapPayrollComponent(row) {
   if (!row) return null;
+  const selectedPayrollDays = normalizeSelectedPayrollDays(row.selected_payroll_days_json);
   return {
     id: Number(row.id),
     team_id: Number(row.team_id),
     month: row.month,
     employee_id: row.employee_id ? Number(row.employee_id) : null,
     employee_label: row.employee_label || '',
-    days: Number(row.days || 0),
+    days: selectedPayrollDays.length ? selectedPayrollDays.length : Number(row.days || 0),
     amount: Number(row.amount || 0),
     notes: row.notes || '',
+    selected_payroll_days_json: JSON.stringify(selectedPayrollDays),
+    selected_payroll_days: selectedPayrollDays,
     sort_order: Number(row.sort_order || 0),
     created_at: row.created_at || null,
     updated_at: row.updated_at || null,
@@ -149,11 +185,19 @@ function mapTeamReportRecord(row) {
     transport_enabled: Number(row.transport_enabled || 0) === 1,
     transport_description: row.transport_description || '',
     transport_amount: Number(row.transport_amount || 0),
+    gift_enabled: Number(row.gift_enabled || 0) === 1,
+    gift_description: row.gift_description || '',
+    gift_amount: Number(row.gift_amount || 0),
+    previous_balance_type: row.previous_balance_type || '',
+    previous_balance_amount: Number(row.previous_balance_amount || 0),
+    previous_balance_note: row.previous_balance_note || '',
+    previous_balance_manual_override: Number(row.previous_balance_manual_override || 0) === 1,
     note: row.note || '',
     processed_at: row.processed_at || null,
     archived_at: row.archived_at || null,
     report_html_snapshot: row.report_html_snapshot || null,
     report_snapshot_json: snapshot,
+    employer_key: row.employer_key || '',
     created_at: row.created_at || null,
     updated_at: row.updated_at || null,
   };
@@ -179,6 +223,70 @@ function getPayrollComponentById(id) {
     LIMIT 1
   `).get(Number(id));
   return mapPayrollComponent(row);
+}
+
+function listTeamReportRecords(options = {}) {
+  const db = getDb();
+  const conditions = [];
+  const params = [];
+
+  const year = String(options.year || '').trim();
+  const month = normalizeMonth(options.month);
+
+  if (month) {
+    conditions.push('trr.month = ?');
+    params.push(month);
+  } else if (/^\d{4}$/.test(year)) {
+    conditions.push("substr(trr.month, 1, 4) = ?");
+    params.push(year);
+  }
+
+  if (options.team_id || options.teamId) {
+    conditions.push('trr.team_id = ?');
+    params.push(Number(options.team_id || options.teamId));
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const rows = db.prepare(`
+    SELECT
+      trr.*,
+      t.name AS team_name,
+      (
+        SELECT COALESCE(SUM(tpc.days), 0)
+        FROM team_payroll_components tpc
+        WHERE tpc.team_id = trr.team_id AND tpc.month = trr.month
+      ) AS components_days_total,
+      (
+        SELECT COUNT(*)
+        FROM team_payroll_components tpc
+        WHERE tpc.team_id = trr.team_id AND tpc.month = trr.month
+      ) AS components_count
+    FROM team_report_records trr
+    LEFT JOIN teams t ON t.id = trr.team_id
+    ${whereClause}
+    ORDER BY trr.month DESC, t.name COLLATE NOCASE ASC, trr.id DESC
+  `).all(...params);
+
+  return rows.map((row) => {
+    const mapped = mapTeamReportRecord(row);
+    const snapshot = mapped.report_snapshot_json || {};
+    return {
+      ...mapped,
+      team_name: row.team_name || snapshot.team_name || '',
+      employer_key: mapped.employer_key || '',
+      has_html_snapshot: !!row.report_html_snapshot,
+      components_count: Number(row.components_count || 0),
+      components_days_total: Number(row.components_days_total || 0),
+      total_hours: Number(snapshot.total_hours || 0),
+      equivalent_days: Number(snapshot.equivalent_days || 0),
+      gross_compensation: Number(snapshot.gross_compensation || 0),
+      final_balance: Number(snapshot.final_balance || 0),
+      payroll_components_total: Number(snapshot.payroll_components_total || 0),
+      advances_total: Number(snapshot.advances_total || 0),
+      team_daily_rate: Number(snapshot.team_daily_rate || 0),
+    };
+  });
 }
 
 function getTeamReportRecord(teamId, month) {
@@ -361,9 +469,9 @@ function createPayrollComponent(payload) {
   const data = normalizePayrollComponentPayload(payload);
   const result = db.prepare(`
     INSERT INTO team_payroll_components (
-      team_id, month, employee_id, employee_label, days, amount, notes, sort_order
+      team_id, month, employee_id, employee_label, days, amount, notes, selected_payroll_days_json, sort_order
     ) VALUES (
-      @team_id, @month, @employee_id, @employee_label, @days, @amount, @notes, @sort_order
+      @team_id, @month, @employee_id, @employee_label, @days, @amount, @notes, @selected_payroll_days_json, @sort_order
     )
   `).run(data);
   return getPayrollComponentById(Number(result.lastInsertRowid));
@@ -394,7 +502,8 @@ function replacePayrollComponents(teamId, month, items = []) {
       item.employee_label ||
       item.days > 0 ||
       item.amount > 0 ||
-      item.notes
+      item.notes ||
+      normalizeSelectedPayrollDays(item.selected_payroll_days_json).length > 0
     );
 
   const tx = db.transaction(() => {
@@ -406,9 +515,9 @@ function replacePayrollComponents(teamId, month, items = []) {
 
     const insertStatement = db.prepare(`
       INSERT INTO team_payroll_components (
-        team_id, month, employee_id, employee_label, days, amount, notes, sort_order
+        team_id, month, employee_id, employee_label, days, amount, notes, selected_payroll_days_json, sort_order
       ) VALUES (
-        @team_id, @month, @employee_id, @employee_label, @days, @amount, @notes, @sort_order
+        @team_id, @month, @employee_id, @employee_label, @days, @amount, @notes, @selected_payroll_days_json, @sort_order
       )
     `);
 
@@ -436,6 +545,15 @@ function saveTeamReportRecord(payload = {}) {
     transport_enabled: normalizeBooleanFlag(payload.transport_enabled ?? payload.transportEnabled),
     transport_description: String(payload.transport_description || payload.transportDescription || '').trim() || null,
     transport_amount: normalizeAmount(payload.transport_amount ?? payload.transportAmount),
+    gift_enabled: normalizeBooleanFlag(payload.gift_enabled ?? payload.giftEnabled),
+    gift_description: String(payload.gift_description || payload.giftDescription || '').trim() || null,
+    gift_amount: normalizeAmount(payload.gift_amount ?? payload.giftAmount),
+    previous_balance_type: String(payload.previous_balance_type || payload.previousBalanceType || '').trim().toLowerCase() || null,
+    previous_balance_amount: normalizeAmount(payload.previous_balance_amount ?? payload.previousBalanceAmount),
+    previous_balance_note: String(payload.previous_balance_note || payload.previousBalanceNote || '').trim() || null,
+    previous_balance_manual_override: normalizeBooleanFlag(
+      payload.previous_balance_manual_override ?? payload.previousBalanceManualOverride
+    ),
     note: String(payload.note || '').trim() || null,
     processed_at: String(payload.processed_at || payload.processedAt || '').trim() || null,
     archived_at: String(payload.archived_at || payload.archivedAt || '').trim() || null,
@@ -443,6 +561,7 @@ function saveTeamReportRecord(payload = {}) {
     report_snapshot_json: payload.report_snapshot_json || payload.reportSnapshotJson
       ? JSON.stringify(payload.report_snapshot_json || payload.reportSnapshotJson)
       : null,
+    employer_key: String(payload.employer_key || payload.employerKey || '').trim().toUpperCase() || null,
   };
 
   const existing = getTeamReportRecord(teamId, month);
@@ -452,11 +571,19 @@ function saveTeamReportRecord(payload = {}) {
       SET transport_enabled = @transport_enabled,
           transport_description = @transport_description,
           transport_amount = @transport_amount,
+          gift_enabled = @gift_enabled,
+          gift_description = @gift_description,
+          gift_amount = @gift_amount,
+          previous_balance_type = @previous_balance_type,
+          previous_balance_amount = @previous_balance_amount,
+          previous_balance_note = @previous_balance_note,
+          previous_balance_manual_override = @previous_balance_manual_override,
           note = @note,
           processed_at = @processed_at,
           archived_at = @archived_at,
           report_html_snapshot = @report_html_snapshot,
           report_snapshot_json = @report_snapshot_json,
+          employer_key = @employer_key,
           updated_at = CURRENT_TIMESTAMP
       WHERE team_id = @team_id
         AND month = @month
@@ -464,11 +591,17 @@ function saveTeamReportRecord(payload = {}) {
   } else {
     db.prepare(`
       INSERT INTO team_report_records (
-        team_id, month, transport_enabled, transport_description, transport_amount, note,
-        processed_at, archived_at, report_html_snapshot, report_snapshot_json
+        team_id, month, transport_enabled, transport_description, transport_amount,
+        gift_enabled, gift_description, gift_amount,
+        previous_balance_type, previous_balance_amount, previous_balance_note, previous_balance_manual_override,
+        note,
+        processed_at, archived_at, report_html_snapshot, report_snapshot_json, employer_key
       ) VALUES (
-        @team_id, @month, @transport_enabled, @transport_description, @transport_amount, @note,
-        @processed_at, @archived_at, @report_html_snapshot, @report_snapshot_json
+        @team_id, @month, @transport_enabled, @transport_description, @transport_amount,
+        @gift_enabled, @gift_description, @gift_amount,
+        @previous_balance_type, @previous_balance_amount, @previous_balance_note, @previous_balance_manual_override,
+        @note,
+        @processed_at, @archived_at, @report_html_snapshot, @report_snapshot_json, @employer_key
       )
     `).run(data);
   }
@@ -503,6 +636,7 @@ function updatePayrollComponent(id, payload) {
         days = @days,
         amount = @amount,
         notes = @notes,
+        selected_payroll_days_json = @selected_payroll_days_json,
         sort_order = @sort_order,
         updated_at = CURRENT_TIMESTAMP
     WHERE id = @id
@@ -538,5 +672,6 @@ module.exports = {
   deletePayrollComponent,
   replacePayrollComponents,
   getTeamReportRecord,
+  listTeamReportRecords,
   saveTeamReportRecord,
 };

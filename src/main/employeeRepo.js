@@ -211,6 +211,7 @@ function mapEmployeeInput(employee) {
     early_termination_date: employee.early_termination_date || null,
     early_termination_reason: employee.early_termination_reason || null,
     archive_reason: employee.archive_reason || null,
+    closure_type: employee.closure_type || 'active',
   };
 }
 
@@ -540,6 +541,7 @@ function listBasicEmployees(options = {}) {
       e.early_termination_date,
       e.early_termination_reason,
       e.archive_reason,
+      e.closure_type,
       e.hired_by,
       e.contract_type,
       e.daily_pay,
@@ -630,6 +632,7 @@ function listBasicEmployees(options = {}) {
       early_termination_date: row.early_termination_date || null,
       early_termination_reason: row.early_termination_reason || null,
       archive_reason: row.archive_reason || null,
+      closure_type: row.closure_type || 'active',
       hired_by: row.hired_by || null,
       contract_type: row.contract_type || null,
       daily_pay: row.daily_pay,
@@ -1114,7 +1117,7 @@ function insertEmployeeRow(employeeData) {
       medical_visit_date, medical_visit_expiry, medical_visit_notes,
       art37_required, art37_done, art37_done_with_us,
       art37_date, art37_expiry, art37_notes, notes,
-      early_termination_date, early_termination_reason, archive_reason,
+      early_termination_date, early_termination_reason, archive_reason, closure_type,
       is_deleted, deleted_at
     ) VALUES (
       @first_name, @last_name, @fiscal_code, @role, @contract_type, @daily_pay, @standard_hours, @overtime_use_general_rate, @overtime_hourly_rate,
@@ -1123,7 +1126,7 @@ function insertEmployeeRow(employeeData) {
       @medical_visit_date, @medical_visit_expiry, @medical_visit_notes,
       @art37_required, @art37_done, @art37_done_with_us,
       @art37_date, @art37_expiry, @art37_notes, @notes,
-      @early_termination_date, @early_termination_reason, @archive_reason,
+      @early_termination_date, @early_termination_reason, @archive_reason, @closure_type,
       0, NULL
     )
   `).run(employeeData);
@@ -1167,6 +1170,7 @@ function updateEmployeeRow(id, employeeData, { restore = false } = {}) {
       early_termination_date=@early_termination_date,
       early_termination_reason=@early_termination_reason,
       archive_reason=@archive_reason,
+      closure_type=@closure_type,
       is_deleted=${restore ? '0,' : 'is_deleted,'}
       deleted_at=${restore ? 'NULL,' : 'deleted_at,'}
       updated_at=CURRENT_TIMESTAMP
@@ -1291,6 +1295,7 @@ function restoreEmployee(id) {
         status = 'attivo',
         deleted_at = NULL,
         archive_reason = NULL,
+        closure_type = 'active',
         updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(id);
@@ -1320,42 +1325,81 @@ function closeEmployeesEarly(ids = [], terminationDate, reason = '') {
 
   const placeholders = normalizedIds.map(() => '?').join(', ');
   const rows = db.prepare(`
-    SELECT id, contract_type, is_deleted
+    SELECT id
     FROM employees
     WHERE id IN (${placeholders})
   `).all(...normalizedIds);
 
-  const invalidPermanent = rows.filter((row) => String(row.contract_type || '').trim().toLowerCase() === 'tempo_indeterminato');
-  if (invalidPermanent.length) {
-    throw new Error('Non puoi chiudere anticipatamente dipendenti a tempo indeterminato.');
+  const closureByEmployeeId = new Map();
+  rows.forEach((row) => {
+    closureByEmployeeId.set(Number(row.id), {
+      archiveReason: 'early_termination',
+      closureStatus: 'chiuso_anticipo',
+      closureType: 'manual_early',
+    });
+  });
+
+  const missingIds = normalizedIds.filter((employeeId) => !closureByEmployeeId.has(Number(employeeId)));
+  if (missingIds.length) {
+    throw new Error('Uno o piu dipendenti selezionati non sono stati trovati.');
   }
 
   const tx = db.transaction(() => {
-    const result = db.prepare(`
+    const updateEmployee = db.prepare(`
       UPDATE employees
       SET hire_date_to = ?,
-          status = 'inattivo',
+          status = ?,
           is_deleted = 1,
           deleted_at = CURRENT_TIMESTAMP,
           early_termination_date = ?,
           early_termination_reason = ?,
-          archive_reason = 'early_termination',
+          archive_reason = ?,
+          closure_type = ?,
           updated_at = CURRENT_TIMESTAMP
-      WHERE id IN (${placeholders})
+      WHERE id = ?
         AND COALESCE(is_deleted, 0) = 0
-    `).run(normalizedTerminationDate, normalizedTerminationDate, normalizedReason || null, ...normalizedIds);
+    `);
 
-    db.prepare(`
+    const updatePeriod = db.prepare(`
       UPDATE employee_employment_periods
       SET hire_date_to = ?,
-          status = 'inattivo',
+          status = ?,
           is_current = 0,
           updated_at = CURRENT_TIMESTAMP
-      WHERE employee_id IN (${placeholders})
+      WHERE employee_id = ?
         AND is_current = 1
-    `).run(normalizedTerminationDate, ...normalizedIds);
+    `);
 
-    return result.changes || 0;
+    let changes = 0;
+    normalizedIds.forEach((employeeId) => {
+      const closure = closureByEmployeeId.get(Number(employeeId)) || {
+        archiveReason: 'employment_ended',
+        closureStatus: 'cessato',
+        closureType: 'manual_early',
+      };
+      const result = updateEmployee.run(
+        normalizedTerminationDate,
+        closure.closureStatus,
+        normalizedTerminationDate,
+        normalizedReason || null,
+        closure.archiveReason,
+        closure.closureType,
+        employeeId
+      );
+      updatePeriod.run(normalizedTerminationDate, closure.closureStatus, employeeId);
+      changes += result.changes || 0;
+      console.info(
+        '[employee-close] employee_id=%s termination_date=%s status=%s closed_early=%s archive_reason=%s closure_type=%s',
+        employeeId,
+        normalizedTerminationDate,
+        closure.closureStatus,
+        closure.archiveReason === 'early_termination' ? 'true' : 'false',
+        closure.archiveReason,
+        closure.closureType
+      );
+    });
+
+    return changes;
   });
 
   const archivedCount = tx();
@@ -1393,10 +1437,11 @@ function archiveExpiredContracts(today = getTodayIsoDate()) {
   const tx = db.transaction(() => {
     const result = db.prepare(`
       UPDATE employees
-      SET status = 'inattivo',
+      SET status = 'scaduto_fine_contratto',
           is_deleted = 1,
           deleted_at = CURRENT_TIMESTAMP,
           archive_reason = 'expired_contract_auto',
+          closure_type = 'natural_expiry',
           updated_at = CURRENT_TIMESTAMP
       WHERE id IN (${placeholders})
         AND COALESCE(is_deleted, 0) = 0

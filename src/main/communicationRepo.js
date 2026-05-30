@@ -235,8 +235,8 @@ function buildCommunicationWhere(options = {}) {
         COALESCE(c.month_reference, '') || ' ' ||
         COALESCE(c.period_start, '') || ' ' ||
         COALESCE(c.period_end, '') || ' ' ||
-        COALESCE(c.file_name_pdf, '') || ' ' ||
-        COALESCE(c.file_name_excel, '')
+        COALESCE(c.pdf_relative_path, '') || ' ' ||
+        COALESCE(c.excel_relative_path, '')
       ) LIKE ?
     `);
     params.push(`%${search}%`);
@@ -304,6 +304,7 @@ function ensureCommunicationsSchema(db) {
     { name: 'month_reference', definition: 'TEXT' },
     { name: 'company_name', definition: 'TEXT' },
     { name: 'title', definition: 'TEXT' },
+    { name: 'subject', definition: 'TEXT' },
     { name: 'employer_labels_json', definition: 'TEXT' },
     { name: 'recipient_email', definition: 'TEXT' },
     { name: 'notes', definition: 'TEXT' },
@@ -314,9 +315,7 @@ function ensureCommunicationsSchema(db) {
       db.prepare(
         `ALTER TABLE communications ADD COLUMN ${column.name} ${column.definition}`
       ).run();
-      console.log(`communications schema: ${column.name} added`);
-    } else {
-      console.log(`communications schema: ${column.name} already exists`);
+      console.log(`[db:migration] communications added missing column ${column.name}`);
     }
   }
 }
@@ -422,6 +421,24 @@ function getCommunicationById(id) {
 
   if (!row) return null;
   return mapCommunicationRow(row, getCommunicationDetails(id));
+}
+
+function getCommunicationByMonth(monthReference) {
+  const db = getDb();
+  ensureCommunicationsSchema(db);
+  const month = normalizeString(monthReference);
+  if (!/^\d{4}-\d{2}$/.test(month)) return null;
+  const row = db.prepare(`
+    ${getCommunicationBaseSelect()}
+    WHERE c.period_mode = 'monthly'
+      AND c.month_reference = ?
+    GROUP BY c.id
+    ORDER BY c.updated_at DESC, c.id DESC
+    LIMIT 1
+  `).get(month);
+
+  if (!row) return null;
+  return mapCommunicationRow(row, getCommunicationDetails(row.id));
 }
 
 function listCommunications(options = {}) {
@@ -614,27 +631,30 @@ function saveCommunication(payload = {}) {
     communicationColumns.map((column) => column.name)
   );
   const normalized = normalizeCommunicationPayload(payload);
-  const overwriteExisting = !!payload.overwrite_existing;
 
   if (normalized.period_mode === 'monthly' && normalized.month_reference) {
     const existing = db.prepare(`
-      SELECT id
+      SELECT *
       FROM communications
       WHERE period_mode = 'monthly'
         AND month_reference = ?
-        AND id != COALESCE(?, -1)
+      ORDER BY updated_at DESC, id DESC
       LIMIT 1
-    `).get(normalized.month_reference, normalized.id || null);
+    `).get(normalized.month_reference);
 
-    if (existing && !overwriteExisting) {
-      const error = new Error('Esiste già una comunicazione per questo mese.');
-      error.code = 'COMMUNICATION_MONTH_EXISTS';
-      error.existingId = existing.id;
-      throw error;
-    }
-
-    if (existing && overwriteExisting && !normalized.id) {
+    if (existing) {
       normalized.id = existing.id;
+      normalized.selected_employee_ids_json = JSON.stringify([
+        ...new Set([
+          ...parseJsonArray(existing.selected_employee_ids_json, []).map(Number).filter(Number.isFinite),
+          ...parseJsonArray(normalized.selected_employee_ids_json, []).map(Number).filter(Number.isFinite),
+        ]),
+      ]);
+      normalized.employee_dates_json = JSON.stringify({
+        ...normalizeEmployeeDatesMap(parseJsonObject(existing.employee_dates_json, {})),
+        ...normalizeEmployeeDatesMap(parseJsonObject(normalized.employee_dates_json, {})),
+      });
+      normalized.notes = normalized.notes || existing.notes || '';
     }
   }
 
@@ -660,10 +680,6 @@ function saveCommunication(payload = {}) {
         WHERE id = @id
       `).run(input);
 
-      db.prepare(`
-        DELETE FROM communication_details
-        WHERE communication_id = ?
-      `).run(communicationId);
     } else {
       const result = db.prepare(`
         INSERT INTO communications (
@@ -675,6 +691,36 @@ function saveCommunication(payload = {}) {
       communicationId = result.lastInsertRowid;
     }
 
+    const existingDetails = db.prepare(`
+      SELECT *
+      FROM communication_details
+      WHERE communication_id = ?
+      ORDER BY sort_order ASC, id ASC
+    `).all(communicationId);
+    const existingByEmployeeId = new Map();
+    const existingByLabel = new Map();
+    existingDetails.forEach((detail) => {
+      if (detail.employee_id && !existingByEmployeeId.has(Number(detail.employee_id))) {
+        existingByEmployeeId.set(Number(detail.employee_id), detail);
+      }
+      const labelKey = normalizeString(detail.employee_label).toLowerCase();
+      if (labelKey && !existingByLabel.has(labelKey)) {
+        existingByLabel.set(labelKey, detail);
+      }
+    });
+
+    const updateDetail = db.prepare(`
+      UPDATE communication_details
+      SET employee_id = @employee_id,
+          employee_label = @employee_label,
+          giornate_primo = @giornate_primo,
+          giornate_secondo = @giornate_secondo,
+          detail_note = @detail_note,
+          sort_order = @sort_order,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = @id
+    `);
+
     const insertDetail = db.prepare(`
       INSERT INTO communication_details (
         communication_id, employee_id, employee_label, giornate_primo, giornate_secondo, detail_note, sort_order
@@ -684,21 +730,38 @@ function saveCommunication(payload = {}) {
     `);
 
     input.details.forEach((detail, index) => {
-      insertDetail.run({
+      const existingDetail = detail.employee_id
+        ? existingByEmployeeId.get(Number(detail.employee_id))
+        : existingByLabel.get(normalizeString(detail.employee_label).toLowerCase());
+      const mergedDetail = {
         communication_id: communicationId,
         employee_id: detail.employee_id || null,
-        employee_label: detail.employee_label,
-        giornate_primo: detail.giornate_primo,
-        giornate_secondo: detail.giornate_secondo,
-        detail_note: detail.detail_note,
+        employee_label: detail.employee_label || existingDetail?.employee_label || '',
+        giornate_primo: detail.giornate_primo || normalizeNumber(existingDetail?.giornate_primo),
+        giornate_secondo: detail.giornate_secondo || normalizeNumber(existingDetail?.giornate_secondo),
+        detail_note: detail.detail_note || normalizeDetailNote(existingDetail?.detail_note),
         sort_order: Number.isFinite(detail.sort_order) ? detail.sort_order : index,
-      });
+      };
+
+      if (existingDetail?.id) {
+        updateDetail.run({
+          ...mergedDetail,
+          id: existingDetail.id,
+        });
+      } else {
+        insertDetail.run(mergedDetail);
+      }
     });
 
     return Number(communicationId);
   });
 
   const id = upsertTx(normalized);
+  console.info('[communication-save]', {
+    month_reference: normalized.month_reference || null,
+    communication_id: id,
+    detail_count: normalized.details.length,
+  });
   return getCommunicationById(id);
 }
 
@@ -781,7 +844,7 @@ function getCommunicationFileTargets(communication) {
   };
 }
 
-function buildCommunicationPdfHtml(communication) {
+function buildCommunicationPdfHtml(communication, options = {}) {
   const settings = settingsService.getSettings();
   const employerLabels = Array.isArray(communication.employer_labels) && communication.employer_labels.length
     ? communication.employer_labels
@@ -790,9 +853,11 @@ function buildCommunicationPdfHtml(communication) {
   const periodLabel = formatPeriodLabel(communication.period_start, communication.period_end);
   const createdLabel = formatDateTimeLabel(communication.created_at || communication.updated_at);
   const communicationMonth = getCommunicationMonth(communication);
-  const selectedIds = Array.isArray(communication.selected_employee_ids) ? communication.selected_employee_ids : [];
-  const filteredDetails = selectedIds.length
-    ? communication.details.filter((detail) => selectedIds.includes(Number(detail.employee_id)))
+  const outputSelectedIds = Array.isArray(options.selectedEmployeeIds)
+    ? options.selectedEmployeeIds.map(Number).filter(Number.isFinite)
+    : null;
+  const filteredDetails = outputSelectedIds?.length
+    ? communication.details.filter((detail) => outputSelectedIds.includes(Number(detail.employee_id)))
     : communication.details;
   const showCompensationColumn = communication.show_compensation_in_pdf !== false;
   const employeeDates = normalizeEmployeeDatesMap(communication.employee_dates || {});
@@ -1069,6 +1134,7 @@ module.exports = {
   deleteCommunication,
   ensureCommunicationsSchema,
   getCommunicationById,
+  getCommunicationByMonth,
   getCommunicationFileTargets,
   listCommunications,
   listCommunicationYears,

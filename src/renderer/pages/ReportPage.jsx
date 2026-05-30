@@ -45,6 +45,16 @@ const PAYROLL_PAYMENT_METHOD_OPTIONS = [
   { value: 'assegno', label: 'Assegno' },
   { value: 'contanti', label: 'Contanti' },
 ];
+const TEAM_PAYROLL_PERIOD_STATUS_OPTIONS = [
+  { value: 'all', label: 'Tutti' },
+  { value: 'enabled', label: 'Abilitati nel periodo' },
+  { value: 'not_hired_yet', label: 'Non ancora assunti' },
+  { value: 'out_of_employment', label: 'Fuori rapporto / cessati' },
+];
+const TEAM_PREVIOUS_BALANCE_TYPE_OPTIONS = [
+  { value: 'credit', label: 'Credito precedente' },
+  { value: 'debt', label: 'Debito precedente' },
+];
 const USE_TEAM_REPORT_TEMPLATE = true;
 const USE_EMPLOYEE_REPORT_TEMPLATE = true;
 
@@ -59,6 +69,38 @@ function parseDateValue(value) {
   const [year, month, day] = String(value || '').split('-');
   if (!year || !month || !day) return null;
   return new Date(Number(year), Number(month) - 1, Number(day));
+}
+
+function normalizeDateOnlyKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const plain = raw.split('T')[0].trim();
+  const isoMatch = plain.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+  }
+
+  const itMatch = plain.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (itMatch) {
+    return `${itMatch[3]}-${itMatch[2]}-${itMatch[1]}`;
+  }
+
+  return '';
+}
+
+function parseDateOnlyLocal(value) {
+  const normalized = normalizeDateOnlyKey(value);
+  if (!normalized) return null;
+  const [year, month, day] = normalized.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function getDateOnlyKeyFromDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return formatLocalDate(date);
 }
 
 function startOfMonth(date) {
@@ -172,7 +214,7 @@ const TeamTemplatePreviewFrame = React.memo(function TeamTemplatePreviewFrame({ 
               width: `${TEAM_TEMPLATE_A4_WIDTH}px`,
               height: `${TEAM_TEMPLATE_A4_HEIGHT}px`,
               transform: `scale(${previewScale})`,
-              transformOrigin: 'top center',
+              transformOrigin: 'top left',
             }}
           />
         </div>
@@ -180,6 +222,41 @@ const TeamTemplatePreviewFrame = React.memo(function TeamTemplatePreviewFrame({ 
     </div>
   );
 });
+
+function TeamReportActionBar({
+  isProcessedTeamRecord,
+  isTeamEditUnlocked,
+  hasUnsavedTeamChanges,
+  onUnlockTeamEdit,
+  onCancelTeamReportChanges,
+  onSaveTeamReportRecord,
+}) {
+  return (
+    <div style={teamReportActionBarStyle}>
+      {isProcessedTeamRecord ? (
+        <button
+          type="button"
+          className="button-secondary"
+          onClick={onUnlockTeamEdit}
+          disabled={isTeamEditUnlocked}
+        >
+          Modifica
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className="button-secondary"
+        onClick={onCancelTeamReportChanges}
+        disabled={!hasUnsavedTeamChanges}
+      >
+        Annulla
+      </button>
+      <button type="button" className="button" onClick={() => onSaveTeamReportRecord()}>
+        Salva nel registro
+      </button>
+    </div>
+  );
+}
 
 function getCalendarWeeks(days) {
   const weeks = [];
@@ -214,8 +291,23 @@ function formatMonthLabelForFile(date) {
   return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
+function formatMonthKeyLabel(monthKey) {
+  const parsed = parseDateValue(`${String(monthKey || '')}-01`);
+  if (!parsed) return String(monthKey || '');
+  return formatMonthLabelForFile(parsed);
+}
+
 function formatDateLabel(value) {
   return formatDisplayDate(value);
+}
+
+function getMonthDateRangeKeys(monthDate) {
+  const monthStart = startOfMonth(monthDate || new Date());
+  const monthEnd = endOfMonth(monthDate || new Date());
+  return {
+    monthStartKey: formatLocalDate(monthStart),
+    monthEndKey: formatLocalDate(monthEnd),
+  };
 }
 
 function getPaymentStatusLabel(status) {
@@ -346,6 +438,10 @@ function getTeamRows(team, year) {
     !member.employee.is_deleted &&
     employeeIsActiveInYear(member.employee, year)
   );
+}
+
+function isHeadcountTeamMode(team) {
+  return String(team?.attendance_mode || '').trim().toLowerCase() === 'headcount';
 }
 
 function getReportCellValue(att, hoursFormat = 'decimal') {
@@ -491,6 +587,201 @@ function createEmptyTeamPayrollComponent() {
     days: '',
     amount: '',
     notes: '',
+    selected_payroll_days: [],
+    selected_payroll_days_json: '[]',
+  };
+}
+
+function normalizeTeamPayrollSelectedDays(value) {
+  let source = value;
+  if (typeof source === 'string') {
+    const text = source.trim();
+    if (!text) {
+      source = [];
+    } else {
+      try {
+        source = JSON.parse(text);
+      } catch {
+        source = text.split(/[,\s;]+/);
+      }
+    }
+  }
+  if (!Array.isArray(source)) return [];
+  return [...new Set(
+    source
+      .map((day) => Number(day))
+      .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31)
+  )].sort((a, b) => a - b);
+}
+
+function stringifyTeamPayrollSelectedDays(value) {
+  return JSON.stringify(normalizeTeamPayrollSelectedDays(value));
+}
+
+function pickEmploymentPeriodForMonth(employee = {}, referenceMonthDate = null) {
+  const periods = Array.isArray(employee?.employment_periods) ? employee.employment_periods : [];
+  if (!periods.length) {
+    return null;
+  }
+
+  const monthStartKey = referenceMonthDate ? formatLocalDate(startOfMonth(referenceMonthDate)) : '';
+  const monthEndKey = referenceMonthDate ? formatLocalDate(endOfMonth(referenceMonthDate)) : '';
+  const normalizedPeriods = periods
+    .map((period) => {
+      const startKey = normalizeDateOnlyKey(
+        period?.hire_date_from || period?.hire_date || period?.start_date || period?.employment_start || period?.contract_start_date
+      );
+      const endKey = normalizeDateOnlyKey(
+        period?.hire_date_to || period?.early_termination_date || period?.termination_date || period?.end_date || period?.contract_end_date
+      );
+      return {
+        ...period,
+        startKey,
+        endKey,
+      };
+    })
+    .filter((period) => period.startKey || period.endKey);
+
+  if (!normalizedPeriods.length) {
+    return null;
+  }
+
+  if (monthStartKey && monthEndKey) {
+    const overlappingPeriod = normalizedPeriods.find((period) => {
+      const startsBeforeMonthEnds = !period.startKey || period.startKey <= monthEndKey;
+      const endsAfterMonthStarts = !period.endKey || period.endKey >= monthStartKey;
+      return startsBeforeMonthEnds && endsAfterMonthStarts;
+    });
+    if (overlappingPeriod) {
+      return overlappingPeriod;
+    }
+  }
+
+  return normalizedPeriods.find((period) => period.is_current) || normalizedPeriods[0];
+}
+
+function getTeamMemberEmploymentRange(member, referenceMonthDate = null) {
+  const employee = member?.employee || {};
+  return getEmployeeEmploymentRange(employee, referenceMonthDate);
+}
+
+function getEmployeeEmploymentRange(employee = {}, referenceMonthDate = null) {
+  const selectedPeriod = pickEmploymentPeriodForMonth(employee, referenceMonthDate);
+  const startKey = normalizeDateOnlyKey(
+    selectedPeriod?.startKey ||
+      selectedPeriod?.hire_date_from ||
+      selectedPeriod?.hire_date ||
+      selectedPeriod?.start_date ||
+      selectedPeriod?.employment_start ||
+      selectedPeriod?.contract_start_date ||
+      employee.hire_date_from ||
+      employee.hire_date ||
+      employee.start_date ||
+      employee.employment_start ||
+      employee.contract_start_date
+  );
+  const endCandidates = [
+    selectedPeriod?.endKey,
+    selectedPeriod?.hire_date_to,
+    selectedPeriod?.early_termination_date,
+    selectedPeriod?.termination_date,
+    selectedPeriod?.end_date,
+    selectedPeriod?.contract_end_date,
+    employee.hire_date_to,
+    employee.early_termination_date,
+    employee.termination_date,
+    employee.end_date,
+    employee.contract_end_date,
+  ]
+    .map((value) => normalizeDateOnlyKey(value))
+    .filter(Boolean);
+  const endKey = endCandidates.length
+    ? endCandidates.reduce((earliest, value) => (value < earliest ? value : earliest), endCandidates[0])
+    : '';
+  return {
+    startKey,
+    endKey,
+    start: parseDateOnlyLocal(startKey),
+    end: parseDateOnlyLocal(endKey),
+  };
+}
+
+function isPayrollDayAllowedForRange(dayDate, range = {}) {
+  if (!dayDate) return false;
+  const dateKey = dayDate instanceof Date ? getDateOnlyKeyFromDate(dayDate) : normalizeDateOnlyKey(dayDate);
+  if (!dateKey) return false;
+  const startKey = range.startKey || normalizeDateOnlyKey(range.start);
+  const endKey = range.endKey || normalizeDateOnlyKey(range.end);
+  if (startKey && dateKey < startKey) return false;
+  if (endKey && dateKey > endKey) return false;
+  return true;
+}
+
+function filterSelectedPayrollDaysByRange(days, range, monthDate) {
+  const monthStart = startOfMonth(monthDate || new Date());
+  return normalizeTeamPayrollSelectedDays(days).filter((day) =>
+    isPayrollDayAllowedForRange(
+      new Date(monthStart.getFullYear(), monthStart.getMonth(), day),
+      range
+    )
+  );
+}
+
+function getTeamPayrollComponentPeriodMeta(range = {}, monthDate = new Date()) {
+  const { monthStartKey, monthEndKey } = getMonthDateRangeKeys(monthDate);
+  const startKey = range.startKey || normalizeDateOnlyKey(range.start);
+  const endKey = range.endKey || normalizeDateOnlyKey(range.end);
+
+  if (startKey && startKey > monthEndKey) {
+    return {
+      status: 'not_hired_yet',
+      label: 'Non ancora assunto nel periodo',
+      tone: 'pending',
+      hasAnyValidDay: false,
+    };
+  }
+
+  if (endKey && endKey < monthStartKey) {
+    return {
+      status: 'out_of_employment',
+      label: `Cessato il ${formatDateLabel(endKey)}`,
+      tone: 'ended',
+      hasAnyValidDay: false,
+    };
+  }
+
+  if (startKey && startKey >= monthStartKey && startKey <= monthEndKey) {
+    return {
+      status: 'enabled',
+      label: `Abilitato dal ${formatDateLabel(startKey)}`,
+      tone: 'enabled',
+      hasAnyValidDay: true,
+    };
+  }
+
+  if (endKey && endKey >= monthStartKey && endKey <= monthEndKey) {
+    return {
+      status: 'enabled',
+      label: `Cessato il ${formatDateLabel(endKey)}`,
+      tone: 'enabled',
+      hasAnyValidDay: true,
+    };
+  }
+
+  if (startKey || endKey) {
+    return {
+      status: 'enabled',
+      label: startKey ? `Abilitato dal ${formatDateLabel(startKey)}` : 'Abilitato nel periodo',
+      tone: 'enabled',
+      hasAnyValidDay: true,
+    };
+  }
+
+  return {
+    status: 'enabled',
+    label: 'Abilitato nel periodo',
+    tone: 'enabled',
+    hasAnyValidDay: true,
   };
 }
 
@@ -499,18 +790,22 @@ function isMeaningfulTeamAdvance(advance) {
 }
 
 function isMeaningfulTeamPayrollComponent(component) {
+  const selectedDays = normalizeTeamPayrollSelectedDays(
+    component?.selected_payroll_days ?? component?.selected_payroll_days_json
+  );
   return (
     String(component?.employee_id || '').trim() !== '' ||
     String(component?.employee_label || '').trim() !== '' ||
     Number(component?.days || 0) > 0 ||
     Number(component?.amount || 0) > 0 ||
-    String(component?.notes || '').trim() !== ''
+    String(component?.notes || '').trim() !== '' ||
+    selectedDays.length > 0
   );
 }
 
-function buildTeamPayrollComponentRows(teamMembers = [], savedRows = []) {
+function buildTeamPayrollComponentRows(teamMembers = [], savedRows = [], monthDate = new Date()) {
   const normalizedMembers = (Array.isArray(teamMembers) ? teamMembers : []).filter((member) =>
-    member?.employee && !member.employee.is_deleted
+    member?.employee
   );
   const savedByEmployeeId = new Map(
     (Array.isArray(savedRows) ? savedRows : [])
@@ -521,14 +816,23 @@ function buildTeamPayrollComponentRows(teamMembers = [], savedRows = []) {
   return normalizedMembers.map((member) => {
     const savedRow = savedByEmployeeId.get(String(member.employee_id));
     const employeeLabel = `${member.employee.first_name} ${member.employee.last_name}`.trim();
+    const selectedDays = filterSelectedPayrollDaysByRange(
+      savedRow?.selected_payroll_days ?? savedRow?.selected_payroll_days_json,
+      getTeamMemberEmploymentRange(member, monthDate),
+      monthDate
+    );
     return {
       id: savedRow?.id || null,
       client_key: createLocalDraftKey(`team-payroll-component-member-${member.employee_id}`),
       employee_id: String(member.employee_id),
       employee_label: savedRow?.employee_label || employeeLabel,
-      days: savedRow?.days === null || savedRow?.days === undefined ? '' : String(savedRow.days),
+      days: selectedDays.length
+        ? String(selectedDays.length)
+        : savedRow?.days === null || savedRow?.days === undefined ? '' : String(savedRow.days),
       amount: savedRow?.amount === null || savedRow?.amount === undefined ? '' : String(savedRow.amount),
       notes: savedRow?.notes || '',
+      selected_payroll_days: selectedDays,
+      selected_payroll_days_json: JSON.stringify(selectedDays),
     };
   });
 }
@@ -540,7 +844,12 @@ function buildTeamReportSnapshot({
   teamGiftEnabled,
   teamGiftDescription,
   teamGiftAmount,
+  teamPreviousBalanceType,
+  teamPreviousBalanceAmount,
+  teamPreviousBalanceNote,
+  teamPreviousBalanceManualOverride,
   teamNotes,
+  teamDatore,
   teamAdvances,
   teamPayrollComponents,
 }) {
@@ -551,7 +860,12 @@ function buildTeamReportSnapshot({
     gift_enabled: !!teamGiftEnabled,
     gift_description: String(teamGiftDescription || ''),
     gift_amount: Number(teamGiftAmount || 0),
+    previous_balance_type: normalizeTeamPreviousBalanceType(teamPreviousBalanceType),
+    previous_balance_amount: Number(teamPreviousBalanceAmount || 0),
+    previous_balance_note: String(teamPreviousBalanceNote || ''),
+    previous_balance_manual_override: !!teamPreviousBalanceManualOverride,
     note: String(teamNotes || ''),
+    employer_key: String(teamDatore || ''),
     advances: (Array.isArray(teamAdvances) ? teamAdvances : [])
       .filter(isMeaningfulTeamAdvance)
       .map((advance) => ({
@@ -571,6 +885,9 @@ function buildTeamReportSnapshot({
         days: Number(component.days || 0),
         amount: Number(component.amount || 0),
         notes: component.notes || '',
+        selected_payroll_days: normalizeTeamPayrollSelectedDays(
+          component.selected_payroll_days ?? component.selected_payroll_days_json
+        ),
       })),
   });
 }
@@ -692,6 +1009,41 @@ function formatSignedCurrency(value) {
 
 function formatNegativeCurrency(value) {
   return `- ${formatCurrency(Math.abs(Number(value || 0)))}`;
+}
+
+function normalizeTeamPreviousBalanceType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'credit' || normalized === 'debt' ? normalized : '';
+}
+
+function getTeamReportFinalBalance(record) {
+  if (!record) return 0;
+  const snapshot = record?.report_snapshot_json || {};
+  const rawValue = snapshot.final_balance ?? record.final_balance ?? 0;
+  const numericValue = Number(rawValue || 0);
+  return Number.isFinite(numericValue) ? numericValue : 0;
+}
+
+function buildAutomaticTeamPreviousBalance(previousRecord, previousMonthKey) {
+  const previousFinalBalance = getTeamReportFinalBalance(previousRecord);
+  const roundedAmount = Math.abs(Number(previousFinalBalance || 0));
+  if (!(roundedAmount > 0)) {
+    return {
+      type: '',
+      amount: '',
+      note: '',
+      sourceMonth: previousMonthKey || '',
+      autoApplied: false,
+    };
+  }
+
+  return {
+    type: previousFinalBalance > 0 ? 'credit' : 'debt',
+    amount: String(roundedAmount),
+    note: `Riporto automatico da ${formatMonthKeyLabel(previousMonthKey)}`,
+    sourceMonth: previousMonthKey || '',
+    autoApplied: true,
+  };
 }
 
 function getIpcRecoveryMessage(error, fallbackMessage) {
@@ -982,6 +1334,8 @@ export default function ReportPage() {
   const [datore, setDatore] = useState('');
   const [importoBustaPaga, setImportoBustaPaga] = useState('');
   const [giornateBustaPaga, setGiornateBustaPaga] = useState('');
+  const [selectedPayrollDays, setSelectedPayrollDays] = useState([]);
+  const [showSelectedPayrollDaysInReport, setShowSelectedPayrollDaysInReport] = useState(false);
   const [dailyPayInput, setDailyPayInput] = useState('');
   const [savingDailyPay, setSavingDailyPay] = useState(false);
   const [advances, setAdvances] = useState([createEmptyAdvance()]);
@@ -1029,10 +1383,12 @@ export default function ReportPage() {
   const autosaveTimeoutRef = useRef(null);
   const attendanceEditorClickTimeoutRef = useRef(null);
   const mountedRef = useRef(false);
+  const reportLayoutContainerRef = useRef(null);
   const employeeAutocompleteRef = useRef(null);
   const employeeDraftTimeoutRef = useRef(null);
   const teamDraftTimeoutRef = useRef(null);
   const latestDraftSnapshotRef = useRef(null);
+  const draftPersistSignatureRef = useRef({});
   const [draftRestorePrompt, setDraftRestorePrompt] = useState(null);
   const [draftFeedback, setDraftFeedback] = useState({
     key: '',
@@ -1041,12 +1397,14 @@ export default function ReportPage() {
     savedAt: '',
   });
   const [employeeTemplatePreviewHtml, setEmployeeTemplatePreviewHtml] = useState('');
+  const [employeeTemplatePreviewStatus, setEmployeeTemplatePreviewStatus] = useState('idle');
   const [employeeTemplatePreviewLoading, setEmployeeTemplatePreviewLoading] = useState(false);
   const [employeeTemplatePreviewError, setEmployeeTemplatePreviewError] = useState('');
   const lastEmployeeTemplatePreviewKeyRef = useRef('');
   const employeeTemplatePreviewTimeoutRef = useRef(null);
-  const [employeeTemplatePreviewMode, setEmployeeTemplatePreviewMode] = useState('fit-page');
-  const [teamTemplatePreviewMode, setTeamTemplatePreviewMode] = useState('fit-page');
+  const latestEmployeeTemplateSourceRef = useRef(null);
+  const [employeeTemplatePreviewMode, setEmployeeTemplatePreviewMode] = useState('fit-width');
+  const [teamTemplatePreviewMode, setTeamTemplatePreviewMode] = useState('fit-width');
 
   const [teamPeriodStart, setTeamPeriodStart] = useState(formatLocalDate(startOfMonth(currentMonth)));
   const [teamPeriodEnd, setTeamPeriodEnd] = useState(formatLocalDate(endOfMonth(currentMonth)));
@@ -1056,6 +1414,11 @@ export default function ReportPage() {
   const [teamGiftEnabled, setTeamGiftEnabled] = useState(false);
   const [teamGiftDescription, setTeamGiftDescription] = useState('');
   const [teamGiftAmount, setTeamGiftAmount] = useState('');
+  const [teamPreviousBalanceType, setTeamPreviousBalanceType] = useState('');
+  const [teamPreviousBalanceAmount, setTeamPreviousBalanceAmount] = useState('');
+  const [teamPreviousBalanceNote, setTeamPreviousBalanceNote] = useState('');
+  const [teamPreviousBalanceManualOverride, setTeamPreviousBalanceManualOverride] = useState(false);
+  const [teamPreviousBalanceSourceMonth, setTeamPreviousBalanceSourceMonth] = useState('');
   const [teamAdvances, setTeamAdvances] = useState([createEmptyTeamAdvance()]);
   const [teamAdvanceBusyKey, setTeamAdvanceBusyKey] = useState('');
   const [teamAdvanceImportModal, setTeamAdvanceImportModal] = useState({
@@ -1065,20 +1428,25 @@ export default function ReportPage() {
   });
   const [teamPayrollComponents, setTeamPayrollComponents] = useState([]);
   const [teamPayrollComponentBusyKey, setTeamPayrollComponentBusyKey] = useState('');
+  const [teamPayrollPeriodStatusFilter, setTeamPayrollPeriodStatusFilter] = useState('all');
   const [teamNotes, setTeamNotes] = useState('');
+  const [teamDatore, setTeamDatore] = useState('');
   const [currentTeamReportRecord, setCurrentTeamReportRecord] = useState(null);
   const [savedTeamEditorState, setSavedTeamEditorState] = useState(null);
   const [savedTeamEconomicSnapshot, setSavedTeamEconomicSnapshot] = useState(null);
   const [teamSaveState, setTeamSaveState] = useState('idle');
   const [teamTemplatePreviewHtml, setTeamTemplatePreviewHtml] = useState('');
   const [teamTemplatePreviewData, setTeamTemplatePreviewData] = useState(null);
+  const [teamTemplatePreviewStatus, setTeamTemplatePreviewStatus] = useState('idle');
   const [teamTemplatePreviewLoading, setTeamTemplatePreviewLoading] = useState(false);
   const [teamTemplatePreviewError, setTeamTemplatePreviewError] = useState('');
   const lastTeamTemplatePreviewKeyRef = useRef('');
   const teamTemplatePreviewTimeoutRef = useRef(null);
+  const latestTeamTemplateSourceRef = useRef(null);
   const [isTeamEditUnlocked, setIsTeamEditUnlocked] = useState(false);
   const [teamPayrollMap, setTeamPayrollMap] = useState({});
   const [processedEmployeeIdsForMonth, setProcessedEmployeeIdsForMonth] = useState(() => new Set());
+  const [reportLayoutStacked, setReportLayoutStacked] = useState(false);
 
   const selectedMeta = parseSelection(selectedEntity);
   const isEmployeeMode = selectedMeta.type === 'employee';
@@ -1121,6 +1489,18 @@ export default function ReportPage() {
   const employee = isEmployeeMode
     ? activeEmployees.find((item) => String(item.id) === String(selectedMeta.id))
     : null;
+  const employeePayrollRange = useMemo(
+    () => getEmployeeEmploymentRange(employee || {}, currentMonth),
+    [currentMonth, employee]
+  );
+  const validSelectedPayrollDays = useMemo(
+    () => filterSelectedPayrollDaysByRange(selectedPayrollDays, employeePayrollRange, currentMonth),
+    [currentMonth, employeePayrollRange, selectedPayrollDays]
+  );
+  const payrollDaysMismatch =
+    validSelectedPayrollDays.length > 0 &&
+    String(giornateBustaPaga || '').trim() !== '' &&
+    Number(giornateBustaPaga || 0) !== validSelectedPayrollDays.length;
   const filteredEmployeesForSelect = useMemo(() => {
     if (!normalizedSearch) {
       return sortedActiveEmployees;
@@ -1160,6 +1540,7 @@ export default function ReportPage() {
   ];
   const defaultEmployerValue = employerOptions[0]?.short_name || employerOptions[0]?.value || 'LC';
   const requestedEmployeeId = searchParams.get('employee');
+  const requestedTeamId = searchParams.get('team');
   const requestedMonth = searchParams.get('month');
   const attendanceByEmployeeId = useMemo(() => {
     const map = new Map();
@@ -1186,16 +1567,51 @@ export default function ReportPage() {
 
   const queryMonthsKey = queryMonths.map((item) => item.key).join('|');
   const loading = directoryLoading || attendanceLoading;
+  const selectedReportMonthKey = monthString(currentMonth);
+  const monthName = MONTH_NAMES[currentMonth.getMonth()];
+  const yearStr = String(currentMonth.getFullYear());
+  console.count('[report-render]');
+  console.count('[report-template-render]');
+
+  useEffect(() => {
+    console.info('[report-template] monthName', monthName);
+  }, [monthName]);
 
   useEffect(() => {
     if (!loading) {
       dispatchRouteReady('/report');
     }
   }, [loading]);
-  const selectedReportMonthKey = monthString(currentMonth);
-  const monthName = MONTH_NAMES[currentMonth.getMonth()];
-  const yearStr = String(currentMonth.getFullYear());
-  console.info('[report-template] monthName', monthName);
+
+  useEffect(() => {
+    const container = reportLayoutContainerRef.current;
+    if (!container) {
+      return undefined;
+    }
+
+    const updateLayoutMode = () => {
+      const reportContainerWidth = container.offsetWidth || 0;
+      const nextStacked = reportContainerWidth > 0 && reportContainerWidth < 1600;
+      console.log('[report-layout]', {
+        width: window.innerWidth,
+        reportContainerWidth,
+        stacked: nextStacked,
+      });
+      setReportLayoutStacked((current) => (current === nextStacked ? current : nextStacked));
+    };
+
+    updateLayoutMode();
+    const observer = new ResizeObserver(() => {
+      updateLayoutMode();
+    });
+    observer.observe(container);
+    window.addEventListener('resize', updateLayoutMode);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateLayoutMode);
+    };
+  }, []);
   const employeeDraftStorageKey = useMemo(
     () => (isEmployeeMode && employee?.id ? buildReportDraftStorageKey('employee', selectedReportMonthKey, employee.id) : ''),
     [employee?.id, isEmployeeMode, selectedReportMonthKey]
@@ -1250,6 +1666,13 @@ export default function ReportPage() {
     () => (Array.isArray(selectedTeam?.members) ? selectedTeam.members : []),
     [selectedTeam]
   );
+  const teamPayrollMemberRangesByEmployeeId = useMemo(() => {
+    const ranges = new Map();
+    selectedTeamMembers.forEach((member) => {
+      ranges.set(String(member.employee_id), getTeamMemberEmploymentRange(member, currentMonth));
+    });
+    return ranges;
+  }, [currentMonth, selectedTeamMembers]);
   const teamRows = useMemo(
     () =>
       getTeamRows(selectedTeam, selectedYear).map((member) => {
@@ -1296,6 +1719,49 @@ export default function ReportPage() {
     () => new Map(selectedTeamAttendanceRows.map((record) => [record.date, record])),
     [selectedTeamAttendanceRows]
   );
+  const selectedTeamUsesHeadcountMode = isHeadcountTeamMode(selectedTeam);
+  const teamCalendarEntries = useMemo(() => {
+    if (selectedTeamUsesHeadcountMode) {
+      return selectedTeamAttendanceRows.map((record) => ({
+        date: record.date,
+        headcount: Number(record.headcount || 0),
+        hours_per_person: Number(record.hours_per_person || attendanceBaseHours),
+        source: 'team_attendance',
+      }));
+    }
+
+    const aggregatedByDate = new Map();
+    teamRows.forEach((row) => {
+      (row.records || []).forEach((record) => {
+        const dateKey = String(record?.date || '').trim();
+        if (!dateKey) return;
+        const regularHours = Number(record?.hours_worked || 0);
+        const overtimeHours = Number(record?.overtime_hours || 0);
+        const dayHours = regularHours + overtimeHours;
+        if (!(dayHours > 0)) return;
+
+        const current = aggregatedByDate.get(dateKey) || {
+          date: dateKey,
+          headcount: 0,
+          totalHours: 0,
+          source: 'member_attendance',
+        };
+        current.headcount += 1;
+        current.totalHours += dayHours;
+        aggregatedByDate.set(dateKey, current);
+      });
+    });
+
+    return [...aggregatedByDate.values()]
+      .sort((left, right) => String(left.date || '').localeCompare(String(right.date || '')))
+      .map((entry) => ({
+        date: entry.date,
+        headcount: entry.headcount,
+        hours_per_person: entry.headcount > 0 ? entry.totalHours / entry.headcount : 0,
+        total_hours: entry.totalHours,
+        source: entry.source,
+      }));
+  }, [attendanceBaseHours, selectedTeamAttendanceRows, selectedTeamUsesHeadcountMode, teamRows]);
   const teamDailyRate = Number(selectedTeam?.team_daily_rate || 0);
   const filteredTeamAdvances = useMemo(
     () =>
@@ -1312,25 +1778,37 @@ export default function ReportPage() {
   const filteredTeamPayrollComponents = useMemo(
     () =>
       teamPayrollComponents
-        .map((component, index) => ({
-          id: component.id || `team-payroll-component-${index}`,
-          employee_id: component.employee_id ? Number(component.employee_id) : null,
-          employee_label: component.employee_label || '',
-          days: Number(component.days || 0),
-          amount: Number(component.amount || 0),
-          notes: component.notes || '',
-        }))
-        .filter((component) => component.amount > 0 || component.days > 0 || component.notes),
-    [teamPayrollComponents]
+        .map((component, index) => {
+          const selectedDays = filterSelectedPayrollDaysByRange(
+            component.selected_payroll_days ?? component.selected_payroll_days_json,
+            teamPayrollMemberRangesByEmployeeId.get(String(component.employee_id || '')) || {},
+            currentMonth
+          );
+          return {
+            id: component.id || `team-payroll-component-${index}`,
+            employee_id: component.employee_id ? Number(component.employee_id) : null,
+            employee_label: component.employee_label || '',
+            days: selectedDays.length ? selectedDays.length : Number(component.days || 0),
+            amount: Number(component.amount || 0),
+            notes: component.notes || '',
+            selected_payroll_days: selectedDays,
+            selected_payroll_days_json: JSON.stringify(selectedDays),
+          };
+        })
+        .filter((component) => component.amount > 0 || component.days > 0 || component.notes || component.selected_payroll_days.length > 0),
+    [currentMonth, teamPayrollComponents, teamPayrollMemberRangesByEmployeeId]
   );
   const teamHeadcountTotals = useMemo(() => {
-    return selectedTeamAttendanceRows.reduce((acc, record) => {
+    return teamCalendarEntries.reduce((acc, record) => {
       const headcount = Number(record.headcount || 0);
+      const explicitTotalHours = Number(record.total_hours || 0);
       const hoursPerPerson = Number(record.hours_per_person || attendanceBaseHours);
       const safeHoursPerPerson = Number.isFinite(hoursPerPerson) && hoursPerPerson > 0
         ? hoursPerPerson
         : attendanceBaseHours;
-      const dayHours = headcount > 0 ? headcount * safeHoursPerPerson : 0;
+      const dayHours = explicitTotalHours > 0
+        ? explicitTotalHours
+        : headcount > 0 ? headcount * safeHoursPerPerson : 0;
       const equivalentDays = attendanceBaseHours > 0 ? dayHours / attendanceBaseHours : 0;
       return {
         totalHeadcount: acc.totalHeadcount + headcount,
@@ -1342,9 +1820,15 @@ export default function ReportPage() {
       totalHours: 0,
       equivalentDays: 0,
     });
-  }, [attendanceBaseHours, selectedTeamAttendanceRows]);
+  }, [attendanceBaseHours, teamCalendarEntries]);
   const teamTransportTotal = teamTransportEnabled ? normalizeCurrency(teamTransportAmount) : 0;
   const teamGiftTotal = teamGiftEnabled ? normalizeCurrency(teamGiftAmount) : 0;
+  const normalizedTeamPreviousBalanceType = normalizeTeamPreviousBalanceType(teamPreviousBalanceType);
+  const teamPreviousBalanceAmountValue = normalizeCurrency(teamPreviousBalanceAmount);
+  const teamPreviousCreditTotal =
+    normalizedTeamPreviousBalanceType === 'credit' ? teamPreviousBalanceAmountValue : 0;
+  const teamPreviousDebtTotal =
+    normalizedTeamPreviousBalanceType === 'debt' ? teamPreviousBalanceAmountValue : 0;
   const teamAdvancesTotal = filteredTeamAdvances.reduce((sum, advance) => sum + advance.amount, 0);
   const teamPayrollComponentsTotal = filteredTeamPayrollComponents.reduce((sum, component) => sum + component.amount, 0);
   const teamTotals = useMemo(
@@ -1368,7 +1852,14 @@ export default function ReportPage() {
     [teamRows]
   );
   const teamGrossCompensation = teamHeadcountTotals.equivalentDays * teamDailyRate;
-  const teamFinalBalance = teamGrossCompensation + teamTransportTotal + teamGiftTotal - teamAdvancesTotal - teamPayrollComponentsTotal;
+  const teamFinalBalance =
+    teamGrossCompensation +
+    teamTransportTotal +
+    teamGiftTotal +
+    teamPreviousCreditTotal -
+    teamPreviousDebtTotal -
+    teamAdvancesTotal -
+    teamPayrollComponentsTotal;
   const teamCompensationSummary = formatWorkedSummary(
     teamHeadcountTotals.totalHours,
     attendanceBaseHours,
@@ -1378,6 +1869,7 @@ export default function ReportPage() {
   const teamTemplateSource = useMemo(() => ({
     teamId: selectedTeam?.id || null,
     teamName: selectedTeam?.name || '',
+    monthReference: selectedReportMonthKey,
     brandMark: selectedTeam?.name || 'gpa',
     monthLabel: teamPeriodLabel || `${monthName} ${yearStr}`,
     year: currentMonth.getFullYear(),
@@ -1394,20 +1886,29 @@ export default function ReportPage() {
     giftEnabled: teamGiftEnabled,
     giftDescription: teamGiftDescription,
     giftAmount: teamGiftEnabled ? normalizeCurrency(teamGiftAmount) : 0,
+    previousBalanceType: normalizedTeamPreviousBalanceType,
+    previousBalanceAmount: teamPreviousBalanceAmountValue,
+    previousBalanceNote: teamPreviousBalanceNote,
     advancesTotal: teamAdvancesTotal,
     payrollComponentsTotal: teamPayrollComponentsTotal,
     note: [selectedTeam?.notes, teamNotes].filter(Boolean).join(' - '),
     periodStart: teamPeriodStart,
     periodEnd: teamPeriodEnd,
-    calendarEntries: selectedTeamAttendanceRows.map((record) => ({
+    recordId: currentTeamReportRecord?.id || null,
+    snapshotId: currentTeamReportRecord?.report_snapshot_json?.snapshot_id || null,
+    calendarEntries: teamCalendarEntries.map((record) => ({
       date: record.date,
       headcount: Number(record.headcount || 0),
       hours_per_person: Number(record.hours_per_person || attendanceBaseHours),
+      total_hours: Number(record.total_hours || 0),
+      source: record.source || '',
     })),
     payrollComponents: filteredTeamPayrollComponents.map((component) => ({
       label: component.employee_label || 'Componente squadra',
       days: Number(component.days || 0),
       amount: Number(component.amount || 0),
+      selectedPayrollDays: component.selected_payroll_days,
+      selected_payroll_days_json: component.selected_payroll_days_json,
     })),
     advances: filteredTeamAdvances.map((advance) => ({
       date: advance.date || advance.advance_date || '',
@@ -1426,12 +1927,18 @@ export default function ReportPage() {
     selectedTeam?.id,
     selectedTeam?.name,
     selectedTeam?.notes,
-    selectedTeamAttendanceRows,
+    selectedTeamUsesHeadcountMode,
+    teamCalendarEntries,
+    currentTeamReportRecord?.id,
+    currentTeamReportRecord?.report_snapshot_json?.snapshot_id,
     teamAdvancesTotal,
     teamDailyRate,
     teamGiftAmount,
     teamGiftDescription,
     teamGiftEnabled,
+    teamPreviousBalanceAmountValue,
+    teamPreviousBalanceNote,
+    normalizedTeamPreviousBalanceType,
     teamGrossCompensation,
     teamHeadcountTotals,
     teamNotes,
@@ -1444,6 +1951,46 @@ export default function ReportPage() {
     teamTransportEnabled,
     yearStr,
   ]);
+  useEffect(() => {
+    console.info('[team-report-debug]', {
+      teamId: selectedTeam?.id || null,
+      teamName: selectedTeam?.name || '',
+      monthReference: selectedReportMonthKey,
+      month: currentMonth.getMonth() + 1,
+      year: currentMonth.getFullYear(),
+      attendanceRows: teamCalendarEntries.length,
+      componentsCount: filteredTeamPayrollComponents.length,
+      recordId: currentTeamReportRecord?.id || null,
+      snapshotId: currentTeamReportRecord?.report_snapshot_json?.snapshot_id || null,
+    });
+    console.info('[team-report-source]', {
+      reportRecordId: currentTeamReportRecord?.id || null,
+      snapshotId: currentTeamReportRecord?.report_snapshot_json?.snapshot_id || null,
+      usingSnapshot: false,
+    });
+    console.info('[team-report-calendar]', {
+      attendanceRows: teamCalendarEntries.length,
+      attendanceMonth: selectedReportMonthKey,
+      attendanceTeamId: selectedTeam?.id || null,
+    });
+    console.info('[team-report-summary]', {
+      totalHours: teamHeadcountTotals.totalHours,
+      equivalentDays: teamHeadcountTotals.equivalentDays,
+      grossCompensation: teamGrossCompensation,
+    });
+  }, [
+    currentMonth,
+    currentTeamReportRecord?.id,
+    currentTeamReportRecord?.report_snapshot_json?.snapshot_id,
+    filteredTeamPayrollComponents.length,
+    selectedReportMonthKey,
+    selectedTeam?.id,
+    selectedTeam?.name,
+    teamCalendarEntries,
+    teamGrossCompensation,
+    teamHeadcountTotals.equivalentDays,
+    teamHeadcountTotals.totalHours,
+  ]);
   const currentTeamEconomicSnapshot = buildTeamReportSnapshot({
     teamTransportEnabled,
     teamTransportDescription,
@@ -1451,7 +1998,12 @@ export default function ReportPage() {
     teamGiftEnabled,
     teamGiftDescription,
     teamGiftAmount,
+    teamPreviousBalanceType: normalizedTeamPreviousBalanceType,
+    teamPreviousBalanceAmount: teamPreviousBalanceAmountValue,
+    teamPreviousBalanceNote,
+    teamPreviousBalanceManualOverride,
     teamNotes,
+    teamDatore,
     teamAdvances,
     teamPayrollComponents,
   });
@@ -1462,6 +2014,9 @@ export default function ReportPage() {
     !!teamGiftEnabled ||
     String(teamGiftDescription || '').trim() !== '' ||
     normalizeCurrency(teamGiftAmount) > 0 ||
+    !!normalizedTeamPreviousBalanceType ||
+    teamPreviousBalanceAmountValue > 0 ||
+    String(teamPreviousBalanceNote || '').trim() !== '' ||
     String(teamNotes || '').trim() !== '' ||
     teamAdvances.some(isMeaningfulTeamAdvance) ||
     teamPayrollComponents.some(isMeaningfulTeamPayrollComponent);
@@ -1474,6 +2029,24 @@ export default function ReportPage() {
         : currentTeamEconomicSnapshot !== savedTeamEconomicSnapshot
     );
   const isProcessedTeamRecord = !!currentTeamReportRecord?.processed_at;
+  const teamPreviousBalanceNotice = useMemo(() => {
+    if (teamPreviousBalanceManualOverride) {
+      return 'Riporto precedente già modificato manualmente';
+    }
+    if (
+      normalizedTeamPreviousBalanceType &&
+      teamPreviousBalanceAmountValue > 0 &&
+      teamPreviousBalanceSourceMonth
+    ) {
+      return `Riporto automatico dal saldo finale di ${formatMonthKeyLabel(teamPreviousBalanceSourceMonth)}`;
+    }
+    return '';
+  }, [
+    normalizedTeamPreviousBalanceType,
+    teamPreviousBalanceAmountValue,
+    teamPreviousBalanceManualOverride,
+    teamPreviousBalanceSourceMonth,
+  ]);
   const isTeamEditingDisabled = isProcessedTeamRecord && !isTeamEditUnlocked;
 
   const employeeProcessedStatusMap = useMemo(() => {
@@ -1530,7 +2103,7 @@ export default function ReportPage() {
         style: {
           background: 'rgba(22, 163, 74, 0.14)',
           color: '#14532d',
-          borderColor: 'rgba(22, 101, 52, 0.14)',
+          border: '1px solid rgba(22, 101, 52, 0.14)',
         },
       };
     }
@@ -1542,7 +2115,7 @@ export default function ReportPage() {
         style: {
           background: 'rgba(245, 158, 11, 0.14)',
           color: '#b45309',
-          borderColor: 'rgba(245, 158, 11, 0.18)',
+          border: '1px solid rgba(245, 158, 11, 0.18)',
         },
       };
     }
@@ -1578,8 +2151,13 @@ export default function ReportPage() {
 
   function persistDraftNow(type, storageKey, payload) {
     if (!storageKey || !payload) return null;
+    const signature = JSON.stringify(payload);
+    if (draftPersistSignatureRef.current[storageKey] === signature) {
+      return null;
+    }
     const stored = writeReportDraftToStorage(storageKey, payload);
     if (!stored) return null;
+    draftPersistSignatureRef.current[storageKey] = signature;
     console.info('[report-draft] saved type=%s key=%s', type, storageKey);
     setDraftFeedbackForKey(
       storageKey,
@@ -1593,6 +2171,7 @@ export default function ReportPage() {
   function discardDraft(storageKey) {
     if (!storageKey) return;
     removeReportDraftFromStorage(storageKey);
+    delete draftPersistSignatureRef.current[storageKey];
     console.info('[report-draft] discarded key=%s', storageKey);
     setDraftRestorePrompt((current) => (current?.key === storageKey ? null : current));
     setDraftFeedbackForKey(storageKey, 'discarded', 'Bozza scartata', '');
@@ -1618,6 +2197,7 @@ export default function ReportPage() {
   function clearDraftAfterSuccessfulSave(storageKey) {
     if (!storageKey) return;
     removeReportDraftFromStorage(storageKey);
+    delete draftPersistSignatureRef.current[storageKey];
     setDraftRestorePrompt((current) => (current?.key === storageKey ? null : current));
     setDraftFeedback((current) => (
       current?.key === storageKey
@@ -1631,6 +2211,8 @@ export default function ReportPage() {
     setDatore(draft.datore || defaultEmployerValue);
     setImportoBustaPaga(draft.importoBustaPaga || '');
     setGiornateBustaPaga(draft.giornateBustaPaga || '');
+    setSelectedPayrollDays(normalizeTeamPayrollSelectedDays(draft.selectedPayrollDays || draft.selected_payroll_days_json));
+    setShowSelectedPayrollDaysInReport(!!draft.showSelectedPayrollDaysInReport);
     setAdvances(Array.isArray(draft.advances) && draft.advances.length ? draft.advances : [createEmptyAdvance()]);
     setRestoPrecedente(draft.restoPrecedente || '');
     setTrasportoAttivo(!!draft.trasportoAttivo);
@@ -1665,12 +2247,18 @@ export default function ReportPage() {
     setTeamGiftEnabled(!!draft.teamGiftEnabled);
     setTeamGiftDescription(draft.teamGiftDescription || '');
     setTeamGiftAmount(draft.teamGiftAmount || '');
+    setTeamPreviousBalanceType(draft.teamPreviousBalanceType || '');
+    setTeamPreviousBalanceAmount(draft.teamPreviousBalanceAmount || '');
+    setTeamPreviousBalanceNote(draft.teamPreviousBalanceNote || '');
+    setTeamPreviousBalanceManualOverride(!!draft.teamPreviousBalanceManualOverride);
+    setTeamPreviousBalanceSourceMonth(draft.teamPreviousBalanceSourceMonth || getPreviousMonthKey(draft.month || selectedReportMonthKey));
     setTeamNotes(draft.teamNotes || '');
+    setTeamDatore(draft.teamDatore || defaultEmployerValue);
     setTeamAdvances(Array.isArray(draft.teamAdvances) && draft.teamAdvances.length ? draft.teamAdvances : [createEmptyTeamAdvance()]);
     setTeamPayrollComponents(
       Array.isArray(draft.teamPayrollComponents) && draft.teamPayrollComponents.length
         ? draft.teamPayrollComponents
-        : buildTeamPayrollComponentRows(selectedTeamMembers, [])
+        : buildTeamPayrollComponentRows(selectedTeamMembers, [], currentMonth)
     );
     setTeamSaveState('dirty');
   }
@@ -1770,6 +2358,7 @@ export default function ReportPage() {
     setTeamGiftDescription('');
     setTeamGiftAmount('');
     setTeamNotes('');
+    setTeamDatore(defaultEmployerValue);
   }, [selectedTeam?.id, currentMonth, isTeamMode]);
 
   useEffect(() => {
@@ -1868,6 +2457,39 @@ export default function ReportPage() {
       return next;
     }, { replace: true });
   }, [requestedEmployeeId, requestedMonth, employees, selectedEntity, currentMonth, selectedYear, setSearchParams, setSelectedYear]);
+
+  useEffect(() => {
+    if (!requestedTeamId || !teams.length) {
+      return;
+    }
+
+    const teamExists = teams.some((item) => String(item.id) === String(requestedTeamId));
+    if (!teamExists) {
+      return;
+    }
+
+    const nextSelection = `team:${requestedTeamId}`;
+    if (selectedEntity !== nextSelection) {
+      setSelectedEntity(nextSelection);
+    }
+
+    if (requestedMonth) {
+      const parsedMonth = parseDateValue(`${requestedMonth}-01`);
+      if (parsedMonth && monthString(currentMonth) !== requestedMonth) {
+        if (parsedMonth.getFullYear() !== selectedYear) {
+          setSelectedYear(parsedMonth.getFullYear());
+        }
+        setCurrentMonth(new Date(parsedMonth.getFullYear(), parsedMonth.getMonth(), 1));
+      }
+    }
+
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('team');
+      next.delete('month');
+      return next;
+    }, { replace: true });
+  }, [requestedTeamId, requestedMonth, teams, selectedEntity, currentMonth, selectedYear, setSearchParams, setSelectedYear]);
 
   useEffect(() => {
     if (isEmployeeMode && !employee) {
@@ -2096,6 +2718,12 @@ export default function ReportPage() {
           datore: record.datore || defaultEmployerValue,
           importoBustaPaga: record.importo_busta_paga ? String(record.importo_busta_paga) : '',
           giornateBustaPaga: record.giornate_busta_paga ? String(record.giornate_busta_paga) : '',
+          selectedPayrollDays: filterSelectedPayrollDaysByRange(
+            record.selected_payroll_days || record.selected_payroll_days_json,
+            getEmployeeEmploymentRange(employee || {}, currentMonth),
+            currentMonth
+          ),
+          showSelectedPayrollDaysInReport: !!record.show_selected_payroll_days_in_report,
           advances: buildEditorAdvances(record.advances),
           restoPrecedente: record.resto_precedente !== null && record.resto_precedente !== undefined ? String(record.resto_precedente) : '',
           trasportoAttivo: savedNMacchine > 0 || savedPrezzo > 0 || savedTrasporto > 0,
@@ -2140,6 +2768,8 @@ export default function ReportPage() {
           datore: defaultEmployerValue,
           importoBustaPaga: '',
           giornateBustaPaga: '',
+          selectedPayrollDays: [],
+          showSelectedPayrollDaysInReport: false,
           advances: [createEmptyAdvance()],
           restoPrecedente: previous?.previousBalance !== null && previous?.previousBalance !== undefined ? String(previous.previousBalance) : '',
           trasportoAttivo: false,
@@ -2172,6 +2802,8 @@ export default function ReportPage() {
         setDatore(nextState.datore);
         setImportoBustaPaga(nextState.importoBustaPaga);
         setGiornateBustaPaga(nextState.giornateBustaPaga);
+        setSelectedPayrollDays(nextState.selectedPayrollDays || []);
+        setShowSelectedPayrollDaysInReport(!!nextState.showSelectedPayrollDaysInReport);
         setAdvances(nextState.advances);
         setRestoPrecedente(nextState.restoPrecedente);
         setTrasportoAttivo(nextState.trasportoAttivo);
@@ -2231,6 +2863,8 @@ export default function ReportPage() {
               datore: nextSavedState.datore,
               importoBustaPaga: nextSavedState.importoBustaPaga,
               giornateBustaPaga: nextSavedState.giornateBustaPaga,
+              selectedPayrollDays: nextSavedState.selectedPayrollDays,
+              showSelectedPayrollDaysInReport: nextSavedState.showSelectedPayrollDaysInReport,
               advances: nextSavedState.advances,
               restoPrecedente: nextSavedState.restoPrecedente,
               trasportoAttivo: nextSavedState.trasportoAttivo,
@@ -2398,7 +3032,13 @@ export default function ReportPage() {
           setTeamGiftEnabled(false);
           setTeamGiftDescription('');
           setTeamGiftAmount('');
+          setTeamPreviousBalanceType('');
+          setTeamPreviousBalanceAmount('');
+          setTeamPreviousBalanceNote('');
+          setTeamPreviousBalanceManualOverride(false);
+          setTeamPreviousBalanceSourceMonth('');
           setTeamNotes('');
+          setTeamDatore(defaultEmployerValue);
           setCurrentTeamReportRecord(null);
           setSavedTeamEditorState(null);
           setSavedTeamEconomicSnapshot(null);
@@ -2410,8 +3050,10 @@ export default function ReportPage() {
       }
 
       try {
-        const [record, advanceRows, componentRows] = await Promise.all([
+        const previousTeamReportMonthKey = getPreviousMonthKey(selectedReportMonthKey);
+        const [record, previousRecord, advanceRows, componentRows] = await Promise.all([
           window.api.teamPayroll.getReportRecord(selectedTeam.id, selectedReportMonthKey),
+          window.api.teamPayroll.getReportRecord(selectedTeam.id, previousTeamReportMonthKey),
           window.api.teamPayroll.listAdvances(selectedTeam.id, selectedReportMonthKey, {
             include_in_report: true,
           }),
@@ -2437,8 +3079,34 @@ export default function ReportPage() {
         console.info('[team-payroll-components-debug] selectedTeam =', selectedTeam);
         console.info('[team-payroll-components-debug] teamMembers =', selectedTeamMembers);
         console.info('[team-payroll-components-debug] savedPayrollComponents =', componentRows);
-        const nextComponents = buildTeamPayrollComponentRows(selectedTeamMembers, componentRows);
+        const nextComponents = buildTeamPayrollComponentRows(selectedTeamMembers, componentRows, currentMonth);
         console.info('[team-payroll-components-debug] mergedRows =', nextComponents);
+
+        const autoPreviousBalance = buildAutomaticTeamPreviousBalance(previousRecord, previousTeamReportMonthKey);
+        const hasLegacySavedPreviousBalance =
+          !!record &&
+          !record?.previous_balance_manual_override &&
+          (
+            normalizeTeamPreviousBalanceType(record?.previous_balance_type) ||
+            Number(record?.previous_balance_amount || 0) > 0 ||
+            String(record?.previous_balance_note || '').trim() !== ''
+          ) &&
+          !String(record?.previous_balance_note || '').startsWith('Riporto automatico da ');
+        const hasManualPreviousBalanceOverride =
+          !!record?.previous_balance_manual_override || hasLegacySavedPreviousBalance;
+        const nextPreviousBalanceType = hasManualPreviousBalanceOverride
+          ? normalizeTeamPreviousBalanceType(record?.previous_balance_type)
+          : autoPreviousBalance.type;
+        const nextPreviousBalanceAmount = hasManualPreviousBalanceOverride
+          ? (
+              record?.previous_balance_amount === null || record?.previous_balance_amount === undefined || Number(record.previous_balance_amount) === 0
+                ? ''
+                : String(record.previous_balance_amount)
+            )
+          : autoPreviousBalance.amount;
+        const nextPreviousBalanceNote = hasManualPreviousBalanceOverride
+          ? (record?.previous_balance_note || '')
+          : autoPreviousBalance.note;
 
         const nextEditorState = {
           teamTransportEnabled: !!record?.transport_enabled,
@@ -2453,7 +3121,13 @@ export default function ReportPage() {
             record?.gift_amount === null || record?.gift_amount === undefined || Number(record.gift_amount) === 0
               ? ''
               : String(record.gift_amount),
+          teamPreviousBalanceType: nextPreviousBalanceType,
+          teamPreviousBalanceAmount: nextPreviousBalanceAmount,
+          teamPreviousBalanceNote: nextPreviousBalanceNote,
+          teamPreviousBalanceManualOverride: hasManualPreviousBalanceOverride,
+          teamPreviousBalanceSourceMonth: previousTeamReportMonthKey,
           teamNotes: record?.note || '',
+          teamDatore: record?.employer_key || defaultEmployerValue,
           teamAdvances: nextAdvances,
           teamPayrollComponents: nextComponents,
           currentTeamReportRecord: record || null,
@@ -2465,7 +3139,13 @@ export default function ReportPage() {
         setTeamGiftEnabled(nextEditorState.teamGiftEnabled);
         setTeamGiftDescription(nextEditorState.teamGiftDescription);
         setTeamGiftAmount(nextEditorState.teamGiftAmount);
+        setTeamPreviousBalanceType(nextEditorState.teamPreviousBalanceType);
+        setTeamPreviousBalanceAmount(nextEditorState.teamPreviousBalanceAmount);
+        setTeamPreviousBalanceNote(nextEditorState.teamPreviousBalanceNote);
+        setTeamPreviousBalanceManualOverride(nextEditorState.teamPreviousBalanceManualOverride);
+        setTeamPreviousBalanceSourceMonth(nextEditorState.teamPreviousBalanceSourceMonth);
         setTeamNotes(nextEditorState.teamNotes);
+        setTeamDatore(nextEditorState.teamDatore);
         setTeamAdvances(nextEditorState.teamAdvances);
         setTeamPayrollComponents(nextEditorState.teamPayrollComponents);
         setCurrentTeamReportRecord(nextEditorState.currentTeamReportRecord);
@@ -2478,7 +3158,12 @@ export default function ReportPage() {
             teamGiftEnabled: nextEditorState.teamGiftEnabled,
             teamGiftDescription: nextEditorState.teamGiftDescription,
             teamGiftAmount: nextEditorState.teamGiftAmount,
+            teamPreviousBalanceType: nextEditorState.teamPreviousBalanceType,
+            teamPreviousBalanceAmount: nextEditorState.teamPreviousBalanceAmount,
+            teamPreviousBalanceNote: nextEditorState.teamPreviousBalanceNote,
+            teamPreviousBalanceManualOverride: nextEditorState.teamPreviousBalanceManualOverride,
             teamNotes: nextEditorState.teamNotes,
+            teamDatore: nextEditorState.teamDatore,
             teamAdvances: nextEditorState.teamAdvances,
             teamPayrollComponents: nextEditorState.teamPayrollComponents,
           })
@@ -2490,14 +3175,18 @@ export default function ReportPage() {
         console.error(err);
         if (!cancelled && mountedRef.current) {
           setTeamAdvances([createEmptyTeamAdvance()]);
-          setTeamPayrollComponents(buildTeamPayrollComponentRows(selectedTeamMembers, []));
+          setTeamPayrollComponents(buildTeamPayrollComponentRows(selectedTeamMembers, [], currentMonth));
           setTeamTransportEnabled(false);
           setTeamTransportDescription('');
           setTeamTransportAmount('');
           setTeamGiftEnabled(false);
           setTeamGiftDescription('');
           setTeamGiftAmount('');
+          setTeamPreviousBalanceType('');
+          setTeamPreviousBalanceAmount('');
+          setTeamPreviousBalanceNote('');
           setTeamNotes('');
+          setTeamDatore(defaultEmployerValue);
           setCurrentTeamReportRecord(null);
           setSavedTeamEditorState(null);
           setSavedTeamEconomicSnapshot(null);
@@ -2630,16 +3319,21 @@ export default function ReportPage() {
       });
   }
 
-  async function handleSavePdf() {
-    const suggestedName = isTeamMode && selectedTeam
+  function getSuggestedReportFileName() {
+    return isTeamMode && selectedTeam
       ? sanitizeFileName(`${selectedTeam.name} - ${teamPeriodStart}_${teamPeriodEnd}.pdf`)
       : employee
       ? sanitizeFileName(`${employee.first_name || ''} ${employee.last_name || ''} - ${formatMonthLabelForFile(currentMonth)}.pdf`)
       : 'report.pdf';
+  }
+
+  async function handleSavePdf() {
+    const suggestedName = getSuggestedReportFileName();
 
     try {
       if (isTeamMode && selectedTeam && USE_TEAM_REPORT_TEMPLATE) {
         try {
+          console.info('[team-print-template] using-new-template=true');
           await window.api.teamReport.generatePdfTemplate({
             ...teamTemplateSource,
             fileName: suggestedName,
@@ -2648,7 +3342,9 @@ export default function ReportPage() {
           return;
         } catch (error) {
           console.error('[team-print-template] error', error);
-          console.info('[team-print-template] fallback-legacy');
+          console.info('[team-print-template] using-legacy-template=false');
+          alert(getIpcRecoveryMessage(error, 'Errore generazione PDF report squadra template'));
+          return;
         }
       }
 
@@ -2679,6 +3375,57 @@ export default function ReportPage() {
     } catch (err) {
       console.error(err);
       alert('Errore apertura PDF');
+    }
+  }
+
+  async function handlePrintReport() {
+    const suggestedName = getSuggestedReportFileName();
+
+    try {
+      if (isTeamMode && selectedTeam && USE_TEAM_REPORT_TEMPLATE) {
+        try {
+          console.info('[team-print-template] using-new-template=true');
+          await window.api.teamReport.printTemplate({
+            ...teamTemplateSource,
+            fileName: suggestedName,
+          });
+          console.info('[team-print-template] print');
+          return;
+        } catch (error) {
+          console.error('[team-print-template] error', error);
+          console.info('[team-print-template] using-legacy-template=false');
+          alert(getIpcRecoveryMessage(error, 'Errore stampa report squadra template'));
+          return;
+        }
+      }
+
+      if (isEmployeeMode && employee && USE_EMPLOYEE_REPORT_TEMPLATE) {
+        try {
+          await window.api.employeeReport.printTemplate({
+            ...employeeTemplateSource,
+            fileName: suggestedName,
+          });
+          console.info('[employee-template-print]');
+          return;
+        } catch (error) {
+          console.error('[employee-template-fallback]', error);
+        }
+      }
+
+      const printArea = document.querySelector('.print-area');
+      if (!printArea) {
+        alert('Area report non trovata');
+        return;
+      }
+
+      await window.api.reports.printHtml({
+        fileName: suggestedName,
+        html: printArea.outerHTML,
+        debugRenderLabel: isTeamMode ? 'team-legacy' : 'employee-legacy',
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Errore stampa report');
     }
   }
 
@@ -2929,6 +3676,11 @@ export default function ReportPage() {
         ? ''
         : balanceClosedAt || formatLocalDate(new Date());
     const legacyRestoPagato = normalizedBalanceStatus === 'saldato';
+    const normalizedSelectedPayrollDays = filterSelectedPayrollDaysByRange(
+      selectedPayrollDays,
+      employeePayrollRange,
+      currentMonth
+    );
     const snapshotHtml = document.querySelector('.print-area')?.outerHTML || null;
 
     try {
@@ -2940,6 +3692,9 @@ export default function ReportPage() {
         ore_totali: employeeTotals.totalHours,
         retribuzione_calcolata: totalCalculatedPay,
         giornate_busta_paga: giornateBustaPaga ? Number(giornateBustaPaga) : 0,
+        selected_payroll_days: normalizedSelectedPayrollDays,
+        selected_payroll_days_json: JSON.stringify(normalizedSelectedPayrollDays),
+        show_selected_payroll_days_in_report: showSelectedPayrollDaysInReport,
         importo_busta_paga: importoBustaPagaNum,
         acconti: totalAdvances,
         advances: normalizedAdvances,
@@ -2976,6 +3731,9 @@ export default function ReportPage() {
           totalHours: employeeTotals.totalHours,
           importoBustaPaga: importoBustaPagaNum,
           giornateBustaPaga: giornateBustaPaga ? Number(giornateBustaPaga) : 0,
+          selected_payroll_days: normalizedSelectedPayrollDays,
+          selected_payroll_days_json: JSON.stringify(normalizedSelectedPayrollDays),
+          show_selected_payroll_days_in_report: showSelectedPayrollDaysInReport,
           advances: normalizedAdvances,
           debt_plans: normalizedDebtPlansPayload,
           current_installments_total: currentMonthInstallmentTotal,
@@ -3027,6 +3785,8 @@ export default function ReportPage() {
           : ''
       );
       setBalanceClosedAt(normalizedBalanceClosedAt);
+      setSelectedPayrollDays(normalizedSelectedPayrollDays);
+      setShowSelectedPayrollDaysInReport(!!showSelectedPayrollDaysInReport);
       const nextEditorAdvances = buildEditorAdvances(saved?.advances, advances);
       setAdvances(nextEditorAdvances);
       if (!options.autosave) {
@@ -3042,6 +3802,8 @@ export default function ReportPage() {
         datore,
         importoBustaPaga,
         giornateBustaPaga,
+        selectedPayrollDays: normalizedSelectedPayrollDays,
+        showSelectedPayrollDaysInReport,
         advances: nextEditorAdvances,
         restoPrecedente,
         trasportoAttivo,
@@ -3077,6 +3839,8 @@ export default function ReportPage() {
           datore: nextSavedState.datore,
           importoBustaPaga: nextSavedState.importoBustaPaga,
           giornateBustaPaga: nextSavedState.giornateBustaPaga,
+          selectedPayrollDays: nextSavedState.selectedPayrollDays,
+          showSelectedPayrollDaysInReport: nextSavedState.showSelectedPayrollDaysInReport,
           advances: nextSavedState.advances,
           restoPrecedente: nextSavedState.restoPrecedente,
           trasportoAttivo: nextSavedState.trasportoAttivo,
@@ -3460,6 +4224,70 @@ export default function ReportPage() {
     );
   }
 
+  function getValidTeamPayrollSelectedDays(component) {
+    const range = teamPayrollMemberRangesByEmployeeId.get(String(component?.employee_id || '')) || {};
+    return filterSelectedPayrollDaysByRange(
+      component?.selected_payroll_days ?? component?.selected_payroll_days_json,
+      range,
+      currentMonth
+    );
+  }
+
+  function buildTeamPayrollComponentPayload(component, index) {
+    const selectedDays = getValidTeamPayrollSelectedDays(component);
+    return {
+      employee_id: component.employee_id ? Number(component.employee_id) : null,
+      employee_label: component.employee_label || '',
+      days: selectedDays.length ? selectedDays.length : component.days,
+      amount: component.amount,
+      notes: component.notes || '',
+      selected_payroll_days: selectedDays,
+      selected_payroll_days_json: JSON.stringify(selectedDays),
+      sort_order: index,
+    };
+  }
+
+  function toggleSelectedPayrollDay(day) {
+    const dayDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+    if (!isPayrollDayAllowedForRange(dayDate, employeePayrollRange)) {
+      return;
+    }
+
+    setSelectedPayrollDays((current) => {
+      const normalized = normalizeTeamPayrollSelectedDays(current);
+      const next = normalized.includes(day)
+        ? normalized.filter((selectedDay) => selectedDay !== day)
+        : [...normalized, day].sort((a, b) => a - b);
+      setGiornateBustaPaga(String(next.length));
+      return next;
+    });
+  }
+
+  function toggleTeamPayrollComponentDay(index, day) {
+    setTeamPayrollComponents((current) =>
+      current.map((component, currentIndex) => {
+        if (currentIndex !== index) return component;
+        const range = teamPayrollMemberRangesByEmployeeId.get(String(component.employee_id || '')) || {};
+        const dayDate = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), day);
+        if (!isPayrollDayAllowedForRange(dayDate, range)) {
+          return component;
+        }
+        const currentDays = normalizeTeamPayrollSelectedDays(
+          component.selected_payroll_days ?? component.selected_payroll_days_json
+        );
+        const nextDays = currentDays.includes(day)
+          ? currentDays.filter((selectedDay) => selectedDay !== day)
+          : [...currentDays, day].sort((a, b) => a - b);
+        return {
+          ...component,
+          days: String(nextDays.length),
+          selected_payroll_days: nextDays,
+          selected_payroll_days_json: JSON.stringify(nextDays),
+        };
+      })
+    );
+  }
+
   async function saveTeamPayrollComponent(index) {
     const component = teamPayrollComponents[index];
     if (!selectedTeam?.id || !component) return;
@@ -3467,12 +4295,7 @@ export default function ReportPage() {
     const payload = {
       team_id: selectedTeam.id,
       month: selectedReportMonthKey,
-      employee_id: component.employee_id ? Number(component.employee_id) : null,
-      employee_label: component.employee_label || '',
-      days: component.days,
-      amount: component.amount,
-      notes: component.notes || '',
-      sort_order: index,
+      ...buildTeamPayrollComponentPayload(component, index),
     };
 
     setTeamPayrollComponentBusyKey(String(component.id || component.client_key || index));
@@ -3492,6 +4315,12 @@ export default function ReportPage() {
                 days: String(saved.days ?? ''),
                 amount: String(saved.amount ?? ''),
                 notes: saved.notes || '',
+                selected_payroll_days: normalizeTeamPayrollSelectedDays(
+                  saved.selected_payroll_days ?? saved.selected_payroll_days_json
+                ),
+                selected_payroll_days_json: stringifyTeamPayrollSelectedDays(
+                  saved.selected_payroll_days ?? saved.selected_payroll_days_json
+                ),
               }
             : item
         )
@@ -3584,7 +4413,16 @@ export default function ReportPage() {
     setTeamTransportEnabled(savedTeamEditorState.teamTransportEnabled);
     setTeamTransportDescription(savedTeamEditorState.teamTransportDescription);
     setTeamTransportAmount(savedTeamEditorState.teamTransportAmount);
+    setTeamGiftEnabled(savedTeamEditorState.teamGiftEnabled);
+    setTeamGiftDescription(savedTeamEditorState.teamGiftDescription);
+    setTeamGiftAmount(savedTeamEditorState.teamGiftAmount);
+    setTeamPreviousBalanceType(savedTeamEditorState.teamPreviousBalanceType || '');
+    setTeamPreviousBalanceAmount(savedTeamEditorState.teamPreviousBalanceAmount || '');
+    setTeamPreviousBalanceNote(savedTeamEditorState.teamPreviousBalanceNote || '');
+    setTeamPreviousBalanceManualOverride(!!savedTeamEditorState.teamPreviousBalanceManualOverride);
+    setTeamPreviousBalanceSourceMonth(savedTeamEditorState.teamPreviousBalanceSourceMonth || getPreviousMonthKey(selectedReportMonthKey));
     setTeamNotes(savedTeamEditorState.teamNotes);
+    setTeamDatore(savedTeamEditorState.teamDatore || defaultEmployerValue);
     setTeamAdvances(savedTeamEditorState.teamAdvances);
     setTeamPayrollComponents(savedTeamEditorState.teamPayrollComponents);
     setCurrentTeamReportRecord(savedTeamEditorState.currentTeamReportRecord);
@@ -3618,14 +4456,7 @@ export default function ReportPage() {
 
       const componentPayload = teamPayrollComponents
         .filter(isMeaningfulTeamPayrollComponent)
-        .map((component, index) => ({
-          employee_id: component.employee_id ? Number(component.employee_id) : null,
-          employee_label: component.employee_label || '',
-          days: component.days,
-          amount: component.amount,
-          notes: component.notes || '',
-          sort_order: index,
-        }));
+        .map(buildTeamPayrollComponentPayload);
       const savedComponents = await window.api.teamPayroll.replacePayrollComponents(
         selectedTeam.id,
         selectedReportMonthKey,
@@ -3648,7 +4479,12 @@ export default function ReportPage() {
         gift_enabled: teamGiftEnabled,
         gift_description: teamGiftDescription,
         gift_amount: teamGiftEnabled ? normalizeCurrency(teamGiftAmount) : 0,
+        previous_balance_type: normalizedTeamPreviousBalanceType,
+        previous_balance_amount: teamPreviousBalanceAmountValue,
+        previous_balance_note: teamPreviousBalanceNote,
+        previous_balance_manual_override: teamPreviousBalanceManualOverride,
         note: teamNotes,
+        employer_key: teamDatore || '',
         processed_at: new Date().toISOString(),
         report_html_snapshot: snapshotHtml,
         report_snapshot_json: {
@@ -3663,6 +4499,12 @@ export default function ReportPage() {
           gift_enabled: teamGiftEnabled,
           gift_description: teamGiftDescription,
           gift_amount: teamGiftEnabled ? normalizeCurrency(teamGiftAmount) : 0,
+          previous_balance_type: normalizedTeamPreviousBalanceType,
+          previous_balance_amount: teamPreviousBalanceAmountValue,
+          previous_balance_note: teamPreviousBalanceNote || '',
+          previous_balance_manual_override: teamPreviousBalanceManualOverride,
+          previous_balance_credit: teamPreviousCreditTotal,
+          previous_balance_debt: teamPreviousDebtTotal,
           advances_total: teamAdvancesTotal,
           payroll_components_total: teamPayrollComponentsTotal,
           final_balance: teamFinalBalance,
@@ -3683,7 +4525,7 @@ export default function ReportPage() {
           }))
         : [createEmptyTeamAdvance()];
 
-      const nextComponents = buildTeamPayrollComponentRows(selectedTeamMembers, savedComponents);
+      const nextComponents = buildTeamPayrollComponentRows(selectedTeamMembers, savedComponents, currentMonth);
 
       const nextSavedState = {
         teamTransportEnabled,
@@ -3692,7 +4534,13 @@ export default function ReportPage() {
         teamGiftEnabled,
         teamGiftDescription,
         teamGiftAmount,
+        teamPreviousBalanceType,
+        teamPreviousBalanceAmount,
+        teamPreviousBalanceNote,
+        teamPreviousBalanceManualOverride,
+        teamPreviousBalanceSourceMonth,
         teamNotes,
+        teamDatore,
         teamAdvances: nextAdvances,
         teamPayrollComponents: nextComponents,
         currentTeamReportRecord: savedRecord || null,
@@ -3710,7 +4558,12 @@ export default function ReportPage() {
           teamGiftEnabled: nextSavedState.teamGiftEnabled,
           teamGiftDescription: nextSavedState.teamGiftDescription,
           teamGiftAmount: nextSavedState.teamGiftAmount,
+          teamPreviousBalanceType: nextSavedState.teamPreviousBalanceType,
+          teamPreviousBalanceAmount: nextSavedState.teamPreviousBalanceAmount,
+          teamPreviousBalanceNote: nextSavedState.teamPreviousBalanceNote,
+          teamPreviousBalanceManualOverride: nextSavedState.teamPreviousBalanceManualOverride,
           teamNotes: nextSavedState.teamNotes,
+          teamDatore: nextSavedState.teamDatore,
           teamAdvances: nextSavedState.teamAdvances,
           teamPayrollComponents: nextSavedState.teamPayrollComponents,
         })
@@ -3746,6 +4599,39 @@ export default function ReportPage() {
   const reportAttendanceDays = useMemo(
     () => getMonthDays(startOfMonth(currentMonth), endOfMonth(currentMonth)),
     [currentMonth]
+  );
+  const teamPayrollCalendarDays = useMemo(
+    () =>
+      getMonthDays(startOfMonth(currentMonth), endOfMonth(currentMonth)).map((day) => ({
+        day: day.getDate(),
+        date: day,
+        isSunday: day.getDay() === 0,
+      })),
+    [currentMonth]
+  );
+  const visibleTeamPayrollComponents = useMemo(
+    () =>
+      teamPayrollComponents
+        .map((component, index) => {
+          const employmentRange = teamPayrollMemberRangesByEmployeeId.get(String(component.employee_id || '')) || {};
+          const periodMeta = getTeamPayrollComponentPeriodMeta(employmentRange, currentMonth);
+          const selectedDays = filterSelectedPayrollDaysByRange(
+            component?.selected_payroll_days ?? component?.selected_payroll_days_json,
+            employmentRange,
+            currentMonth
+          );
+          return {
+            component,
+            index,
+            employmentRange,
+            periodMeta,
+            selectedDays,
+          };
+        })
+        .filter(({ periodMeta }) =>
+          teamPayrollPeriodStatusFilter === 'all' ? true : periodMeta.status === teamPayrollPeriodStatusFilter
+        ),
+    [currentMonth, teamPayrollComponents, teamPayrollMemberRangesByEmployeeId, teamPayrollPeriodStatusFilter]
   );
   const reportAttendanceWeeks = useMemo(
     () => groupDaysByWeek(reportAttendanceDays),
@@ -4108,6 +4994,8 @@ export default function ReportPage() {
     datore,
     importoBustaPaga,
     giornateBustaPaga,
+    selectedPayrollDays: validSelectedPayrollDays,
+    showSelectedPayrollDaysInReport,
     advances,
     restoPrecedente,
     trasportoAttivo,
@@ -4137,6 +5025,8 @@ export default function ReportPage() {
       datore,
       importoBustaPaga,
       giornateBustaPaga,
+      selectedPayrollDays: validSelectedPayrollDays,
+      showSelectedPayrollDaysInReport,
       advances,
       restoPrecedente,
       trasportoAttivo,
@@ -4172,6 +5062,8 @@ export default function ReportPage() {
       debtPlans,
       employee?.id,
       giornateBustaPaga,
+      showSelectedPayrollDaysInReport,
+      validSelectedPayrollDays,
       giftAmount,
       giftLabel,
       importoBustaPaga,
@@ -4215,9 +5107,15 @@ export default function ReportPage() {
       teamGiftEnabled,
       teamGiftDescription,
       teamGiftAmount,
+      teamPreviousBalanceType,
+      teamPreviousBalanceAmount,
+      teamPreviousBalanceNote,
+      teamPreviousBalanceManualOverride,
+      teamPreviousBalanceSourceMonth,
       teamAdvances,
       teamPayrollComponents,
       teamNotes,
+      teamDatore,
       teamSaveState,
       report_snapshot_json: {
         team_id: selectedTeam?.id || null,
@@ -4230,6 +5128,12 @@ export default function ReportPage() {
         gift_enabled: teamGiftEnabled,
         gift_description: teamGiftDescription,
         gift_amount: teamGiftEnabled ? normalizeCurrency(teamGiftAmount) : 0,
+        previous_balance_type: normalizedTeamPreviousBalanceType,
+        previous_balance_amount: teamPreviousBalanceAmountValue,
+        previous_balance_note: teamPreviousBalanceNote || '',
+        previous_balance_manual_override: teamPreviousBalanceManualOverride,
+        previous_balance_credit: teamPreviousCreditTotal,
+        previous_balance_debt: teamPreviousDebtTotal,
         advances_total: teamAdvancesTotal,
         payroll_components_total: teamPayrollComponentsTotal,
         final_balance: teamFinalBalance,
@@ -4256,9 +5160,15 @@ export default function ReportPage() {
       teamGiftAmount,
       teamGiftDescription,
       teamGiftEnabled,
+      teamPreviousBalanceAmount,
+      teamPreviousBalanceNote,
+      teamPreviousBalanceManualOverride,
+      teamPreviousBalanceSourceMonth,
+      teamPreviousBalanceType,
       teamTransportAmount,
       teamTransportDescription,
       teamTransportEnabled,
+      teamDatore,
     ]
   );
   const teamTemplatePreviewRequestKey = useMemo(
@@ -4272,15 +5182,33 @@ export default function ReportPage() {
         teamTemplateSource.grossCompensation +
         (teamTemplateSource.transportEnabled ? teamTemplateSource.transportAmount : 0) +
         (teamTemplateSource.giftEnabled ? teamTemplateSource.giftAmount : 0) -
+        (teamTemplateSource.previousBalanceType === 'debt'
+          ? (teamTemplateSource.previousBalanceAmount || 0)
+          : 0) +
+        (teamTemplateSource.previousBalanceType === 'credit'
+          ? (teamTemplateSource.previousBalanceAmount || 0)
+          : 0) -
         (teamTemplateSource.advancesTotal || 0) -
         (teamTemplateSource.payrollComponentsTotal || 0),
       transportAmount: teamTemplateSource.transportEnabled ? teamTemplateSource.transportAmount : 0,
       giftAmount: teamTemplateSource.giftEnabled ? teamTemplateSource.giftAmount : 0,
+      previousBalanceType: teamTemplateSource.previousBalanceType || '',
+      previousBalanceAmount: teamTemplateSource.previousBalanceAmount || 0,
+      previousBalanceNote: teamTemplateSource.previousBalanceNote || '',
       payrollComponentsTotal: teamTemplateSource.payrollComponentsTotal || 0,
+      payrollComponents: Array.isArray(teamTemplateSource.payrollComponents)
+        ? teamTemplateSource.payrollComponents.map((component) => ({
+            label: component.label || '',
+            days: component.days || 0,
+            amount: component.amount || 0,
+            selectedPayrollDays: component.selectedPayrollDays || [],
+          }))
+        : [],
       attendanceEntries: Array.isArray(teamTemplateSource.calendarEntries) ? teamTemplateSource.calendarEntries : [],
     }),
     [teamTemplateSource]
   );
+  latestTeamTemplateSourceRef.current = teamTemplateSource;
 
   useEffect(() => {
     if (!USE_TEAM_REPORT_TEMPLATE || !isTeamMode || !selectedTeam?.id) {
@@ -4292,7 +5220,9 @@ export default function ReportPage() {
       setTeamTemplatePreviewHtml('');
       setTeamTemplatePreviewData(null);
       setTeamTemplatePreviewError('');
+      setTeamTemplatePreviewStatus('idle');
       setTeamTemplatePreviewLoading(false);
+      console.info('[report-preview-loading] type=team loading=false');
       return;
     }
 
@@ -4300,35 +5230,59 @@ export default function ReportPage() {
       return;
     }
     console.info('[team-template-data] teamId=%s teamName=%s', selectedTeam?.id || '', selectedTeam?.name || '');
+    console.info('[team-print-template] using-new-template=true');
+    console.count('[team-template-preview-trigger]');
     lastTeamTemplatePreviewKeyRef.current = teamTemplatePreviewRequestKey;
+    setTeamTemplatePreviewHtml('');
+    setTeamTemplatePreviewData(null);
+    setTeamTemplatePreviewError('');
+    setTeamTemplatePreviewStatus('loading');
+    setTeamTemplatePreviewLoading(true);
+    console.info(
+      '[report-preview-start] type=team teamId=%s month=%s year=%s',
+      selectedTeam?.id || '',
+      monthName,
+      yearStr
+    );
+    console.info('[report-preview-loading] type=team loading=true');
 
     let cancelled = false;
 
     async function loadTeamTemplatePreview() {
       try {
-        setTeamTemplatePreviewLoading(true);
-        const result = await window.api.teamReport.previewTemplate(teamTemplateSource);
+        const source = latestTeamTemplateSourceRef.current;
+        const result = await window.api.teamReport.previewTemplate(source);
         if (cancelled) {
           return;
         }
         setTeamTemplatePreviewHtml((current) => (current === (result?.html || '') ? current : (result?.html || '')));
         setTeamTemplatePreviewData(result?.data || null);
         setTeamTemplatePreviewError('');
+        setTeamTemplatePreviewStatus('ready');
+        console.info(
+          '[report-preview-success] type=team htmlLength=%s usingTemplate=true',
+          (result?.html || '').length
+        );
         console.info('[team-print-template] preview');
-        console.info('[team-template-preview] teamName=%s', result?.data?.team?.name || teamTemplateSource.teamName || '');
+        console.info('[team-template-preview] teamName=%s', result?.data?.team?.name || source?.teamName || '');
       } catch (error) {
         if (cancelled) {
           return;
         }
         lastTeamTemplatePreviewKeyRef.current = '';
         console.error('[team-print-template] error', error);
-        console.info('[team-print-template] fallback-legacy');
+        console.error('[report-preview-error] type=team', error);
+        console.info('[team-print-template] using-legacy-template=false');
         setTeamTemplatePreviewHtml('');
         setTeamTemplatePreviewData(null);
-        setTeamTemplatePreviewError(error?.message || 'Template non disponibile');
+        setTeamTemplatePreviewError(
+          getIpcRecoveryMessage(error, error?.message || 'Template squadra non disponibile')
+        );
+        setTeamTemplatePreviewStatus('error');
       } finally {
         if (!cancelled) {
           setTeamTemplatePreviewLoading(false);
+          console.info('[report-preview-loading] type=team loading=false');
         }
       }
     }
@@ -4499,6 +5453,8 @@ export default function ReportPage() {
     setDatore(savedEditorState.datore);
     setImportoBustaPaga(savedEditorState.importoBustaPaga);
     setGiornateBustaPaga(savedEditorState.giornateBustaPaga);
+    setSelectedPayrollDays(savedEditorState.selectedPayrollDays || []);
+    setShowSelectedPayrollDaysInReport(!!savedEditorState.showSelectedPayrollDaysInReport);
     setAdvances(savedEditorState.advances);
     setRestoPrecedente(savedEditorState.restoPrecedente);
     setTrasportoAttivo(savedEditorState.trasportoAttivo);
@@ -4559,6 +5515,36 @@ export default function ReportPage() {
   );
   const remainingBalanceNum = balanceSettlement.remainingBalance;
 
+  useEffect(() => {
+    const showControls = restoPrecedenteNum !== 0 || differenzaFinale !== 0;
+    const reason = !showControls
+      ? 'differenzaFinale === 0 and restoPrecedenteNum === 0'
+      : differenzaFinale > 0
+      ? 'differenzaFinale > 0 (resto da dare)'
+      : differenzaFinale < 0
+      ? 'differenzaFinale < 0 (da ricevere)'
+      : 'restoPrecedenteNum !== 0';
+    console.info('[report-debug] payment status visibility', {
+      employee_id: employee?.id ?? null,
+      month: monthString(currentMonth),
+      finalBalance: differenzaFinale,
+      payroll_record_id: currentPayrollRecord?.id ?? null,
+      isProcessedRecord: !!currentPayrollRecord?.processed_at,
+      balanceStatus,
+      showPaymentStatusControls: showControls,
+      reasonHidden: showControls ? null : 'differenzaFinale === 0 and restoPrecedenteNum === 0',
+      condition: reason,
+    });
+  }, [
+    balanceStatus,
+    currentMonth,
+    currentPayrollRecord?.id,
+    currentPayrollRecord?.processed_at,
+    differenzaFinale,
+    employee?.id,
+    restoPrecedenteNum,
+  ]);
+
   const employeeTemplateSource = useMemo(() => {
     if (!employee) {
       return null;
@@ -4595,6 +5581,7 @@ export default function ReportPage() {
             data: dayNumber,
             tipo: 'worked',
             ore: regularHours > 0 ? regularHours : (overtimeHours > 0 ? overtimeHours : attendanceBaseHours),
+            overtimeHours: showOvertimeInReport ? overtimeHours : 0,
             task: normalized.marker_code || normalized.entry_code || markerLabel,
             isOvertime: overtimeHours > 0,
           };
@@ -4644,6 +5631,8 @@ export default function ReportPage() {
         bustaPaga: {
           importo: importoBustaPagaNum,
           giornate: Number(giornateBustaPaga || 0),
+          selectedPayrollDays: validSelectedPayrollDays,
+          showSelectedPayrollDaysInReport,
           note: [
             payrollStatusLabel,
             payrollPaymentMethod,
@@ -4683,6 +5672,8 @@ export default function ReportPage() {
     equivalentWorkedDays,
     giftAmountNum,
     giornateBustaPaga,
+    showSelectedPayrollDaysInReport,
+    validSelectedPayrollDays,
     importoBustaPagaNum,
     normalizedAdvances.length,
     overtimeHourlyRate,
@@ -4706,6 +5697,7 @@ export default function ReportPage() {
     () => (employeeTemplateSource ? JSON.stringify(employeeTemplateSource) : ''),
     [employeeTemplateSource]
   );
+  latestEmployeeTemplateSourceRef.current = employeeTemplateSource;
 
   useEffect(() => {
     if (!USE_EMPLOYEE_REPORT_TEMPLATE || !isEmployeeMode || !employee?.id || !employeeTemplateSource) {
@@ -4716,7 +5708,9 @@ export default function ReportPage() {
       lastEmployeeTemplatePreviewKeyRef.current = '';
       setEmployeeTemplatePreviewHtml('');
       setEmployeeTemplatePreviewError('');
+      setEmployeeTemplatePreviewStatus('idle');
       setEmployeeTemplatePreviewLoading(false);
+      console.info('[report-preview-loading] type=employee loading=false');
       return;
     }
 
@@ -4726,7 +5720,17 @@ export default function ReportPage() {
     lastEmployeeTemplatePreviewKeyRef.current = employeeTemplatePreviewRequestKey;
 
     let cancelled = false;
+    setEmployeeTemplatePreviewHtml('');
+    setEmployeeTemplatePreviewError('');
+    setEmployeeTemplatePreviewStatus('loading');
     setEmployeeTemplatePreviewLoading(true);
+    console.info(
+      '[report-preview-start] type=employee employeeId=%s month=%s year=%s',
+      employee?.id || '',
+      monthName,
+      yearStr
+    );
+    console.info('[report-preview-loading] type=employee loading=true');
 
     if (employeeTemplatePreviewTimeoutRef.current) {
       clearTimeout(employeeTemplatePreviewTimeoutRef.current);
@@ -4734,13 +5738,19 @@ export default function ReportPage() {
 
     employeeTemplatePreviewTimeoutRef.current = setTimeout(async () => {
       try {
-        const result = await window.api.employeeReport.previewTemplate(employeeTemplateSource);
+        const source = latestEmployeeTemplateSourceRef.current;
+        const result = await window.api.employeeReport.previewTemplate(source);
         if (cancelled) {
           return;
         }
         setEmployeeTemplatePreviewHtml((current) => (current === (result?.html || '') ? current : (result?.html || '')));
         setEmployeeTemplatePreviewError('');
-        console.info('[employee-template-preview]', employeeTemplateSource?.dipendente?.nome || '');
+        setEmployeeTemplatePreviewStatus('ready');
+        console.info(
+          '[report-preview-success] type=employee htmlLength=%s usingTemplate=true',
+          (result?.html || '').length
+        );
+        console.info('[employee-template-preview]', source?.dipendente?.nome || '');
       } catch (error) {
         if (cancelled) {
           return;
@@ -4748,10 +5758,13 @@ export default function ReportPage() {
         lastEmployeeTemplatePreviewKeyRef.current = '';
         setEmployeeTemplatePreviewHtml('');
         setEmployeeTemplatePreviewError(error?.message || 'Template dipendente non disponibile');
+        setEmployeeTemplatePreviewStatus('error');
+        console.error('[report-preview-error] type=employee', error);
         console.error('[employee-template-fallback]', error);
       } finally {
         if (!cancelled) {
           setEmployeeTemplatePreviewLoading(false);
+          console.info('[report-preview-loading] type=employee loading=false');
         }
       }
     }, 350);
@@ -4763,7 +5776,7 @@ export default function ReportPage() {
         employeeTemplatePreviewTimeoutRef.current = null;
       }
     };
-  }, [employee?.id, employeeTemplatePreviewRequestKey, employeeTemplateSource, isEmployeeMode]);
+  }, [employee?.id, employeeTemplatePreviewRequestKey, isEmployeeMode, monthName, yearStr]);
 
   useEffect(() => {
     if (!employee) {
@@ -4809,6 +5822,21 @@ export default function ReportPage() {
     totalRegularPay,
     workedDays,
   ]);
+
+  useEffect(() => {
+    if (!USE_EMPLOYEE_REPORT_TEMPLATE || !isEmployeeMode || !employee?.id) {
+      return;
+    }
+    setEmployeeTemplatePreviewMode((current) => (current === 'fit-width' ? current : 'fit-width'));
+  }, [USE_EMPLOYEE_REPORT_TEMPLATE, isEmployeeMode, employee?.id, selectedReportMonthKey]);
+
+  useEffect(() => {
+    if (!USE_TEAM_REPORT_TEMPLATE || !isTeamMode || !selectedTeam?.id) {
+      return;
+    }
+    setTeamTemplatePreviewMode((current) => (current === 'fit-width' ? current : 'fit-width'));
+  }, [USE_TEAM_REPORT_TEMPLATE, isTeamMode, selectedTeam?.id, selectedReportMonthKey]);
+
   const activeDraftStorageKey = isTeamMode ? teamDraftStorageKey : employeeDraftStorageKey;
   const activeDraftFeedback =
     draftFeedback.key && draftFeedback.key === activeDraftStorageKey ? draftFeedback : null;
@@ -4818,7 +5846,10 @@ export default function ReportPage() {
     ((draftRestorePrompt.type === 'team' && isTeamMode) || (draftRestorePrompt.type === 'employee' && isEmployeeMode));
 
   return (
-    <div className="page report-page">
+    <div
+      ref={reportLayoutContainerRef}
+      className={`page report-page ${reportLayoutStacked ? 'report-page--stacked' : ''}`}
+    >
       <div className="page-sticky-stack no-print">
         <section className="page-hero">
           <div>
@@ -4837,7 +5868,7 @@ export default function ReportPage() {
                   Salva PDF in cartella
                 </button>
               ) : null}
-              <button className="button-secondary" onClick={() => window.print()}>Stampa</button>
+              <button className="button-secondary" onClick={handlePrintReport}>Stampa</button>
             </div>
           ) : null}
         </section>
@@ -4894,6 +5925,7 @@ export default function ReportPage() {
 
           <div
             ref={employeeAutocompleteRef}
+            className="report-entity-search-wrap"
             style={{
               position: 'relative',
               width: 'min(340px, 100%)',
@@ -5037,17 +6069,21 @@ export default function ReportPage() {
       ) : null}
 
       {isEmployeeMode && employee ? (
-        <div className="report-workspace report-workspace--team-template">
+        <div
+          className={`report-workspace report-workspace--team-template ${
+            reportLayoutStacked ? 'report-workspace--stacked' : ''
+          }`}
+        >
           <div className="report-editor-column no-print">
             <div className="report-editor-panel">
           {isProcessedRecord ? (
             <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-              <div className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', borderColor: 'rgba(22, 101, 52, 0.14)' }}>
+              <div className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', border: '1px solid rgba(22, 101, 52, 0.14)' }}>
                 Report processato il {formatDisplayDateTime(currentPayrollRecord?.processed_at)}
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                 {isEditUnlocked ? (
-                  <div className="soft-chip" style={{ background: 'rgba(212, 160, 23, 0.16)', color: '#a16207', borderColor: 'rgba(212, 160, 23, 0.18)' }}>
+                  <div className="soft-chip" style={{ background: 'rgba(212, 160, 23, 0.16)', color: '#a16207', border: '1px solid rgba(212, 160, 23, 0.18)' }}>
                     Modalita modifica attiva
                   </div>
                 ) : null}
@@ -5152,6 +6188,51 @@ export default function ReportPage() {
                 <div>
                   <div style={fieldLabelStyle}>Giornate in busta paga</div>
                   <input type="number" min="0" value={giornateBustaPaga} onChange={(e) => setGiornateBustaPaga(e.target.value)} placeholder="es. 11" style={fieldStyle} />
+                </div>
+
+                <div style={{ gridColumn: '1 / -1', display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div>
+                      <div style={fieldLabelStyle}>Giorni busta</div>
+                      {payrollDaysMismatch ? (
+                        <div style={{ ...fieldSubtleStyle, color: '#b45309', fontWeight: 800 }}>
+                          Attenzione: selezionati {validSelectedPayrollDays.length}, campo giornate = {Number(giornateBustaPaga || 0)}
+                        </div>
+                      ) : null}
+                    </div>
+                    <label style={{ ...checkboxLabelStyle, padding: '6px 10px', borderRadius: 10, background: '#fff', border: '1px solid rgba(31, 41, 55, 0.08)' }}>
+                      <input
+                        type="checkbox"
+                        checked={showSelectedPayrollDaysInReport}
+                        onChange={(e) => setShowSelectedPayrollDaysInReport(e.target.checked)}
+                        style={{ width: 16, height: 16 }}
+                      />
+                      Mostra date busta nel report
+                    </label>
+                  </div>
+                  <div style={employeePayrollDaysStripStyle} aria-label="Giorni busta dipendente">
+                    {teamPayrollCalendarDays.map((dayInfo) => {
+                      const isSelected = validSelectedPayrollDays.includes(dayInfo.day);
+                      const isOutsideEmployment = !isPayrollDayAllowedForRange(dayInfo.date, employeePayrollRange);
+                      return (
+                        <button
+                          key={dayInfo.day}
+                          type="button"
+                          onClick={() => toggleSelectedPayrollDay(dayInfo.day)}
+                          disabled={isOutsideEmployment}
+                          title={isOutsideEmployment ? 'Fuori periodo rapporto' : `Giorno ${dayInfo.day}`}
+                          style={{
+                            ...teamPayrollDayButtonStyle,
+                            ...(dayInfo.isSunday ? teamPayrollHolidayDayStyle : null),
+                            ...(isOutsideEmployment ? teamPayrollDisabledDayStyle : null),
+                            ...(isSelected ? teamPayrollSelectedDayStyle : null),
+                          }}
+                        >
+                          {dayInfo.day}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 {overtimeView.enabled && showOvertimeInReport ? (
@@ -5735,28 +6816,6 @@ export default function ReportPage() {
             <div style={editorBlockStyle}>
               <div style={editorBlockTitleStyle}>5. Resto / saldo finale</div>
               {(() => {
-                const _showControls = restoPrecedenteNum !== 0 || differenzaFinale !== 0;
-                const _reason = !_showControls
-                  ? 'differenzaFinale === 0 and restoPrecedenteNum === 0'
-                  : differenzaFinale > 0
-                  ? 'differenzaFinale > 0 (resto da dare)'
-                  : differenzaFinale < 0
-                  ? 'differenzaFinale < 0 (da ricevere)'
-                  : 'restoPrecedenteNum !== 0';
-                console.log('[report-debug] payment status visibility', {
-                  employee_id: employee?.id ?? null,
-                  month: monthString(currentMonth),
-                  finalBalance: differenzaFinale,
-                  payroll_record_id: currentPayrollRecord?.id ?? null,
-                  isProcessedRecord: !!currentPayrollRecord?.processed_at,
-                  balanceStatus,
-                  showPaymentStatusControls: _showControls,
-                  reasonHidden: _showControls ? null : 'differenzaFinale === 0 and restoPrecedenteNum === 0',
-                  condition: _reason,
-                });
-                return null;
-              })()}
-              {(() => {
                 const displayedBalance =
                   balanceStatus === 'parziale' || balanceStatus === 'saldato'
                     ? remainingBalanceNum
@@ -5833,7 +6892,7 @@ export default function ReportPage() {
                             style={{
                               ...fieldStyle,
                               background: 'rgba(15, 118, 110, 0.08)',
-                              borderColor: 'rgba(15, 118, 110, 0.2)',
+                              border: '1px solid rgba(15, 118, 110, 0.2)',
                               color: remainingBalanceNum >= 0 ? '#0f766e' : '#b91c1c',
                               fontWeight: 700,
                             }}
@@ -5871,15 +6930,15 @@ export default function ReportPage() {
           <div style={{ gridColumn: '1 / -1', display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', paddingTop: 6 }}>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               {hasUnsavedChanges ? (
-                <span className="soft-chip" style={{ background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', borderColor: 'rgba(245, 158, 11, 0.18)' }}>
+                <span className="soft-chip" style={{ background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', border: '1px solid rgba(245, 158, 11, 0.18)' }}>
                   {saveState === 'saving' ? 'Salvataggio...' : 'Modifiche in corso'}
                 </span>
               ) : saveState === 'saved' ? (
-                <span className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', borderColor: 'rgba(22, 101, 52, 0.14)' }}>
+                <span className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', border: '1px solid rgba(22, 101, 52, 0.14)' }}>
                   Salvato
                 </span>
               ) : (
-                <span className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', borderColor: 'rgba(22, 101, 52, 0.14)' }}>
+                <span className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', border: '1px solid rgba(22, 101, 52, 0.14)' }}>
                   Dati sincronizzati
                 </span>
               )}
@@ -5888,10 +6947,10 @@ export default function ReportPage() {
                   className="soft-chip"
                   style={
                     activeDraftFeedback.tone === 'restored'
-                      ? { background: 'rgba(59, 130, 246, 0.14)', color: '#1d4ed8', borderColor: 'rgba(59, 130, 246, 0.18)' }
+                      ? { background: 'rgba(59, 130, 246, 0.14)', color: '#1d4ed8', border: '1px solid rgba(59, 130, 246, 0.18)' }
                       : activeDraftFeedback.tone === 'discarded'
-                        ? { background: 'rgba(148, 163, 184, 0.16)', color: '#334155', borderColor: 'rgba(148, 163, 184, 0.18)' }
-                        : { background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', borderColor: 'rgba(245, 158, 11, 0.18)' }
+                        ? { background: 'rgba(148, 163, 184, 0.16)', color: '#334155', border: '1px solid rgba(148, 163, 184, 0.18)' }
+                        : { background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', border: '1px solid rgba(245, 158, 11, 0.18)' }
                   }
                 >
                   {activeDraftFeedback.text}
@@ -5951,17 +7010,21 @@ export default function ReportPage() {
               ) : null}
               {loading ? (
                 <div style={emptyBoxStyle}>Caricamento...</div>
-              ) : USE_EMPLOYEE_REPORT_TEMPLATE && employeeTemplatePreviewHtml ? (
+              ) : USE_EMPLOYEE_REPORT_TEMPLATE && employeeTemplatePreviewStatus === 'ready' && employeeTemplatePreviewHtml ? (
                 <TeamTemplatePreviewFrame
                   html={employeeTemplatePreviewHtml}
                   teamName={employeeTemplateSource?.dipendente?.nome || ''}
                   mode={employeeTemplatePreviewMode}
                 />
+              ) : USE_EMPLOYEE_REPORT_TEMPLATE && employeeTemplatePreviewStatus !== 'error' ? (
+                <div className="template-preview-status no-print">
+                  Caricamento anteprima dipendente...
+                </div>
               ) : (
                 <>
-                  {USE_EMPLOYEE_REPORT_TEMPLATE && (employeeTemplatePreviewLoading || employeeTemplatePreviewError) ? (
+                  {USE_EMPLOYEE_REPORT_TEMPLATE && employeeTemplatePreviewError ? (
                     <div className="template-preview-status no-print">
-                      {employeeTemplatePreviewLoading ? 'Preparazione anteprima dipendente...' : `Fallback anteprima legacy: ${employeeTemplatePreviewError}`}
+                      {`Errore caricamento anteprima: ${employeeTemplatePreviewError}`}
                     </div>
                   ) : null}
                   <EmployeePrintArea
@@ -6019,9 +7082,21 @@ export default function ReportPage() {
       ) : loading && !isEmployeeMode ? (
         <div>Caricamento...</div>
       ) : isTeamMode && selectedTeam ? (
-        <div className="report-workspace report-workspace--team-template">
+        <div
+          className={`report-workspace report-workspace--team-template ${
+            reportLayoutStacked ? 'report-workspace--stacked' : ''
+          }`}
+        >
           <div className="report-editor-column no-print">
             <div className="report-editor-panel">
+              <TeamReportActionBar
+                isProcessedTeamRecord={isProcessedTeamRecord}
+                isTeamEditUnlocked={isTeamEditUnlocked}
+                hasUnsavedTeamChanges={hasUnsavedTeamChanges}
+                onUnlockTeamEdit={handleUnlockTeamEdit}
+                onCancelTeamReportChanges={handleCancelTeamReportChanges}
+                onSaveTeamReportRecord={handleSaveTeamReportRecord}
+              />
               <fieldset
                 disabled={isTeamEditingDisabled}
                 style={{ gridColumn: '1 / -1', display: 'contents', border: 'none', padding: 0, margin: 0 }}
@@ -6175,52 +7250,106 @@ export default function ReportPage() {
               <div style={editorBlockStyle}>
                 <div style={sectionToolbarStyle}>
                   <div style={editorBlockTitleStyle}>6. Buste paga componenti</div>
+                  <div style={teamPayrollSectionFilterStyle}>
+                    <div style={fieldLabelStyle}>Stato nel periodo</div>
+                    <select
+                      value={teamPayrollPeriodStatusFilter}
+                      onChange={(e) => setTeamPayrollPeriodStatusFilter(e.target.value)}
+                      style={teamPayrollSectionFilterSelectStyle}
+                    >
+                      {TEAM_PAYROLL_PERIOD_STATUS_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-                {teamPayrollComponents.length ? (
+                {visibleTeamPayrollComponents.length ? (
                   <div style={{ display: 'grid', gap: 10, gridColumn: '1 / -1', marginTop: 8 }}>
-                    {teamPayrollComponents.map((component, index) => (
-                      <div key={component.id || component.client_key || `team-payroll-component-${index}`} style={teamPayrollComponentRowStyle}>
-                        <div style={teamPayrollComponentLine1Style}>
-                          <div style={{ display: 'grid', gap: 6 }}>
-                            <div style={fieldLabelStyle}>Dipendente</div>
-                            <div style={readonlyBoxStyle}>{component.employee_label}</div>
+                    {visibleTeamPayrollComponents.map(({ component, index, employmentRange, periodMeta, selectedDays }) => {
+                      const selectedDaySet = new Set(selectedDays);
+                      return (
+                        <div key={component.id || component.client_key || `team-payroll-component-${index}`} style={teamPayrollComponentRowStyle}>
+                          <div style={teamPayrollComponentLine1Style}>
+                            <div style={{ display: 'grid', gap: 6 }}>
+                              <div style={fieldLabelStyle}>Dipendente</div>
+                              <div style={readonlyBoxStyle}>{component.employee_label}</div>
+                              <div
+                                style={{
+                                  ...teamPayrollStatusLabelStyle,
+                                  ...(periodMeta.tone === 'enabled'
+                                    ? teamPayrollStatusLabelEnabledStyle
+                                    : periodMeta.tone === 'pending'
+                                      ? teamPayrollStatusLabelPendingStyle
+                                      : teamPayrollStatusLabelEndedStyle),
+                                }}
+                              >
+                                {periodMeta.label}
+                              </div>
+                            </div>
+                            <div style={teamPayrollDaysStripWrapStyle}>
+                              <div style={fieldLabelStyle}>Giorni busta</div>
+                              <div style={teamPayrollDaysStripStyle} aria-label={`Giorni busta ${component.employee_label || ''}`}>
+                                {teamPayrollCalendarDays.map((dayInfo) => {
+                                  const isSelected = selectedDaySet.has(dayInfo.day);
+                                  const isOutsideEmployment = !isPayrollDayAllowedForRange(dayInfo.date, employmentRange);
+                                  return (
+                                    <button
+                                      key={dayInfo.day}
+                                      type="button"
+                                      onClick={() => toggleTeamPayrollComponentDay(index, dayInfo.day)}
+                                      disabled={isOutsideEmployment}
+                                      title={isOutsideEmployment ? 'Fuori periodo rapporto' : `Giorno ${dayInfo.day}`}
+                                      style={{
+                                        ...teamPayrollDayButtonStyle,
+                                        ...(dayInfo.isSunday ? teamPayrollHolidayDayStyle : null),
+                                        ...(isOutsideEmployment ? teamPayrollDisabledDayStyle : null),
+                                        ...(isSelected ? teamPayrollSelectedDayStyle : null),
+                                      }}
+                                    >
+                                      {dayInfo.day}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
                           </div>
-                          <div style={{ display: 'grid', gap: 6 }}>
-                            <div style={fieldLabelStyle}>N. giorni</div>
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={component.days}
-                              onChange={(e) => updateTeamPayrollComponent(index, 'days', e.target.value)}
-                              placeholder="0"
-                              style={fieldStyle}
-                            />
+                          <div style={teamPayrollComponentControlsRowStyle}>
+                            <div />
+                            <div style={teamPayrollComponentControlsInnerStyle}>
+                              <div style={{ display: 'grid', gap: 6 }}>
+                                <div style={fieldLabelStyle}>N. giorni</div>
+                                <div style={readonlyBoxStyle}>{selectedDays.length || Number(component.days || 0) || 0}</div>
+                              </div>
+                              <div style={{ display: 'grid', gap: 6 }}>
+                                <div style={fieldLabelStyle}>Importo busta</div>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  value={component.amount}
+                                  onChange={(e) => updateTeamPayrollComponent(index, 'amount', e.target.value)}
+                                  placeholder="Importo EUR"
+                                  style={fieldStyle}
+                                />
+                              </div>
+                            </div>
                           </div>
-                          <div style={{ display: 'grid', gap: 6 }}>
-                            <div style={fieldLabelStyle}>Importo busta</div>
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={component.amount}
-                              onChange={(e) => updateTeamPayrollComponent(index, 'amount', e.target.value)}
-                              placeholder="Importo EUR"
-                              style={fieldStyle}
-                            />
+                          <div style={teamPayrollComponentLine2Style}>
+                            <div style={fieldSubtleStyle}>
+                              Date selezionate: {selectedDays.length ? selectedDays.join(', ') : 'nessuna'}
+                            </div>
+                            <div style={{ ...fieldSubtleStyle, alignSelf: 'center', justifySelf: 'end' }}>
+                              Salvata con "Salva nel registro"
+                            </div>
                           </div>
                         </div>
-                        <div style={teamPayrollComponentLine2Style}>
-                          <input
-                            value={component.notes}
-                            onChange={(e) => updateTeamPayrollComponent(index, 'notes', e.target.value)}
-                            placeholder="Note"
-                            style={fieldStyle}
-                          />
-                          <div style={{ ...fieldSubtleStyle, alignSelf: 'center', justifySelf: 'end' }}>
-                            Salvata con "Salva nel registro"
-                          </div>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
+                  </div>
+                ) : teamPayrollComponents.length ? (
+                  <div style={{ marginTop: 8, fontSize: 13, color: '#6b7280' }}>
+                    Nessun componente corrisponde al filtro selezionato
                   </div>
                 ) : (
                   <div style={{ marginTop: 8, fontSize: 13, color: '#6b7280' }}>
@@ -6233,11 +7362,87 @@ export default function ReportPage() {
               </div>
 
               <div style={editorBlockStyle}>
-                <div style={editorBlockTitleStyle}>7. Note report squadra</div>
+                <div style={editorBlockTitleStyle}>7. Credito / Debito precedente</div>
+                {teamPreviousBalanceNotice ? (
+                  <div style={{ marginTop: 10, marginBottom: 4, fontSize: 12, color: teamPreviousBalanceManualOverride ? '#92400e' : '#4b5563' }}>
+                    {teamPreviousBalanceNotice}
+                  </div>
+                ) : null}
+                <div style={{ ...editorBlockGridStyle, marginTop: 12 }}>
+                  <div>
+                    <div style={fieldLabelStyle}>Tipo</div>
+                    <select
+                      value={teamPreviousBalanceType}
+                      onChange={(e) => {
+                        setTeamPreviousBalanceType(e.target.value);
+                        setTeamPreviousBalanceManualOverride(true);
+                        setTeamPreviousBalanceSourceMonth(getPreviousMonthKey(selectedReportMonthKey));
+                      }}
+                      style={fieldStyle}
+                    >
+                      <option value="">Nessuna voce precedente</option>
+                      {TEAM_PREVIOUS_BALANCE_TYPE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={fieldLabelStyle}>Importo</div>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={teamPreviousBalanceAmount}
+                      onChange={(e) => {
+                        setTeamPreviousBalanceAmount(e.target.value);
+                        setTeamPreviousBalanceManualOverride(true);
+                        setTeamPreviousBalanceSourceMonth(getPreviousMonthKey(selectedReportMonthKey));
+                      }}
+                      placeholder="0.00"
+                      style={fieldStyle}
+                    />
+                  </div>
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={fieldLabelStyle}>Note / descrizione</div>
+                    <input
+                      value={teamPreviousBalanceNote}
+                      onChange={(e) => {
+                        setTeamPreviousBalanceNote(e.target.value);
+                        setTeamPreviousBalanceManualOverride(true);
+                        setTeamPreviousBalanceSourceMonth(getPreviousMonthKey(selectedReportMonthKey));
+                      }}
+                      placeholder="Es. saldo precedente responsabile squadra"
+                      style={fieldStyle}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div style={editorBlockStyle}>
+                <div style={editorBlockTitleStyle}>8. Note report squadra</div>
+                <div style={{ display: 'grid', gap: 6, marginBottom: 12, maxWidth: 280 }}>
+                  <div style={fieldLabelStyle}>Datore / sigla squadra (per la Comunicazione)</div>
+                  <select value={teamDatore} onChange={(e) => setTeamDatore(e.target.value)} style={fieldStyle}>
+                    <option value="">Nessuna sigla</option>
+                    {employerOptions.map((option) => {
+                      const value = option.short_name || option.value;
+                      return (
+                        <option key={value} value={value}>
+                          {option.short_name || option.value}{option.name ? ` — ${option.name}` : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <div style={fieldSubtleStyle}>
+                    Determina se nella Comunicazione le giornate finiscono nella colonna {teamDatore || 'LG'} o nell'altra sigla.
+                  </div>
+                </div>
                 <textarea rows={3} value={teamNotes} onChange={(e) => setTeamNotes(e.target.value)} placeholder="Note per il titolare o dettagli del pagamento..." style={{ ...fieldStyle, gridColumn: '1 / -1' }} />
               </div>
               <div style={editorBlockStyle}>
-                <div style={editorBlockTitleStyle}>8. Saldo squadra</div>
+                <div style={editorBlockTitleStyle}>9. Saldo squadra</div>
                 <div style={{ ...editorBlockGridStyle, marginTop: 14 }}>
                   <div>
                     <div style={fieldLabelStyle}>Trasporto squadra</div>
@@ -6246,6 +7451,14 @@ export default function ReportPage() {
                   <div>
                     <div style={fieldLabelStyle}>Regalo squadra</div>
                     <div style={{ fontSize: 15, fontWeight: 800, color: '#111827' }}>{formatCurrency(teamGiftTotal)}</div>
+                  </div>
+                  <div>
+                    <div style={fieldLabelStyle}>Credito precedente</div>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: '#111827' }}>{formatCurrency(teamPreviousCreditTotal)}</div>
+                  </div>
+                  <div>
+                    <div style={fieldLabelStyle}>Debito precedente</div>
+                    <div style={{ fontSize: 15, fontWeight: 800, color: '#111827' }}>{formatCurrency(teamPreviousDebtTotal)}</div>
                   </div>
                   <div>
                     <div style={fieldLabelStyle}>Totale acconti</div>
@@ -6265,15 +7478,15 @@ export default function ReportPage() {
               <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', paddingTop: 6 }}>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   {hasUnsavedTeamChanges ? (
-                    <span className="soft-chip" style={{ background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', borderColor: 'rgba(245, 158, 11, 0.18)' }}>
+                    <span className="soft-chip" style={{ background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', border: '1px solid rgba(245, 158, 11, 0.18)' }}>
                       {teamSaveState === 'saving' ? 'Salvataggio...' : 'Modifiche in corso'}
                     </span>
                   ) : currentTeamReportRecord ? (
-                    <span className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', borderColor: 'rgba(22, 101, 52, 0.14)' }}>
+                    <span className="soft-chip" style={{ background: 'rgba(22, 163, 74, 0.14)', color: '#14532d', border: '1px solid rgba(22, 101, 52, 0.14)' }}>
                       {isProcessedTeamRecord ? `Salvato il ${formatDisplayDateTime(currentTeamReportRecord.processed_at)}` : 'Report salvato'}
                     </span>
                   ) : (
-                    <span className="soft-chip" style={{ background: 'rgba(148, 163, 184, 0.14)', color: '#334155', borderColor: 'rgba(148, 163, 184, 0.18)' }}>
+                    <span className="soft-chip" style={{ background: 'rgba(148, 163, 184, 0.14)', color: '#334155', border: '1px solid rgba(148, 163, 184, 0.18)' }}>
                       Report non ancora salvato
                     </span>
                   )}
@@ -6282,10 +7495,10 @@ export default function ReportPage() {
                       className="soft-chip"
                       style={
                         activeDraftFeedback.tone === 'restored'
-                          ? { background: 'rgba(59, 130, 246, 0.14)', color: '#1d4ed8', borderColor: 'rgba(59, 130, 246, 0.18)' }
+                          ? { background: 'rgba(59, 130, 246, 0.14)', color: '#1d4ed8', border: '1px solid rgba(59, 130, 246, 0.18)' }
                           : activeDraftFeedback.tone === 'discarded'
-                            ? { background: 'rgba(148, 163, 184, 0.16)', color: '#334155', borderColor: 'rgba(148, 163, 184, 0.18)' }
-                            : { background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', borderColor: 'rgba(245, 158, 11, 0.18)' }
+                            ? { background: 'rgba(148, 163, 184, 0.16)', color: '#334155', border: '1px solid rgba(148, 163, 184, 0.18)' }
+                            : { background: 'rgba(245, 158, 11, 0.14)', color: '#b45309', border: '1px solid rgba(245, 158, 11, 0.18)' }
                       }
                     >
                       {activeDraftFeedback.text}
@@ -6293,29 +7506,14 @@ export default function ReportPage() {
                   ) : null}
                 </div>
 
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  {isProcessedTeamRecord ? (
-                    <button
-                      type="button"
-                      className="button-secondary"
-                      onClick={handleUnlockTeamEdit}
-                      disabled={isTeamEditUnlocked}
-                    >
-                      Modifica
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="button-secondary"
-                    onClick={handleCancelTeamReportChanges}
-                    disabled={!hasUnsavedTeamChanges}
-                  >
-                    Annulla
-                  </button>
-                  <button type="button" className="button" onClick={() => handleSaveTeamReportRecord()}>
-                    Salva nel registro
-                  </button>
-                </div>
+                <TeamReportActionBar
+                  isProcessedTeamRecord={isProcessedTeamRecord}
+                  isTeamEditUnlocked={isTeamEditUnlocked}
+                  hasUnsavedTeamChanges={hasUnsavedTeamChanges}
+                  onUnlockTeamEdit={handleUnlockTeamEdit}
+                  onCancelTeamReportChanges={handleCancelTeamReportChanges}
+                  onSaveTeamReportRecord={handleSaveTeamReportRecord}
+                />
               </div>
             </div>
           </div>
@@ -6343,92 +7541,28 @@ export default function ReportPage() {
                   </div>
                 </div>
               ) : null}
-              {USE_TEAM_REPORT_TEMPLATE && teamTemplatePreviewHtml ? (
+              {USE_TEAM_REPORT_TEMPLATE && teamTemplatePreviewStatus === 'ready' && teamTemplatePreviewHtml ? (
                 <TeamTemplatePreviewFrame
                   html={teamTemplatePreviewHtml}
                   teamName={selectedTeam?.name || ''}
                   mode={teamTemplatePreviewMode}
                 />
+              ) : USE_TEAM_REPORT_TEMPLATE && teamTemplatePreviewStatus !== 'error' ? (
+                <div className="template-preview-status no-print">
+                  Caricamento anteprima template squadra...
+                </div>
               ) : (
-                <>
-                  {USE_TEAM_REPORT_TEMPLATE && (teamTemplatePreviewLoading || teamTemplatePreviewError) ? (
-                    <div style={{
-                      marginBottom: 12,
-                      padding: '10px 12px',
-                      borderRadius: 12,
-                      background: teamTemplatePreviewError ? 'rgba(245, 158, 11, 0.12)' : 'rgba(14, 165, 233, 0.08)',
-                      color: teamTemplatePreviewError ? '#b45309' : '#0f766e',
-                      fontSize: 12,
-                      fontWeight: 700,
-                    }}>
-                      {teamTemplatePreviewLoading
-                        ? 'Caricamento anteprima template squadra...'
-                        : `Template squadra non disponibile, uso anteprima legacy. ${teamTemplatePreviewError}`}
-                    </div>
-                  ) : null}
-                  <EmployeePrintArea
-                    currentMonth={currentMonth}
-                    isTeamReport
-                    team={selectedTeam}
-                    teamPeriodLabel={teamPeriodLabel}
-                    datore=""
-                    employerOptions={[]}
-                    weekGroups={teamWeekGroups}
-                    attendanceMap={{}}
-                    dayMarkers={[]}
-                    employeeTotals={emptyPreviewAttendanceSummary}
-                    dailyPay={0}
-                    overtimeHourlyRate={0}
-                    overtimeView={null}
-                    showOvertimeInReport={false}
-                    showPayCalculationDetail={false}
-                    workedDays={0}
-                    equivalentWorkedDays={0}
-                    regularHourlyRate={0}
-                    totalRegularPay={0}
-                    totalOvertimePay={0}
-                    totalCalculatedPay={0}
-                    importoBustaPagaNum={0}
-                    giornateBustaPaga={0}
-                    totalAdvances={0}
-                    visibleAdvances={[]}
-                    currentInstallments={[]}
-                    currentInstallmentTotal={0}
-                    giftAmountNum={0}
-                    giftLabel=""
-                    restoPrecedenteNum={0}
-                    trasportoAttivo={false}
-                    nMacchineMeseNum={0}
-                    prezzoPerMacchinaNum={0}
-                    totaleTrasporto={0}
-                    differenzaFinale={0}
-                    balanceNotes=""
-                    payrollPaymentStatus="non_pagato"
-                    balanceStatus="non_pagato"
-                    partialPaidAmount=""
-                    balanceClosedAt=""
-                    teamAttendanceByDate={selectedTeamAttendanceByDate}
-                    teamHeadcountTotals={teamHeadcountTotals}
-                    teamDailyRate={teamDailyRate}
-                    teamGrossCompensation={teamGrossCompensation}
-                    teamCompensationSummary={teamCompensationSummary}
-                    teamCompensationDetail={teamCompensationDetail}
-                    attendanceBaseHours={attendanceBaseHours}
-                    hoursFormat={hoursFormat}
-                    teamTransportEnabled={teamTransportEnabled}
-                    teamTransportDescription={teamTransportDescription}
-                    teamTransportTotal={teamTransportTotal}
-                    teamGiftEnabled={teamGiftEnabled}
-                    teamGiftDescription={teamGiftDescription}
-                    teamGiftTotal={teamGiftTotal}
-                    filteredTeamAdvances={filteredTeamAdvances}
-                    teamAdvancesTotal={teamAdvancesTotal}
-                    filteredTeamPayrollComponents={filteredTeamPayrollComponents}
-                    teamPayrollComponentsTotal={teamPayrollComponentsTotal}
-                    teamFinalBalance={teamFinalBalance}
-                    teamNotes={teamNotes}
-                  />
-                </>
+                <div style={{
+                  marginBottom: 12,
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  background: 'rgba(239, 68, 68, 0.12)',
+                  color: '#b91c1c',
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}>
+                  {`Template squadra non disponibile. ${teamTemplatePreviewError || 'Riavvia GPA per riallineare il processo principale.'}`}
+                </div>
               )}
             </div>
           </div>
@@ -6457,7 +7591,7 @@ export default function ReportPage() {
                       width: 'fit-content',
                       background: 'rgba(245, 158, 11, 0.14)',
                       color: '#b45309',
-                      borderColor: 'rgba(245, 158, 11, 0.18)',
+                      border: '1px solid rgba(245, 158, 11, 0.18)',
                     }}
                   >
                     Modificando le presenze, il report dovra essere ricalcolato.
@@ -7257,8 +8391,22 @@ function EmployeePrintArea({
       strong: true,
       order: 1,
     },
+    ...(teamPreviousCreditTotal > 0 ? [{
+      label: 'Credito precedente',
+      detail: teamPreviousBalanceNote || 'Saldo positivo riportato dal periodo precedente',
+      value: formatCurrency(teamPreviousCreditTotal),
+      tone: 'positive',
+      order: 2,
+    }] : []),
   ];
   const teamDebitRows = [
+    ...(teamPreviousDebtTotal > 0 ? [{
+      label: 'Debito precedente',
+      detail: teamPreviousBalanceNote || 'Saldo negativo riportato dal periodo precedente',
+      value: formatCurrency(teamPreviousDebtTotal),
+      tone: 'negative',
+      order: 0,
+    }] : []),
     ...safeTeamAdvances.map((advance, index) => ({
       label: `Acconto squadra${safeTeamAdvances.length > 1 ? ` ${index + 1}` : ''}`,
       detail: [advance.date ? `Data: ${formatDateLabel(advance.date)}` : 'Senza data', advance.notes].filter(Boolean).join(' - '),
@@ -7949,20 +9097,160 @@ const teamPayrollComponentRowStyle = {
   border: '1px solid rgba(31, 41, 55, 0.08)',
   borderRadius: 10,
   background: 'rgba(255, 255, 255, 0.96)',
+  position: 'relative',
+  isolation: 'isolate',
+  overflow: 'hidden',
 };
 
 const teamPayrollComponentLine1Style = {
   display: 'grid',
-  gridTemplateColumns: 'minmax(150px, 0.95fr) minmax(90px, 110px) minmax(120px, 140px)',
+  gridTemplateColumns: 'minmax(180px, 0.78fr) minmax(0, 1.92fr)',
   gap: 12,
-  alignItems: 'center',
+  alignItems: 'start',
+};
+
+const teamPayrollComponentControlsRowStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'minmax(180px, 0.78fr) minmax(0, 1.92fr)',
+  gap: 12,
+  alignItems: 'start',
+};
+
+const teamPayrollComponentControlsInnerStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'minmax(96px, 120px) minmax(160px, 220px)',
+  gap: 12,
+  justifyContent: 'start',
 };
 
 const teamPayrollComponentLine2Style = {
   display: 'grid',
-  gridTemplateColumns: 'minmax(0, 1fr) auto auto',
+  gridTemplateColumns: 'minmax(0, 1fr) auto',
   gap: 8,
   alignItems: 'center',
+};
+
+const teamPayrollSectionFilterStyle = {
+  display: 'grid',
+  gap: 6,
+  minWidth: 240,
+  maxWidth: 280,
+};
+
+const teamPayrollSectionFilterSelectStyle = {
+  minHeight: 38,
+  borderRadius: 10,
+  border: '1px solid rgba(31, 41, 55, 0.12)',
+  background: '#ffffff',
+  color: '#111827',
+  fontSize: 13,
+  fontWeight: 600,
+  padding: '0 12px',
+};
+
+const teamPayrollStatusLabelStyle = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  width: 'fit-content',
+  minHeight: 24,
+  padding: '4px 10px',
+  borderRadius: 999,
+  fontSize: 11,
+  fontWeight: 800,
+  border: '1px solid transparent',
+  lineHeight: 1.2,
+};
+
+const teamPayrollStatusLabelEnabledStyle = {
+  background: 'rgba(22, 163, 74, 0.1)',
+  border: '1px solid rgba(22, 163, 74, 0.18)',
+  color: '#166534',
+};
+
+const teamPayrollStatusLabelPendingStyle = {
+  background: 'rgba(59, 130, 246, 0.1)',
+  border: '1px solid rgba(59, 130, 246, 0.18)',
+  color: '#1d4ed8',
+};
+
+const teamPayrollStatusLabelEndedStyle = {
+  background: 'rgba(148, 163, 184, 0.14)',
+  border: '1px solid rgba(148, 163, 184, 0.18)',
+  color: '#475569',
+};
+
+const teamPayrollDaysStripWrapStyle = {
+  display: 'grid',
+  gap: 6,
+  minWidth: 0,
+  position: 'relative',
+  zIndex: 3,
+};
+
+const teamPayrollDaysStripStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(28px, 1fr))',
+  gap: 3,
+  alignItems: 'center',
+  position: 'relative',
+  zIndex: 3,
+  padding: 6,
+  borderRadius: 10,
+  border: '1px solid rgba(31, 41, 55, 0.08)',
+  background: 'rgba(255, 255, 255, 0.98)',
+  overflow: 'hidden',
+};
+
+const employeePayrollDaysStripStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(31, minmax(20px, 1fr))',
+  gap: 3,
+  alignItems: 'center',
+};
+
+const teamPayrollDayButtonStyle = {
+  minWidth: 0,
+  height: 24,
+  padding: 0,
+  borderRadius: 6,
+  border: '1px solid rgba(31, 41, 55, 0.12)',
+  background: '#ffffff',
+  color: '#374151',
+  fontSize: 10,
+  fontWeight: 800,
+  lineHeight: '22px',
+  cursor: 'pointer',
+};
+
+const teamPayrollHolidayDayStyle = {
+  background: '#fee2e2',
+  border: '1px solid #fecaca',
+  color: '#991b1b',
+};
+
+const teamPayrollDisabledDayStyle = {
+  background: 'repeating-linear-gradient(135deg, #f3f4f6 0, #f3f4f6 4px, #e5e7eb 4px, #e5e7eb 7px)',
+  border: '1px solid #d1d5db',
+  color: '#9ca3af',
+  cursor: 'not-allowed',
+  textDecoration: 'line-through',
+  opacity: 0.78,
+};
+
+const teamPayrollSelectedDayStyle = {
+  background: '#4f46e5',
+  border: '1px solid #4338ca',
+  color: '#ffffff',
+  boxShadow: '0 4px 10px rgba(79, 70, 229, 0.22)',
+};
+
+const teamReportActionBarStyle = {
+  display: 'flex',
+  justifyContent: 'flex-end',
+  gap: 10,
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  padding: '4px 0 6px',
 };
 
 const checkboxLabelStyle = {

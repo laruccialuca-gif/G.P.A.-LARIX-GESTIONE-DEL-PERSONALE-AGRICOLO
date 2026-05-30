@@ -58,12 +58,52 @@ const NO_DOC_MESSAGE =
 const INITIAL_FILTERS = {
   datore: 'TUTTI',
   team: 'TUTTI',
-  status: 'TUTTI',
+  status: 'ATTIVO',
   training: 'TUTTI',
   medical: 'TUTTI',
   search: '',
   // bonus: extension points for future filters (period, status, ...)
 };
+
+const STATUS_FILTER_OPTIONS = [
+  { value: 'ATTIVO', label: 'Attivi' },
+  { value: 'CHIUSO_ANTICIPO', label: 'Chiusi in anticipo' },
+  { value: 'CESSATO', label: 'Cessati / Contratto scaduto' },
+];
+
+function getRelationshipStatusFilterValue(employee) {
+  const status = String(employee?.status || '').trim().toLowerCase();
+  const reason = String(employee?.archive_reason || '').trim().toLowerCase();
+  const closureType = String(employee?.closure_type || '').trim().toLowerCase();
+  const contractType = String(employee?.contract_type || '').trim().toLowerCase();
+  const terminationDate = String(employee?.early_termination_date || '').trim();
+  const contractEndDate = String(employee?.hire_date_to || '').trim();
+
+  let result = 'ATTIVO';
+  if (!employee?.is_deleted && !terminationDate && status === 'attivo') {
+    result = 'ATTIVO';
+  } else if (closureType === 'manual_early' || reason === 'early_termination') {
+    result = 'CHIUSO_ANTICIPO';
+  } else if (closureType === 'natural_expiry' || reason === 'contract_end' || reason === 'expired_contract_auto') {
+    result = 'CESSATO';
+  } else if (reason === 'permanent_contract_ended' || contractType === 'tempo_indeterminato') {
+    result = terminationDate ? 'CHIUSO_ANTICIPO' : 'CESSATO';
+  } else if (employee?.is_deleted || status !== 'attivo') {
+    result = 'CESSATO';
+  }
+
+  console.info(
+    '[operai-assunti-filter] employee_id=%s status=%s termination_date=%s contract_end_date=%s archive_reason=%s closure_type=%s result=%s',
+    employee?.id ?? '',
+    employee?.status ?? '',
+    terminationDate,
+    contractEndDate,
+    employee?.archive_reason ?? '',
+    employee?.closure_type ?? '',
+    result
+  );
+  return result;
+}
 
 function isPastDate(value) {
   if (!value) return false;
@@ -126,7 +166,7 @@ function matchEmployeeFilter(employee, filters) {
     const list = employee.team_history || [];
     if (!list.some((t) => String(t.team_id) === wanted)) return false;
   }
-  if (filters.status !== 'TUTTI' && (employee.status || '') !== filters.status) {
+  if (filters.status !== 'TUTTI' && getRelationshipStatusFilterValue(employee) !== filters.status) {
     return false;
   }
   if (!matchesComplianceFilter(employee, 'training', filters.training)) {
@@ -251,6 +291,7 @@ export default function OperaiAssuntiPage() {
     try {
       const __empT0 = __nowMs();
       const employeesPromise = window.api.employees.listBasic({
+        includeDeleted: true,
         includePeriods: true,
         includeTeamHistory: true,
         includeHireDocFlag: true,
@@ -299,13 +340,7 @@ export default function OperaiAssuntiPage() {
       String(a.name || '').localeCompare(String(b.name || ''), 'it', { sensitivity: 'base' }),
     );
   }, [teams]);
-  const statusOptions = useMemo(() => {
-    return [...new Set(
-      employees
-        .map((employee) => String(employee.status || '').trim())
-        .filter(Boolean)
-    )].sort((a, b) => a.localeCompare(b, 'it', { sensitivity: 'base' }));
-  }, [employees]);
+  const statusOptions = STATUS_FILTER_OPTIONS;
 
   const filteredIds = useMemo(() => filtered.map((e) => e.id), [filtered]);
   const selectedFilteredCount = useMemo(
@@ -359,7 +394,8 @@ export default function OperaiAssuntiPage() {
       parts.push('Squadra: TUTTE');
     }
     if (filters.status && filters.status !== 'TUTTI') {
-      parts.push(`Stato: ${filters.status}`);
+      const status = STATUS_FILTER_OPTIONS.find((option) => option.value === filters.status);
+      parts.push(`Stato: ${status?.label || filters.status}`);
     }
     if (filters.training && filters.training !== 'TUTTI') {
       parts.push(`Formazione: ${getComplianceFilterLabel(filters.training)}`);
@@ -564,7 +600,7 @@ export default function OperaiAssuntiPage() {
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:18px; margin-bottom:18px;">
           <div>
             <div style="font-size:11px; font-weight:900; letter-spacing:0.08em; text-transform:uppercase; color:#14532d;">Richiesta consulente</div>
-            <div style="margin-top:8px; font-size:25px; line-height:1.12; font-weight:900;">Richiesta chiusura anticipata operai</div>
+            <div style="margin-top:8px; font-size:25px; line-height:1.12; font-weight:900;">Richiesta chiusura rapporto operai</div>
             <div style="margin-top:6px; font-size:13px; color:#475569;">${escapeHtml(settings?.company?.document_header || settings?.company?.name || 'GPA 1.0.5')}</div>
           </div>
           <div style="min-width:250px; border:1px solid #dbe4dd; border-radius:16px; padding:12px 14px; background:#f8fbf7;">
@@ -576,7 +612,7 @@ export default function OperaiAssuntiPage() {
 
         <div style="border:1px solid #dbe4dd; border-radius:18px; padding:14px 16px; background:#ffffff; margin-bottom:16px;">
           <p style="margin:0; font-size:13px; line-height:1.55; color:#334155;">
-            Con la presente si richiede la chiusura anticipata dei rapporti di lavoro dei seguenti operai agricoli a decorrere dalla data indicata.
+            Con la presente si richiede la chiusura/cessazione dei rapporti di lavoro dei seguenti operai agricoli a decorrere dalla data indicata.
           </p>
         </div>
 
@@ -634,7 +670,7 @@ export default function OperaiAssuntiPage() {
       return null;
     }
     if (!earlyClosureDate) {
-      alert('Inserisci la data di chiusura anticipata.');
+      alert('Inserisci la data di chiusura rapporto.');
       return null;
     }
 
@@ -660,7 +696,7 @@ export default function OperaiAssuntiPage() {
       return;
     }
     if (!earlyClosureDate) {
-      alert('Inserisci la data di chiusura anticipata.');
+      alert('Inserisci la data di chiusura rapporto.');
       return;
     }
 
@@ -679,7 +715,7 @@ export default function OperaiAssuntiPage() {
     setEarlyClosureGenerating(true);
     try {
       await window.api.reports.savePdf({
-        fileName: `richiesta-chiusura-anticipata-operai-${earlyClosureDate}.pdf`,
+        fileName: `richiesta-chiusura-rapporto-operai-${earlyClosureDate}.pdf`,
         html: buildEarlyClosurePdfHtml(list, earlyClosureDate, earlyClosureNotes),
         landscape: true,
       });
@@ -983,7 +1019,7 @@ export default function OperaiAssuntiPage() {
               disabled={!hasSelection || earlyClosureGenerating}
               title={hasSelection ? `Richiedi chiusura per ${selectedCount} operai` : 'Seleziona almeno un operaio'}
             >
-              {earlyClosureGenerating ? 'Generazione...' : `Operai da chiudere (${selectedCount})`}
+              {earlyClosureGenerating ? 'Generazione...' : `Chiudi rapporto (${selectedCount})`}
             </button>
           </div>
         </section>
@@ -1043,8 +1079,8 @@ export default function OperaiAssuntiPage() {
             >
               <option value="TUTTI">Tutti gli stati</option>
               {statusOptions.map((status) => (
-                <option key={status} value={status}>
-                  {status}
+                <option key={status.value} value={status.value}>
+                  {status.label}
                 </option>
               ))}
             </select>
@@ -1290,7 +1326,7 @@ export default function OperaiAssuntiPage() {
           >
             <div className="modal-header">
               <div>
-                <h2>Chiusura anticipata contratto</h2>
+                <h2>Chiusura / cessazione rapporto</h2>
                 <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: 13 }}>
                   Scegli se stampare solo l'elenco oppure chiudere davvero e archiviare gli operai selezionati.
                 </p>
@@ -1307,7 +1343,7 @@ export default function OperaiAssuntiPage() {
 
             <div style={{ display: 'grid', gap: 14 }}>
               <label style={{ display: 'grid', gap: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 800 }}>Data chiusura anticipata *</span>
+                <span style={{ fontSize: 12, fontWeight: 800 }}>Data chiusura rapporto *</span>
                 <input
                   type="date"
                   value={earlyClosureDate}

@@ -71,6 +71,40 @@ const MESI_NOMI = [
   'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'
 ];
 
+function formatWorkedTimeLabel(days, residualHours) {
+  const safeDays = Number(days || 0);
+  const safeHours = Number(residualHours || 0);
+  const dayLabel = `${Number.isInteger(safeDays) ? safeDays : safeDays.toLocaleString('it-IT', { maximumFractionDigits: 2 })} gg`;
+
+  if (safeHours <= 0) {
+    return dayLabel;
+  }
+
+  return `${dayLabel} + ${safeHours.toLocaleString('it-IT', { maximumFractionDigits: 2 })} h`;
+}
+
+function normalizeSelectedPayrollDays(value) {
+  let source = value;
+  if (typeof source === 'string') {
+    const text = source.trim();
+    if (!text) {
+      source = [];
+    } else {
+      try {
+        source = JSON.parse(text);
+      } catch {
+        source = text.split(/[,\s;]+/);
+      }
+    }
+  }
+  if (!Array.isArray(source)) return [];
+  return [...new Set(
+    source
+      .map((day) => Number(day))
+      .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31)
+  )].sort((a, b) => a - b);
+}
+
 /**
  * Build the render-ready data object for EmployeeReportTemplate.html.
  * All economic calculations must be pre-computed by the caller.
@@ -92,13 +126,13 @@ function buildEmployeeReportData(input) {
 
   const { kpi, compenso, dipendente } = input;
 
-  const ggEq       = kpi.giornateEquivalenti;
   const tariffa    = dipendente.dailyRate;
   const otRate     = dipendente.overtimeRate;
-  const ggEqFmt    = ggEq.toLocaleString('it-IT', { maximumFractionDigits: 2 });
   const tariffaFmt = tariffa.toLocaleString('it-IT', { minimumFractionDigits: 2 });
   const otRateFmt  = otRate.toLocaleString('it-IT', { minimumFractionDigits: 2 });
   const otHFmt     = kpi.straordinari.toLocaleString('it-IT', { maximumFractionDigits: 1 });
+  const workedTimeLabel = formatWorkedTimeLabel(kpi.giornateIntere, kpi.oreResidue);
+  const selectedPayrollDays = normalizeSelectedPayrollDays(compenso.bustaPaga.selectedPayrollDays ?? compenso.bustaPaga.selected_payroll_days);
 
   const totalCredits =
     compenso.retribuzione +
@@ -113,7 +147,7 @@ function buildEmployeeReportData(input) {
     compenso.rate.importo;
 
   return {
-    brand:      input.squadra.toLowerCase(),
+    brand:      '',
     squadra:    input.squadra,
     generatoDa: input.generatoDa,
     periodo: {
@@ -139,12 +173,12 @@ function buildEmployeeReportData(input) {
       oreResidue:         kpi.oreResidue,
       oreTotali:          kpi.oreTotali,
       straordinari:       kpi.straordinari,
-      giornateEquivalenti: ggEq,
+      giornateEquivalenti: kpi.giornateEquivalenti,
       compensoLordo:      kpi.compensoLordo
     },
     compenso: {
       retribuzione:         compenso.retribuzione,
-      retribuzioneNote:     ggEqFmt + ' gg × € ' + tariffaFmt,
+      retribuzioneNote:     workedTimeLabel + ' · tariffa € ' + tariffaFmt,
       straordinariImporto:  compenso.straordinariImporto,
       straordinariNote:     otHFmt + ' h × € ' + otRateFmt,
       regalo:               compenso.regalo,
@@ -152,6 +186,9 @@ function buildEmployeeReportData(input) {
       creditoPrecedente:    compenso.creditoPrecedente,
       totalCredits,
       bustaPaga:            compenso.bustaPaga,
+      selectedPayrollDays,
+      selectedPayrollDaysLabel: selectedPayrollDays.length ? selectedPayrollDays.join(', ') : '',
+      showSelectedPayrollDaysInReport: !!compenso.bustaPaga.showSelectedPayrollDaysInReport,
       acconti:              compenso.acconti,
       rate:                 compenso.rate,
       totalDebits,
@@ -244,7 +281,13 @@ if (require.main === module) {
       regalo:              0,
       trasporto:           10.00,
       creditoPrecedente:   0,
-      bustaPaga: { importo: 337.98, giornate: 6, note: 'acconto busta mag.' },
+      bustaPaga: {
+        importo: 337.98,
+        giornate: 6,
+        note: 'acconto busta mag.',
+        selectedPayrollDays: [8, 11, 12, 13, 14, 18],
+        showSelectedPayrollDaysInReport: true,
+      },
       acconti:   { importo: 150.00, count: 1 },
       rate:      { importo: 0,      note: 'nessuna rata' },
       saldoFinale:         242.02,

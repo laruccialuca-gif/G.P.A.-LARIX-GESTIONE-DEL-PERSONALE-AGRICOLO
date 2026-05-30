@@ -83,6 +83,33 @@ function getEmployeeLabel(employee) {
     || `${employee?.first_name || ''} ${employee?.last_name || ''}`.trim();
 }
 
+function getEmployeeTeamHistory(employee) {
+  return Array.isArray(employee?.team_history) ? employee.team_history : [];
+}
+
+function employeeBelongsToTeam(employee, teamId) {
+  if (!teamId) return true;
+  return getEmployeeTeamHistory(employee).some((entry) => String(entry?.team_id) === String(teamId));
+}
+
+function getEmployeeHireDate(employee) {
+  const currentPeriod = (employee?.employment_periods || []).find((period) => period?.is_current);
+  const firstPeriod = Array.isArray(employee?.employment_periods) ? employee.employment_periods[0] : null;
+  return (
+    employee?.hire_date_from ||
+    employee?.hire_date ||
+    employee?.start_date ||
+    employee?.contract_start_date ||
+    employee?.data_assunzione ||
+    employee?.assunzione ||
+    currentPeriod?.hire_date_from ||
+    currentPeriod?.start_date ||
+    firstPeriod?.hire_date_from ||
+    firstPeriod?.start_date ||
+    ''
+  );
+}
+
 function compareEmployees(a, b) {
   const lastCompare = normalizeSortText(a?.last_name).localeCompare(
     normalizeSortText(b?.last_name),
@@ -378,6 +405,8 @@ export default function PrintDocumentsPage() {
     payrollPaymentStatus: '',
   });
   const [printEmployeeSearch, setPrintEmployeeSearch] = useState('');
+  const [attendanceDayTeamFilter, setAttendanceDayTeamFilter] = useState('');
+  const [includeAttendanceDayHireDates, setIncludeAttendanceDayHireDates] = useState(false);
   const [selectedPrintEmployeeIds, setSelectedPrintEmployeeIds] = useState([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [printPreview, setPrintPreview] = useState(null);
@@ -387,6 +416,14 @@ export default function PrintDocumentsPage() {
     [employees]
   );
   const sortedTeams = useMemo(() => [...teams].sort(compareTeams), [teams]);
+  const employeesById = useMemo(
+    () => new Map(sortedEmployees.map((employee) => [Number(employee.id), employee])),
+    [sortedEmployees]
+  );
+  const attendanceDayTeamOptions = useMemo(
+    () => sortedTeams.filter((team) => !team.is_archived),
+    [sortedTeams]
+  );
   const selectedCategory = useMemo(() => getCategoryById(selectedCategoryId), [selectedCategoryId]);
   const selectedType = useMemo(() => getPrintTypeById(selectedTypeId), [selectedTypeId]);
 
@@ -407,7 +444,7 @@ export default function PrintDocumentsPage() {
     setLoading(true);
     try {
       const [employeesData, teamsData, settingsData] = await Promise.all([
-        window.api.employees.listBasic(),
+        window.api.employees.listBasic({ includeTeamHistory: true }),
         window.api.teams.list({ includeArchived: true }),
         window.api.settings.get(),
       ]);
@@ -507,12 +544,19 @@ export default function PrintDocumentsPage() {
     documentsFilters.uploadDate,
   ]);
 
+  const printSearchBaseEmployees = useMemo(() => {
+    if (selectedType?.id !== 'attendance-day' || !attendanceDayTeamFilter) {
+      return sortedEmployees;
+    }
+    return sortedEmployees.filter((employee) => employeeBelongsToTeam(employee, attendanceDayTeamFilter));
+  }, [attendanceDayTeamFilter, selectedType?.id, sortedEmployees]);
+
   const printSearchResults = useMemo(() => {
     const query = normalizeSortText(printEmployeeSearch);
     if (!query) {
-      return sortedEmployees.slice(0, 16);
+      return printSearchBaseEmployees.slice(0, 16);
     }
-    return sortedEmployees
+    return printSearchBaseEmployees
       .filter((employee) => {
         const haystack = [
           getEmployeeLabel(employee),
@@ -524,7 +568,7 @@ export default function PrintDocumentsPage() {
         return haystack.includes(query);
       })
       .slice(0, 30);
-  }, [printEmployeeSearch, sortedEmployees]);
+  }, [printEmployeeSearch, printSearchBaseEmployees]);
 
   const selectedPrintEmployees = useMemo(
     () => sortedEmployees.filter((employee) => selectedPrintEmployeeIds.includes(Number(employee.id))),
@@ -575,6 +619,14 @@ export default function PrintDocumentsPage() {
     setSelectedPrintEmployeeIds([]);
   }
 
+  function updateAttendanceDayTeamFilter(teamId) {
+    setAttendanceDayTeamFilter(teamId);
+    if (!teamId) return;
+    setSelectedPrintEmployeeIds((current) =>
+      current.filter((employeeId) => employeeBelongsToTeam(employeesById.get(Number(employeeId)), teamId))
+    );
+  }
+
   function buildSelectionMeta() {
     if (!selectedType) return [];
     const meta = [
@@ -591,6 +643,16 @@ export default function PrintDocumentsPage() {
     if (selectedType.filters.includes('teamId') && printFilters.teamId) {
       const team = sortedTeams.find((item) => Number(item.id) === Number(printFilters.teamId));
       meta.push({ label: 'Squadra', value: team?.name || '-' });
+    }
+    if (selectedType.id === 'attendance-day' && attendanceDayTeamFilter) {
+      const team = sortedTeams.find((item) => Number(item.id) === Number(attendanceDayTeamFilter));
+      meta.push({ label: 'Squadra dipendenti', value: team?.name || '-' });
+    }
+    if (selectedType.id === 'attendance-day') {
+      meta.push({
+        label: 'Date assunzione',
+        value: includeAttendanceDayHireDates ? 'Incluse' : 'Non incluse',
+      });
     }
     if (selectedType.filters.includes('balanceStatus') && printFilters.balanceStatus) {
       meta.push({ label: 'Stato saldo', value: getBalanceStatusLabel(printFilters.balanceStatus) });
@@ -738,9 +800,24 @@ export default function PrintDocumentsPage() {
           const [year, month] = String(printFilters.date).split('-');
           const rows = await window.api.attendance.listByMonth(Number(year), Number(month));
           let filtered = rows.filter((row) => normalizeDateKey(row.date) === normalizeDateKey(printFilters.date));
+          if (attendanceDayTeamFilter) {
+            filtered = filtered.filter((row) =>
+              employeeBelongsToTeam(employeesById.get(Number(row.employee_id)), attendanceDayTeamFilter)
+            );
+          }
           if (selectedPrintEmployeeIds.length) {
             filtered = filtered.filter((row) => selectedPrintEmployeeIds.includes(Number(row.employee_id)));
           }
+          const attendanceDayColumns = [
+            { label: 'Dipendente', key: 'employee', align: 'left' },
+            ...(includeAttendanceDayHireDates
+              ? [{ label: 'Assunzione', key: 'hireDate', align: 'center' }]
+              : []),
+            { label: 'Mansione', key: 'role', align: 'left' },
+            { label: 'Stato', key: 'status', align: 'center' },
+            { label: 'Ore', key: 'hours', align: 'right' },
+            { label: 'Straordinario', key: 'overtime', align: 'right' },
+          ];
 
           nextPreview = {
             status: 'ready',
@@ -752,20 +829,18 @@ export default function PrintDocumentsPage() {
               { label: 'Data', value: formatDate(printFilters.date) },
               { label: 'Righe', value: String(filtered.length) },
             ],
-            columns: [
-              { label: 'Dipendente', key: 'employee', align: 'left' },
-              { label: 'Mansione', key: 'role', align: 'left' },
-              { label: 'Stato', key: 'status', align: 'center' },
-              { label: 'Ore', key: 'hours', align: 'right' },
-              { label: 'Straordinario', key: 'overtime', align: 'right' },
-            ],
-            rows: filtered.map((row) => ({
-              employee: `${row.last_name || ''} ${row.first_name || ''}`.trim(),
-              role: row.role || '-',
-              status: String(row.status || '').trim() || 'Presente',
-              hours: formatNumber(row.hours_worked),
-              overtime: formatNumber(row.overtime_hours),
-            })),
+            columns: attendanceDayColumns,
+            rows: filtered.map((row) => {
+              const employee = employeesById.get(Number(row.employee_id));
+              return {
+                employee: `${row.last_name || ''} ${row.first_name || ''}`.trim(),
+                hireDate: formatDate(getEmployeeHireDate(employee)),
+                role: row.role || '-',
+                status: String(row.status || '').trim() || 'Presente',
+                hours: formatNumber(row.hours_worked),
+                overtime: formatNumber(row.overtime_hours),
+              };
+            }),
           };
           break;
         }
@@ -1269,6 +1344,8 @@ export default function PrintDocumentsPage() {
     printFilters.teamId,
     printFilters.balanceStatus,
     printFilters.payrollPaymentStatus,
+    attendanceDayTeamFilter,
+    includeAttendanceDayHireDates,
     selectedPrintEmployeeIds,
   ]);
 
@@ -1416,6 +1493,34 @@ export default function PrintDocumentsPage() {
           </div>
           {modeLabel ? <span className="soft-chip">{modeLabel}</span> : null}
         </div>
+
+        {selectedType.id === 'attendance-day' ? (
+          <div className="print-hub-employee-options">
+            <label className="print-hub-field">
+              <span>Squadra</span>
+              <select
+                value={attendanceDayTeamFilter}
+                onChange={(event) => updateAttendanceDayTeamFilter(event.target.value)}
+              >
+                <option value="">Tutte le squadre</option>
+                {attendanceDayTeamOptions.map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="print-hub-checkbox-option">
+              <input
+                type="checkbox"
+                checked={includeAttendanceDayHireDates}
+                onChange={(event) => setIncludeAttendanceDayHireDates(event.target.checked)}
+              />
+              <span>Includi date di assunzione</span>
+            </label>
+          </div>
+        ) : null}
 
         <label className="print-hub-field print-hub-field--search">
           <span>Cerca dipendente</span>

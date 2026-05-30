@@ -22,6 +22,7 @@ function AttendanceRow({
   cells,
   totalHoursLabel,
   summaryLabel,
+  summaryTitle,
   isCompactLayout,
   isWriteBlocked,
   activeMarkers,
@@ -198,7 +199,7 @@ function AttendanceRow({
       })}
 
       <td style={tdStyleRightHoursCurrent}>{totalHoursLabel}</td>
-      <td style={tdStyleRightSummaryCurrent}>{summaryLabel}</td>
+      <td style={tdStyleRightSummaryCurrent} title={summaryTitle || summaryLabel}>{summaryLabel}</td>
     </tr>
   );
 }
@@ -268,6 +269,7 @@ function arePropsEqualImpl(prev, next) {
   if (prev.isSelected !== next.isSelected) return false;
   if (prev.totalHoursLabel !== next.totalHoursLabel) return false;
   if (prev.summaryLabel !== next.summaryLabel) return false;
+  if (prev.summaryTitle !== next.summaryTitle) return false;
   if (prev.isCompactLayout !== next.isCompactLayout) return false;
   if (prev.isWriteBlocked !== next.isWriteBlocked) return false;
   if (prev.todayKey !== next.todayKey) return false;

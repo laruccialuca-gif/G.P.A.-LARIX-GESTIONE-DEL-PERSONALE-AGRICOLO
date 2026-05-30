@@ -7,6 +7,7 @@ const { renderTeamReportHtml } = require('../src/main/print/printTemplate');
 
 const OUTPUT_DIR = path.resolve(__dirname, '../diagnostics');
 const OUTPUT_PDF = path.join(OUTPUT_DIR, 'team-report-template-test.pdf');
+const OUTPUT_HTML = path.join(OUTPUT_DIR, 'team-report-template-test.html');
 
 async function createPdfBuffer(html) {
   const win = new BrowserWindow({
@@ -19,7 +20,9 @@ async function createPdfBuffer(html) {
     },
   });
 
-  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  fs.writeFileSync(OUTPUT_HTML, html, 'utf8');
+  await win.loadFile(OUTPUT_HTML);
   await new Promise((resolve) => setTimeout(resolve, 250));
   const buffer = await win.webContents.printToPDF({
     printBackground: true,
@@ -40,10 +43,10 @@ app.whenReady().then(async () => {
   try {
     const payload = buildMockLeonoraTeamReportData();
     const html = renderTeamReportHtml(payload);
-    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
     const pdfBuffer = await createPdfBuffer(html);
     fs.writeFileSync(OUTPUT_PDF, pdfBuffer);
     console.log(`[team-report-template-test] pdf=${OUTPUT_PDF}`);
+    console.log(`[team-report-template-test] html=${OUTPUT_HTML}`);
     console.log(`[team-report-template-test] finalBalance=${payload.economics.finalBalanceLabel}`);
     await app.quit();
   } catch (error) {

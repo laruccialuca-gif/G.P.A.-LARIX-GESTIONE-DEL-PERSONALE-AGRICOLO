@@ -16,6 +16,31 @@ function formatHeadcountSummary(value) {
   return `${normalized} gg`;
 }
 
+function formatHeadcountPresenceSummary(value) {
+  const safeValue = Number(value || 0);
+  if (safeValue <= 0) {
+    return '0 pres.';
+  }
+  const normalized = Number.isInteger(safeValue)
+    ? String(safeValue)
+    : safeValue.toFixed(2).replace(/\.?0+$/, '');
+  return `${normalized} pres.`;
+}
+
+function formatEquivalentDaysSummary(totalHours, standardHours) {
+  const safeHours = Number(totalHours || 0);
+  const safeStandardHours = Number(standardHours || 0);
+  if (safeHours <= 0 || safeStandardHours <= 0) {
+    return '0 gg eq.';
+  }
+
+  const equivalentDays = safeHours / safeStandardHours;
+  const normalized = Number.isInteger(equivalentDays)
+    ? String(equivalentDays)
+    : equivalentDays.toFixed(2).replace(/\.?0+$/, '');
+  return `${normalized} gg eq.`;
+}
+
 function __nowMs() {
   return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 }
@@ -328,10 +353,13 @@ function AttendanceTable(props) {
 
               const totalHoursLabel = formatHoursValue(totals.totalHours, attendanceSettings.hoursFormat);
               const summaryLabel = totals.isHeadcountMode
-                ? formatHeadcountSummary(totals.totalHeadcount)
+                ? `${formatHeadcountPresenceSummary(totals.totalHeadcount)} • ${formatEquivalentDaysSummary(totals.totalHours, attendanceSettings.baseHours)}`
                 : isCompactLayout
                 ? formatCompactWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat)
                 : formatWorkedSummary(totals.totalHours, attendanceSettings.baseHours, attendanceSettings.hoursFormat);
+              const summaryTitle = totals.isHeadcountMode
+                ? `Presenze uomo: ${formatHeadcountPresenceSummary(totals.totalHeadcount)} • Giornate equivalenti: ${formatEquivalentDaysSummary(totals.totalHours, attendanceSettings.baseHours)} su giornata standard ${attendanceSettings.baseHours}h`
+                : summaryLabel;
               const isSelected = selectedEmployeeIds.includes(employeeId);
 
               items.push(
@@ -348,6 +376,7 @@ function AttendanceTable(props) {
                   cells={cells}
                   totalHoursLabel={totalHoursLabel}
                   summaryLabel={summaryLabel}
+                  summaryTitle={summaryTitle}
                   isCompactLayout={isCompactLayout}
                   isWriteBlocked={isWriteBlocked}
                   activeMarkers={activeMarkers}

@@ -31,7 +31,7 @@
 }
 
 html, body{
-  font-family: "Roboto", system-ui, Helvetica, Arial, sans-serif;
+  font-family: "Helvetica Neue", Arial, sans-serif;
   color: var(--ink);
   background: #d4d4d4;
   -webkit-font-smoothing: antialiased;
@@ -42,14 +42,14 @@ html, body{
 
 .page{
   width: 210mm;
-  height: 297mm;
+  height: 295.5mm;
   background: var(--bg);
-  padding: 10mm 11mm 9mm;
-  margin: 20px auto;
+  padding: 7.5mm 8.5mm 6mm;
+  margin: 0 auto;
   box-shadow: 0 6px 30px rgba(0,0,0,.12);
-  display: grid;
-  grid-template-rows: auto auto auto auto auto auto auto;
-  row-gap: 4mm;
+  display: flex;
+  flex-direction: column;
+  gap: 3mm;
   font-size: 8.5pt;
   line-height: 1.3;
   overflow: hidden;
@@ -60,18 +60,20 @@ html, body{
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 16mm;
+  gap: 6mm;
   border-bottom: 1px solid var(--line);
-  padding-bottom: 4mm;
+  padding-bottom: 2.2mm;
 }
 .header .brand{
-  font-size: 19pt; font-style: italic; font-weight: 300; letter-spacing: -.5px;
+  width: 0;
+  overflow: hidden;
+  font-size: 0;
 }
 .header .title{ text-align: center; }
 .header .title .t1{ font-size: 12pt; font-weight: 500; line-height: 1; letter-spacing: -.2px; }
 .header .title .t2{
-  font-size: 8pt; color: var(--ink-3);
-  text-transform: uppercase; letter-spacing: .14em; margin-top: 2mm;
+  font-size: 7.2pt; color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: .14em; margin-top: 1mm;
 }
 .header .meta{
   text-align: right; font-size: 7.5pt; color: var(--ink-3);
@@ -85,24 +87,24 @@ html, body{
 /* ---- IDENTITY STRIP ---- */
 .identity{
   display: grid;
-  grid-template-columns: 1.4fr 1fr;
-  gap: 4mm;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 3.4mm;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 3mm;
-  padding: 3.5mm 4mm;
+  padding: 2.1mm 2.6mm;
 }
 .id-label{
   font-size: 6.5pt; text-transform: uppercase; letter-spacing: .14em;
   color: var(--ink-3); font-weight: 500;
 }
 .id-name{
-  font-size: 15pt; font-weight: 700; letter-spacing: -.3px;
+  font-size: 13.2pt; font-weight: 700; letter-spacing: -.3px;
   margin-top: .5mm; line-height: 1.1;
 }
 .id-meta{
   display: flex; flex-wrap: wrap; gap: 2mm;
-  margin-top: 2mm;
+  margin-top: 1mm;
 }
 .chip{
   display: inline-flex; align-items: center;
@@ -121,9 +123,9 @@ html, body{
 .chip.status-partial{ background: #ededed; color: var(--ink); border-color: var(--ink-3); }
 
 .id-right .rate{
-  display: flex; flex-direction: column; gap: 1.5mm;
+  display: flex; flex-direction: column; gap: 1.1mm;
   border-left: 1px solid var(--line);
-  padding-left: 4mm;
+  padding-left: 3.2mm;
   height: 100%;
   justify-content: center;
 }
@@ -143,9 +145,9 @@ html, body{
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 3mm;
-  padding: 3mm 3.5mm;
+  padding: 2.2mm 2.4mm;
   display: flex; flex-direction: column;
-  gap: 1.2mm; min-height: 22mm;
+  gap: .8mm; min-height: 22mm;
   justify-content: space-between;
 }
 .kpi .label{
@@ -153,9 +155,9 @@ html, body{
   color: var(--ink-3); font-weight: 500;
 }
 .kpi .value{
-  font-size: 19pt; line-height: 1; font-weight: 500; letter-spacing: -.5px;
+  font-size: 14pt; line-height: 1.05; font-weight: 600; letter-spacing: -.45px;
 }
-.kpi .note{ font-size: 6.8pt; color: var(--ink-2); line-height: 1.3; }
+.kpi .note{ font-size: 6.2pt; color: var(--ink-2); line-height: 1.28; }
 .kpi.accent{ background: var(--ink); color: #ffffff; border-color: var(--ink); }
 .kpi.accent .label, .kpi.accent .note{ color: rgba(255,255,255,.75); }
 .kpi.accent .note strong{ color: #ffffff; }
@@ -163,9 +165,9 @@ html, body{
 /* ---- SECTION HEAD ---- */
 .sec-head{
   display: flex; justify-content: space-between; align-items: baseline;
-  padding-bottom: 1.5mm;
+  padding-bottom: 1.1mm;
   border-bottom: 1px solid var(--line);
-  margin-bottom: 1.5mm;
+  margin-bottom: 1.1mm;
 }
 .sec-head h2{
   font-size: 7pt; text-transform: uppercase; letter-spacing: .18em;
@@ -178,13 +180,13 @@ html, body{
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 3mm;
-  padding: 3mm;
+  padding: 2.4mm;
 }
 .cal-grid{
   display: grid;
-  grid-template-columns: 7mm repeat(7, 1fr);
-  grid-auto-rows: 17mm;
-  gap: 1.2mm;
+  grid-template-columns: 7mm repeat(7, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 16.2mm);
+  gap: 1mm;
 }
 .cal-head{
   font-size: 6.2pt; text-transform: uppercase; letter-spacing: .08em;
@@ -199,8 +201,8 @@ html, body{
   background: var(--empty);
   border: 1px solid var(--line-2);
   border-radius: 1.5mm;
-  padding: 1.2mm 1.5mm;
-  display: flex; flex-direction: column; gap: .3mm;
+  padding: 1mm 1.4mm;
+  display: flex; flex-direction: column; gap: .35mm;
   position: relative; min-height: 0; overflow: hidden;
 }
 .day.outside{ background: transparent; border-color: transparent; }
@@ -211,10 +213,14 @@ html, body{
 /* worked day */
 .day.worked{ background: #fff; border-color: var(--line); }
 .day.worked .hrs{
-  font-size: 6.8pt; color: var(--ink-2); margin-top: 1mm;
+  display: flex;
+  align-items: baseline;
+  gap: 1.5mm;
+  font-size: 7pt; color: var(--ink-2); margin-top: .9mm;
+  white-space: nowrap;
 }
 .day.worked .hrs strong{
-  color: var(--ink); font-weight: 700; font-size: 10pt; letter-spacing: -.3px;
+  color: var(--ink); font-weight: 700; font-size: 10.2pt; letter-spacing: -.3px;
 }
 .day.worked .task{
   margin-top: auto;
@@ -225,6 +231,14 @@ html, body{
 }
 .day.worked .task.overtime{
   color: var(--ink); font-weight: 700;
+}
+.day.worked .extra{
+  display: inline;
+  color: var(--ink);
+  font-size: 7.8pt;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
 }
 .day.worked::before{
   content:""; position:absolute; left:0; top:0; bottom:0;
@@ -253,31 +267,36 @@ html, body{
 /* legend */
 .legend{
   display: flex; flex-wrap: wrap; gap: 4mm;
-  padding-top: 2mm; margin-top: 2mm;
+  padding-top: 1.5mm; margin-top: 1.5mm;
   border-top: 1px dashed var(--line);
   font-size: 6.2pt; color: var(--ink-2);
   align-items: center;
 }
 .legend .item{ display: flex; align-items: center; gap: 1.5mm; }
 .legend .sw{
-  width: 10px; height: 10px; border-radius: 2px;
+  width: 8px; height: 8px; border-radius: 2px;
   background: #fff; border: 1px solid var(--line);
   position: relative; overflow: hidden;
 }
 .legend .sw.worked::before{
   content:""; position:absolute; left:0; top:0; bottom:0; width: 2.5px; background: var(--accent);
 }
-.legend .sw.overtime{ background: var(--ink); border-color: var(--ink); }
+.legend .sw.overtime{ display: none; }
 .legend .sw.absent{ background: var(--absent-bg); }
 .legend .sw.rest{ background: var(--rest); }
+.legend .legend-extra{
+  color: var(--ink);
+  font-weight: 700;
+  font-style: italic;
+}
 
 /* ---- TWO COLUMN ---- */
 .two-col{
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 4mm;
+  gap: 3mm;
 }
-.col{ display: flex; flex-direction: column; gap: 3mm; min-height: 0; }
+.col{ display: flex; flex-direction: column; gap: 2.4mm; min-height: 0; }
 
 .breakdown{
   background: var(--panel);
@@ -287,13 +306,13 @@ html, body{
 }
 .row{
   display: grid; grid-template-columns: 1fr auto;
-  gap: 4mm; padding: 2mm 3mm;
+  gap: 3mm; padding: 1.55mm 2.4mm;
   align-items: center;
   border-bottom: 1px solid var(--line-2);
 }
 .row:last-child{ border-bottom: none; }
 .row .lhs .title{ font-weight: 600; font-size: 8pt; }
-.row .lhs .sub{ font-size: 6.5pt; color: var(--ink-3); margin-top: .3mm; }
+.row .lhs .sub{ font-size: 6.2pt; color: var(--ink-3); margin-top: .2mm; }
 .row .amt{ font-size: 10pt; font-weight: 500; white-space: nowrap; }
 .row.subtotal{
   background: #ededed;
@@ -313,13 +332,13 @@ html, body{
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 3mm;
-  padding: 3mm 3.5mm;
+  padding: 1.8mm 2.3mm;
   display: flex; flex-direction: column;
 }
 .notes .sec-head{ border-bottom: 1px dashed var(--line); padding-bottom: 1mm; margin-bottom: 1.5mm; }
 .notes-body{
-  font-size: 7.5pt; color: var(--ink-2); line-height: 1.45;
-  min-height: 10mm;
+  font-size: 7pt; color: var(--ink-2); line-height: 1.35;
+  min-height: 7mm;
 }
 
 /* ---- FOOTER ---- */
@@ -327,7 +346,7 @@ html, body{
   font-size: 6pt; color: var(--ink-3);
   display: flex; justify-content: space-between;
   letter-spacing: .04em;
-  padding-top: 1.5mm;
+  padding-top: 1.1mm;
   border-top: 1px solid var(--line);
 }
 
@@ -335,7 +354,3 @@ html, body{
   html, body{ background: white; }
   .page{ margin: 0; box-shadow: none; }
 }
-
-@media (max-width: 880px){ .page{ transform: scale(0.85); transform-origin: top center; } }
-@media (max-width: 760px){ .page{ transform: scale(0.7); } }
-@media (max-width: 640px){ .page{ transform: scale(0.5); } }

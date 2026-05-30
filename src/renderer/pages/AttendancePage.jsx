@@ -836,11 +836,14 @@ export default function AttendancePage() {
   const mountedRef = useRef(false);
   const flushRetryTimeoutRef = useRef(null);
   const previewScrollTimeoutRef = useRef(null);
+  const autosaveTimerRef = useRef(null);
   const cellEditorPresenceInputRef = useRef(null);
   const cellEditorHoursInputRef = useRef(null);
   const cellEditorOvertimeInputRef = useRef(null);
   const cellEditorMarkerSelectRef = useRef(null);
   const cellEditorSaveButtonRef = useRef(null);
+  const cellEditorOverlayRef = useRef(null);
+  const cellEditorDialogRef = useRef(null);
 
   const daysInMonth = useMemo(() => getMonthDays(currentMonth), [currentMonth]);
   const dayKeys = useMemo(() => daysInMonth.map((day) => formatDate(day)), [daysInMonth]);
@@ -851,11 +854,15 @@ export default function AttendancePage() {
   const currentMonthKey = monthString(currentMonth);
   const pendingChangesRef = useRef({});
   const isSavingRef = useRef(false);
+  const isFlushRunningRef = useRef(false);
+  const autosaveScheduledRef = useRef(false);
   const statusTimeoutRef = useRef(null);
   const bulkFeedbackTimeoutRef = useRef(null);
   const [licenseStatus, setLicenseStatus] = useState(null);
   const isWriteBlockedRef = useRef(false);
   const lastLicenseErrorRef = useRef(0);
+  const isCellEditorOpen = !!selectedCellKey;
+  const isAnyAttendanceModalOpen = isCellEditorOpen || showQuickEntry;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -873,6 +880,9 @@ export default function AttendancePage() {
       }
       if (previewScrollTimeoutRef.current) {
         clearTimeout(previewScrollTimeoutRef.current);
+      }
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
       }
       console.info('[route-lifecycle] leave', { page: 'attendance' });
     };
@@ -1078,17 +1088,61 @@ export default function AttendancePage() {
     const pendingCount = Object.keys(pendingChanges).length;
     if (!pendingCount) {
       console.info('[attendance-perf] autosave-effect:skip', { reason: 'no-pending' });
+      autosaveScheduledRef.current = false;
+      return undefined;
+    }
+
+    if (isAnyAttendanceModalOpen) {
+      console.info('[attendance-perf] autosave-effect:skip', {
+        reason: 'modal-open',
+        pendingCount,
+        selectedCellKey,
+        showQuickEntry,
+      });
+      console.info('[attendance-modal-debug]', {
+        isOpen: isCellEditorOpen,
+        readOnly: !!isWriteBlockedRef.current,
+        disabled: false,
+        activeElement:
+          typeof document !== 'undefined'
+            ? `${document.activeElement?.tagName || ''}:${document.activeElement?.getAttribute?.('type') || ''}`
+            : '',
+        autosaveScheduled: autosaveScheduledRef.current,
+        flushRunning: isFlushRunningRef.current,
+      });
+      autosaveScheduledRef.current = false;
       return undefined;
     }
 
     console.info('[attendance-perf] autosave-effect:scheduled', { pendingCount });
-    const timer = setTimeout(() => {
+    autosaveScheduledRef.current = true;
+    autosaveTimerRef.current = setTimeout(() => {
+      autosaveScheduledRef.current = false;
       console.info('[attendance-perf] autosave-effect:firing', { pendingCount: Object.keys(pendingChangesRef.current).length });
       flushPendingChanges();
     }, 500);
 
+    return () => {
+      autosaveScheduledRef.current = false;
+      if (autosaveTimerRef.current) {
+        clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+  }, [isAnyAttendanceModalOpen, isCellEditorOpen, pendingChanges, selectedCellKey, showQuickEntry]);
+
+  useEffect(() => {
+    if (isAnyAttendanceModalOpen) {
+      return undefined;
+    }
+    if (!Object.keys(pendingChangesRef.current).length || isSavingRef.current || ATTENDANCE_DIAG.disableAutosaveWrite) {
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      flushPendingChanges();
+    }, 120);
     return () => clearTimeout(timer);
-  }, [pendingChanges]);
+  }, [isAnyAttendanceModalOpen]);
 
   useEffect(() => () => {
     if (statusTimeoutRef.current) {
@@ -1851,6 +1905,53 @@ export default function AttendancePage() {
     cellEditorPresenceInputRef.current?.select();
   }, [selectedCellKey]);
 
+  useEffect(() => {
+    if (!isCellEditorOpen) {
+      return undefined;
+    }
+
+    const logModalDebugState = () => {
+      const overlayStyle = cellEditorOverlayRef.current ? window.getComputedStyle(cellEditorOverlayRef.current) : null;
+      const dialogStyle = cellEditorDialogRef.current ? window.getComputedStyle(cellEditorDialogRef.current) : null;
+      const activeElement =
+        typeof document !== 'undefined'
+          ? `${document.activeElement?.tagName || ''}:${document.activeElement?.getAttribute?.('type') || ''}`
+          : '';
+      console.info('[attendance-modal-debug]', {
+        isOpen: true,
+        readOnly: !!isWriteBlockedRef.current,
+        disabled: false,
+        activeElement,
+        pointerEvents: {
+          overlay: overlayStyle?.pointerEvents || '',
+          dialog: dialogStyle?.pointerEvents || '',
+          presence: cellEditorPresenceInputRef.current ? window.getComputedStyle(cellEditorPresenceInputRef.current).pointerEvents : '',
+          overtime: (cellEditorOvertimeInputRef.current || cellEditorHoursInputRef.current)
+            ? window.getComputedStyle(cellEditorOvertimeInputRef.current || cellEditorHoursInputRef.current).pointerEvents
+            : '',
+        },
+        zIndex: {
+          overlay: overlayStyle?.zIndex || '',
+          dialog: dialogStyle?.zIndex || '',
+        },
+        autosaveScheduled: autosaveScheduledRef.current,
+        flushRunning: isFlushRunningRef.current,
+      });
+    };
+
+    const rafId = window.requestAnimationFrame(() => {
+      logModalDebugState();
+    });
+    const timeoutId = window.setTimeout(() => {
+      logModalDebugState();
+    }, 250);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.clearTimeout(timeoutId);
+    };
+  }, [isCellEditorOpen]);
+
   const focusNextCellEditorControl = useStableCallback((currentTarget) => {
     const orderedControls = selectedCellData?.isHeadcountMode
       ? [
@@ -2494,7 +2595,8 @@ export default function AttendancePage() {
     }, 1200);
   }
 
-  async function flushPendingChanges() {
+  async function flushPendingChanges(options = {}) {
+    const { force = false } = options;
     const diagToken = diagStart('flushPendingChanges');
     const __flushT0 = getPerfNow();
     let __buildPayloadMs = 0;
@@ -2518,7 +2620,24 @@ export default function AttendancePage() {
       return;
     }
 
+    if (!force && isAnyAttendanceModalOpen) {
+      diagEnd(diagToken, { skipped: true, reason: 'modal-open' });
+      console.info('[attendance-modal-debug]', {
+        isOpen: isCellEditorOpen,
+        readOnly: !!isWriteBlockedRef.current,
+        disabled: false,
+        activeElement:
+          typeof document !== 'undefined'
+            ? `${document.activeElement?.tagName || ''}:${document.activeElement?.getAttribute?.('type') || ''}`
+            : '',
+        autosaveScheduled: autosaveScheduledRef.current,
+        flushRunning: isFlushRunningRef.current,
+      });
+      return;
+    }
+
     isSavingRef.current = true;
+    isFlushRunningRef.current = true;
     if (mountedRef.current) {
       setSaveState('saving');
     }
@@ -2709,11 +2828,12 @@ export default function AttendancePage() {
       });
       isSavingRef.current = false;
 
-      if (!ATTENDANCE_DIAG.disableAutosaveWrite && !isWriteBlockedRef.current && Object.keys(pendingChangesRef.current).length > 0) {
+      if (!ATTENDANCE_DIAG.disableAutosaveWrite && !isWriteBlockedRef.current && !isAnyAttendanceModalOpen && Object.keys(pendingChangesRef.current).length > 0) {
         flushRetryTimeoutRef.current = setTimeout(() => {
           flushPendingChanges();
         }, 100);
       }
+      isFlushRunningRef.current = false;
     }
   }
 
@@ -3774,10 +3894,17 @@ export default function AttendancePage() {
       />
 
       {selectedCellData ? (
-        <div className="modal-overlay" onClick={handleCloseCellEditor}>
+        <div
+          ref={cellEditorOverlayRef}
+          className="modal-overlay"
+          onClick={handleCloseCellEditor}
+          style={{ pointerEvents: 'auto', zIndex: 1000 }}
+        >
           <div
+            ref={cellEditorDialogRef}
             className="modal-dialog attendance-cell-editor"
             onClick={(event) => event.stopPropagation()}
+            style={{ pointerEvents: 'auto', position: 'relative', zIndex: 1001 }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && event.target.tagName !== 'TEXTAREA') {
                 event.preventDefault();
@@ -3819,6 +3946,7 @@ export default function AttendancePage() {
                     : attendanceSettings?.inputMode === 'hours_and_symbol'
                     ? attendanceSettings.quickSymbol
                     : 'Ore'}
+                  style={{ pointerEvents: 'auto' }}
                 />
               </label>
 
@@ -3831,6 +3959,7 @@ export default function AttendancePage() {
                     value={cellEditorValues.overtime}
                     onChange={(event) => setCellEditorValues((current) => ({ ...current, overtime: event.target.value }))}
                     placeholder="es. 7 o 1,5"
+                    style={{ pointerEvents: 'auto' }}
                   />
                 </label>
               ) : (
@@ -3842,6 +3971,7 @@ export default function AttendancePage() {
                     value={cellEditorValues.overtime}
                     onChange={(event) => setCellEditorValues((current) => ({ ...current, overtime: event.target.value }))}
                     placeholder="Ore"
+                    style={{ pointerEvents: 'auto' }}
                   />
                 </label>
               )}
@@ -3853,6 +3983,7 @@ export default function AttendancePage() {
                     ref={cellEditorMarkerSelectRef}
                     value={cellEditorValues.marker}
                     onChange={(event) => setCellEditorValues((current) => ({ ...current, marker: event.target.value }))}
+                    style={{ pointerEvents: 'auto' }}
                   >
                     <option value="">Nessun marker</option>
                     {activeMarkers.map((marker) => (
@@ -3890,6 +4021,7 @@ export default function AttendancePage() {
                   value={cellEditorValues.notes}
                   onChange={(event) => setCellEditorValues((current) => ({ ...current, notes: event.target.value }))}
                   placeholder="Aggiungi note"
+                  style={{ pointerEvents: 'auto' }}
                 />
               </label>
             </div>

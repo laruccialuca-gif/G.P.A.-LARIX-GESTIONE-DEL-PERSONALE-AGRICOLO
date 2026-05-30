@@ -170,6 +170,7 @@ contextBridge.exposeInMainWorld('api', {
     deleteAdvance: (id) => ipcRenderer.invoke('teamPayroll:deleteAdvance', id),
     setAdvancesImported: (ids, includeInReport) => ipcRenderer.invoke('teamPayroll:setAdvancesImported', ids, includeInReport),
     getReportRecord: (teamId, month) => ipcRenderer.invoke('teamPayroll:getReportRecord', teamId, month),
+    listReportRecords: (options) => ipcRenderer.invoke('teamPayroll:listReportRecords', options),
     saveReportRecord: (payload) => ipcRenderer.invoke('teamPayroll:saveReportRecord', payload),
     listPayrollComponents: (teamId, month) => ipcRenderer.invoke('teamPayroll:listPayrollComponents', teamId, month),
     createPayrollComponent: (payload) => ipcRenderer.invoke('teamPayroll:createPayrollComponent', payload),
@@ -178,12 +179,18 @@ contextBridge.exposeInMainWorld('api', {
     replacePayrollComponents: (teamId, month, items) => ipcRenderer.invoke('teamPayroll:replacePayrollComponents', teamId, month, items),
   },
 
+  reportAutoNotes: {
+    getByMonth: (month) => ipcRenderer.invoke('reportAutoNotes:getByMonth', month),
+  },
+
   communications: {
     list: (options) => ipcRenderer.invoke('communications:list', options),
     getById: (id) => ipcRenderer.invoke('communications:getById', id),
+    getByMonth: (monthReference) => ipcRenderer.invoke('communications:getByMonth', monthReference),
     save: (payload) => ipcRenderer.invoke('communications:save', payload),
     delete: (id) => ipcRenderer.invoke('communications:delete', id),
     openFile: (id, type) => ipcRenderer.invoke('communications:openFile', id, type),
+    generateSelectedPdf: (id, selectedEmployeeIds) => ipcRenderer.invoke('communications:generateSelectedPdf', id, selectedEmployeeIds),
     sendEmail: (id, options) => ipcRenderer.invoke('communications:sendEmail', id, options),
     listContacts: () => ipcRenderer.invoke('communications:listContacts'),
     saveContact: (payload) => ipcRenderer.invoke('communications:saveContact', payload),
@@ -241,11 +248,13 @@ contextBridge.exposeInMainWorld('api', {
   teamReport: {
     previewTemplate: (payload) => ipcRenderer.invoke('teamReport:previewTemplate', payload),
     generatePdfTemplate: (payload) => ipcRenderer.invoke('teamReport:generatePdfTemplate', payload),
+    printTemplate: (payload) => ipcRenderer.invoke('teamReport:printTemplate', payload),
   },
 
   employeeReport: {
     previewTemplate: (payload) => ipcRenderer.invoke('employeeReport:previewTemplate', payload),
     generatePdfTemplate: (payload) => ipcRenderer.invoke('employeeReport:generatePdfTemplate', payload),
+    printTemplate: (payload) => ipcRenderer.invoke('employeeReport:printTemplate', payload),
   },
 
   printDocuments: {

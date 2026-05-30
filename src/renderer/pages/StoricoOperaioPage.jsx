@@ -57,6 +57,176 @@ function formatHours(value) {
   return Number.isInteger(hours) ? `${hours} h` : `${hours.toFixed(2).replace('.', ',')} h`;
 }
 
+function normalizeHistoryAttendanceEntry(item) {
+  const rawHours = item?.hours_worked;
+  const markerCode = item?.marker_code ? String(item.marker_code).trim().toUpperCase() : null;
+  const computedStatus =
+    item?.status ||
+    (rawHours === '' || rawHours === null || rawHours === undefined
+      ? 'presente'
+      : Number(rawHours || 0) === 0
+      ? 'assente'
+      : 'presente');
+  const hoursWorked =
+    rawHours === '' ||
+    rawHours === null ||
+    rawHours === undefined ||
+    (Number(rawHours || 0) === 0 && computedStatus === 'presente' && markerCode)
+      ? ''
+      : Number(rawHours || 0);
+
+  return {
+    ...item,
+    status: computedStatus,
+    marker_code: markerCode,
+    entry_code: item?.entry_code ? String(item.entry_code).trim().toUpperCase() : null,
+    hours_worked: hoursWorked,
+    overtime_hours: Number(item?.overtime_hours || 0),
+    notes: item?.notes || null,
+  };
+}
+
+function parseMonthReference(monthStr) {
+  const [year, month] = String(monthStr || '').split('-').map(Number);
+  if (!year || !month) return null;
+  return { year, month };
+}
+
+function buildHistoryEmployeeTemplateSource(record, attendanceRows = []) {
+  const snapshot = getSnapshot(record) || {};
+  const monthInfo = parseMonthReference(record?.month);
+  if (!record?.employee_id || !monthInfo) {
+    return null;
+  }
+
+  const periodStart = `${monthInfo.year}-${String(monthInfo.month).padStart(2, '0')}-01`;
+  const periodEnd = `${monthInfo.year}-${String(monthInfo.month).padStart(2, '0')}-${new Date(monthInfo.year, monthInfo.month, 0).getDate()}`;
+  const employeeName = getHistoryEmployeeName(record.employee || {});
+  const markerLabel = record.datore || record.employee?.role || snapshot.markerLabel || 'Presenza';
+  const totalHours = Number((snapshot.totalHours ?? record.ore_totali) || 0);
+  const totalOvertimeHours = Number(snapshot.totalOvertimeHours || 0);
+  const totalRegularHours = Number(
+    snapshot.totalRegularHours ??
+      Math.max(totalHours - totalOvertimeHours, 0)
+  );
+  const standardHours = Number(record.employee?.standard_hours || snapshot.standardHours || 7) || 7;
+  const fullDays = Math.floor(totalRegularHours / standardHours);
+  const residualHours = Number((totalRegularHours - fullDays * standardHours).toFixed(2));
+  const paymentSummary = getRecordPaymentSummary(record, snapshot);
+  const installmentsTotal = getCurrentInstallmentsTotal(record, snapshot);
+  const currentInstallmentsTotal = Number((snapshot.current_installments_total ?? installmentsTotal) || 0);
+  const rawSelectedDays =
+    snapshot.selected_payroll_days ??
+    snapshot.selected_payroll_days_json ??
+    record.selected_payroll_days ??
+    record.selected_payroll_days_json ??
+    [];
+  const selectedPayrollDays = Array.isArray(rawSelectedDays)
+    ? rawSelectedDays
+    : (() => {
+        try {
+          return JSON.parse(rawSelectedDays || '[]');
+        } catch {
+          return [];
+        }
+      })();
+
+  const presenze = attendanceRows
+    .filter((row) => Number(row.employee_id) === Number(record.employee_id))
+    .map((row) => {
+      const normalized = normalizeHistoryAttendanceEntry(row);
+      const dayNumber = Number(String(normalized.date || '').split('-')[2] || 0);
+      if (!dayNumber) return null;
+      if (normalized.status === 'assente') {
+        return { data: dayNumber, tipo: 'absent' };
+      }
+      const regularHours = Number(normalized.hours_worked || 0);
+      const overtimeHours = Number(normalized.overtime_hours || 0);
+      const hasMarker = !!(normalized.marker_code || normalized.entry_code);
+      if (regularHours > 0 || overtimeHours > 0 || hasMarker) {
+        return {
+          data: dayNumber,
+          tipo: 'worked',
+          ore: regularHours > 0 ? regularHours : (overtimeHours > 0 ? overtimeHours : standardHours),
+          overtimeHours,
+          task: normalized.marker_code || normalized.entry_code || markerLabel,
+          isOvertime: overtimeHours > 0,
+        };
+      }
+      return { data: dayNumber, tipo: 'absent' };
+    })
+    .filter(Boolean);
+
+  const normalizedPayrollStatus = String(record.payroll_payment_status || '').trim().toLowerCase() === 'pagato'
+    ? 'paid'
+    : 'unpaid';
+  const payrollStatusLabel = normalizedPayrollStatus === 'paid' ? 'Pagato' : 'Non pagato';
+  const totalCalculatedPay = Number((snapshot.totalCalculatedPay ?? record.retribuzione_calcolata) || 0);
+  const totalOvertimePay = Number(snapshot.totalOvertimePay || 0);
+  const totalRegularPay = Number(snapshot.totalRegularPay ?? Math.max(totalCalculatedPay - totalOvertimePay, 0));
+
+  return {
+    employeeId: record.employee_id,
+    squadra: markerLabel,
+    generatoDa: 'GPA 1.0.5',
+    periodo: {
+      inizioISO: periodStart,
+      fineISO: periodEnd,
+    },
+    dipendente: {
+      nome: employeeName,
+      ruolo: record.employee?.role || 'Nessuna mansione',
+      markerLabel,
+      markerLegendLabel: markerLabel,
+      paymentStatus: normalizedPayrollStatus,
+      paymentStatusLabel: payrollStatusLabel,
+      dailyRate: Number(record.employee?.daily_pay || snapshot.payslip_simulator?.daily_amount || 0),
+      overtimeRate: Number(snapshot.overtimeHourlyRate || 0),
+      standardHours,
+    },
+    kpi: {
+      giornateIntere: Number(record.giornate_effettuate || snapshot.workedDays || 0),
+      oreResidue: residualHours,
+      oreTotali: totalHours,
+      straordinari: totalOvertimeHours,
+      giornateEquivalenti: standardHours > 0 ? Number((totalRegularHours / standardHours).toFixed(2)) : 0,
+      compensoLordo: totalRegularPay,
+    },
+    compenso: {
+      retribuzione: totalRegularPay,
+      straordinariImporto: totalOvertimePay,
+      regalo: Number(record.regalo_importo || snapshot.regalo_importo || 0),
+      trasporto: Number(record.totale_trasporto || snapshot.trasporto_totale || 0),
+      creditoPrecedente: Math.max(Number(record.resto_precedente || snapshot.resto_precedente || 0), 0),
+      bustaPaga: {
+        importo: Number(record.importo_busta_paga || snapshot.importoBustaPaga || 0),
+        giornate: Number(record.giornate_busta_paga || snapshot.giornateBustaPaga || 0),
+        selectedPayrollDays,
+        showSelectedPayrollDaysInReport: !!(
+          snapshot.show_selected_payroll_days_in_report ?? record.show_selected_payroll_days_in_report
+        ),
+        note: [
+          payrollStatusLabel,
+          getPayrollPaymentMethodLabel(record.payroll_payment_method),
+          record.payroll_payment_date ? formatDateOnly(record.payroll_payment_date) : '',
+        ].filter(Boolean).join(' - '),
+      },
+      acconti: {
+        importo: Number(record.acconti || 0),
+        count: Array.isArray(record.advances) ? record.advances.length : 0,
+      },
+      rate: {
+        importo: currentInstallmentsTotal + Math.abs(Math.min(Number(record.resto_precedente || snapshot.resto_precedente || 0), 0)),
+        note: currentInstallmentsTotal > 0 ? 'Rate del mese' : (Number(record.resto_precedente || snapshot.resto_precedente || 0) < 0 ? 'Debito precedente riportato' : 'nessuna rata'),
+      },
+      saldoFinale: Number(paymentSummary.residual || 0),
+      balanceStatusLabel: paymentSummary.label || 'Non pagato',
+    },
+    presenze,
+    note: String(record.balance_notes || snapshot.note || '').trim(),
+  };
+}
+
 function getPayrollPaymentStatusLabel(status) {
   const normalized = String(status || '').trim().toLowerCase();
   if (normalized && normalized !== 'non_pagato') return 'Pagato';
@@ -143,6 +313,27 @@ function buildHistoryDetail(record) {
   }
 
   return parts.join(' • ');
+}
+
+function isMeaningfulHistoryHtmlSnapshot(html, record) {
+  const text = String(html || '').trim();
+  if (!text || text.length < 1200) {
+    return false;
+  }
+
+  const normalized = text.toLowerCase();
+  const employeeName = getHistoryEmployeeName(record?.employee || {}).toLowerCase();
+  const monthLabel = formatMonth(record?.month || '').toLowerCase();
+  const hasEmployee = employeeName && employeeName !== 'dipendente' ? normalized.includes(employeeName) : false;
+  const hasMonth = monthLabel ? normalized.includes(monthLabel) : false;
+  const hasMoney = normalized.includes('€') || normalized.includes('&euro;');
+  const placeholderCount = (text.match(/---/g) || []).length;
+  const hasEmptyState =
+    normalized.includes('nessuna anteprima') ||
+    normalized.includes('empty-state') ||
+    normalized.includes('caricamento');
+
+  return !hasEmptyState && hasMoney && (hasEmployee || hasMonth) && placeholderCount < 20;
 }
 
 function getIpcRecoveryMessage(error, fallbackMessage) {
@@ -309,6 +500,8 @@ export default function StoricoOperaioPage() {
   const navigate = useNavigate();
   const { selectedYear, yearOptions } = useYearContext();
   const [records, setRecords] = useState([]);
+  const [teamRecords, setTeamRecords] = useState([]);
+  const [viewMode, setViewMode] = useState('all');
   const [loading, setLoading] = useState(true);
   const [busyRecordId, setBusyRecordId] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -327,6 +520,9 @@ export default function StoricoOperaioPage() {
   const [previewPaymentStatus, setPreviewPaymentStatus] = useState('non_pagato');
   const [previewPaymentDateInput, setPreviewPaymentDateInput] = useState('');
   const [previewPartialPaidAmount, setPreviewPartialPaidAmount] = useState('');
+  const [previewTemplateHtml, setPreviewTemplateHtml] = useState('');
+  const [previewTemplateStatus, setPreviewTemplateStatus] = useState('idle');
+  const [previewTemplateError, setPreviewTemplateError] = useState('');
   const [updatingPaymentStatus, setUpdatingPaymentStatus] = useState(false);
   const [showArchivedSlots, setShowArchivedSlots] = useState(false);
   const [expandedMonths, setExpandedMonths] = useState(() => new Set());
@@ -406,6 +602,21 @@ export default function StoricoOperaioPage() {
         setHistoryTotal(Number(data?.total || 0));
       }
 
+      try {
+        if (typeof window.api.teamPayroll?.listReportRecords === 'function') {
+          const teamData = await window.api.teamPayroll.listReportRecords({
+            year: historyYearFilter,
+            month: normalizedMonth,
+          });
+          setTeamRecords(Array.isArray(teamData) ? teamData : []);
+        } else {
+          setTeamRecords([]);
+        }
+      } catch (teamErr) {
+        console.error('Storico squadre: caricamento report squadra non riuscito.', teamErr);
+        setTeamRecords([]);
+      }
+
       const totalDuration = performance.now() - loadStartTime;
       console.log(`[storico-perf] loadHistory end: ${Math.round(totalDuration)}ms total`);
 
@@ -477,6 +688,45 @@ export default function StoricoOperaioPage() {
     });
     return [...values].sort((a, b) => a.localeCompare(b, 'it', { sensitivity: 'base' }));
   }, [records]);
+
+  const filteredTeamRecords = useMemo(() => {
+    const query = deferredSearch.trim().toLowerCase();
+    return teamRecords.filter((record) => {
+      if (!showArchivedSlots && record.archived_at) {
+        return false;
+      }
+      if (employerFilter !== 'all' && String(record.employer_key || '') !== employerFilter) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      const haystack = [
+        record.team_name,
+        record.employer_key,
+        formatMonth(record.month),
+        record.note,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [teamRecords, deferredSearch, showArchivedSlots, employerFilter]);
+
+  const teamHistorySummary = useMemo(() => {
+    return filteredTeamRecords.reduce(
+      (summary, record) => {
+        summary.reportCount += 1;
+        summary.totalHours += Number(record.total_hours || 0);
+        summary.totalDays += Number(record.equivalent_days || 0);
+        summary.totalCompensation += Number(record.gross_compensation || 0);
+        summary.teamIds.add(Number(record.team_id));
+        return summary;
+      },
+      { reportCount: 0, totalHours: 0, totalDays: 0, totalCompensation: 0, teamIds: new Set() }
+    );
+  }, [filteredTeamRecords]);
 
   const filteredRecords = useMemo(() => {
     const filterStartTime = performance.now();
@@ -768,29 +1018,45 @@ export default function StoricoOperaioPage() {
       return;
     }
 
-    const paymentDate = formatLocalDate(new Date());
-    const partialPaidAmount =
+    const grossBalanceAbs = Math.abs(Number(previewPaymentSummary?.grossBalance || 0));
+    const paymentDate = previewPaymentDateInput || new Date().toISOString().slice(0, 10);
+    const normalizedPartialPaidAmount = Math.min(previewPartialPaidAmountNum, grossBalanceAbs);
+    const resolvedStatus =
       previewPaymentStatus === 'parziale'
-        ? Math.min(previewPartialPaidAmountNum, Math.abs(previewPaymentSummary?.grossBalance || 0))
-        : previewPaymentStatus === 'saldato'
-        ? Math.abs(previewPaymentSummary?.grossBalance || 0)
+        ? normalizedPartialPaidAmount >= grossBalanceAbs
+          ? 'saldato'
+          : 'parziale'
+        : previewPaymentStatus;
+    const partialPaidAmount =
+      resolvedStatus === 'parziale'
+        ? normalizedPartialPaidAmount
+        : resolvedStatus === 'saldato'
+        ? grossBalanceAbs
         : 0;
     const remainingBalance =
-      previewPaymentStatus === 'saldato'
+      resolvedStatus === 'saldato'
         ? 0
-        : previewPaymentStatus === 'parziale'
-        ? previewResidualAmount
+        : resolvedStatus === 'parziale'
+        ? Math.sign(previewPaymentSummary?.grossBalance || 1) * Math.max(grossBalanceAbs - normalizedPartialPaidAmount, 0)
         : Number(previewPaymentSummary?.grossBalance || 0);
 
     setUpdatingPaymentStatus(true);
     try {
       const updatedRecord = await window.api.payroll.updatePaymentStatus(
         previewRecord.id,
-        previewPaymentStatus,
+        resolvedStatus,
         paymentDate,
         partialPaidAmount,
         remainingBalance
       );
+      console.info('[history-balance-update]', {
+        id: previewRecord.id,
+        requestedStatus: previewPaymentStatus,
+        savedStatus: resolvedStatus,
+        partialPaidAmount,
+        remainingBalance,
+      });
+      setPreviewPaymentStatus(resolvedStatus);
       setPreviewPaymentDateInput(paymentDate);
       setPreviewRecord(updatedRecord || previewRecord);
       await loadHistory();
@@ -821,6 +1087,49 @@ export default function StoricoOperaioPage() {
     } catch (err) {
       console.error(err);
       alert('Errore stampa report storico');
+    }
+  }
+
+  function buildTeamReportFileName(record) {
+    const safeTeam = String(record.team_name || 'squadra').replace(/[\\/:*?"<>|]/g, '').trim() || 'squadra';
+    return `Report-Squadra-${safeTeam}-${record.month}.pdf`;
+  }
+
+  async function handleOpenTeamLinkedReport(record) {
+    navigate(`/report?team=${record.team_id}&month=${record.month}`);
+  }
+
+  async function handlePrintTeamSnapshot(record) {
+    if (!record?.report_html_snapshot) {
+      alert('Questo report squadra non ha una stampa salvata. Riapri e salva il report per generarla.');
+      return;
+    }
+    try {
+      await window.api.reports.printHtml({
+        html: record.report_html_snapshot,
+        fileName: buildTeamReportFileName(record),
+        landscape: true,
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Errore stampa report squadra');
+    }
+  }
+
+  async function handleExportTeamSnapshot(record) {
+    if (!record?.report_html_snapshot) {
+      alert('Questo report squadra non ha una stampa salvata. Riapri e salva il report per generarla.');
+      return;
+    }
+    try {
+      await window.api.reports.savePdf({
+        html: record.report_html_snapshot,
+        fileName: buildTeamReportFileName(record),
+        landscape: true,
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Errore esportazione PDF report squadra');
     }
   }
 
@@ -1053,6 +1362,14 @@ export default function StoricoOperaioPage() {
   }
 
   const previewPaymentSummary = previewRecord ? getRecordPaymentSummary(previewRecord) : null;
+  const previewHtmlSnapshotValid = useMemo(
+    () => isMeaningfulHistoryHtmlSnapshot(previewRecord?.report_html_snapshot, previewRecord),
+    [previewRecord]
+  );
+  const previewSnapshotKeys = useMemo(
+    () => Object.keys(getSnapshot(previewRecord) || {}),
+    [previewRecord]
+  );
   const previewCreditAmount =
     previewPaymentSummary?.grossBalance > 0 ? previewPaymentSummary.originAmount : 0;
   const previewDebtAmount =
@@ -1073,10 +1390,34 @@ export default function StoricoOperaioPage() {
       : previewPaymentSummary.grossBalance;
 
   useEffect(() => {
+    if (!previewRecord) return;
+    const source =
+      previewHtmlSnapshotValid
+        ? 'htmlSnapshot'
+        : previewTemplateStatus === 'ready' && previewTemplateHtml
+        ? 'jsonSnapshot'
+        : previewTemplateStatus === 'loading'
+        ? 'loading'
+        : 'unavailable';
+    console.info('[history-preview]', {
+      recordId: previewRecord.id,
+      monthReference: previewRecord.month,
+      hasHtmlSnapshot: !!previewRecord.report_html_snapshot,
+      htmlLength: String(previewRecord.report_html_snapshot || '').length,
+      hasSnapshotJson: !!getSnapshot(previewRecord),
+      snapshotKeys: previewSnapshotKeys,
+      using: source,
+    });
+  }, [previewHtmlSnapshotValid, previewRecord, previewSnapshotKeys, previewTemplateHtml, previewTemplateStatus]);
+
+  useEffect(() => {
     if (!previewRecord) {
       setPreviewPaymentStatus('non_pagato');
       setPreviewPaymentDateInput('');
       setPreviewPartialPaidAmount('');
+      setPreviewTemplateHtml('');
+      setPreviewTemplateStatus('idle');
+      setPreviewTemplateError('');
       return;
     }
 
@@ -1097,6 +1438,55 @@ export default function StoricoOperaioPage() {
         ? String(nextSummary.partialPaidAmount)
         : ''
     );
+  }, [previewRecord]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPreviewTemplate() {
+      if (!previewRecord?.id || previewRecord?.team_id) {
+        setPreviewTemplateHtml('');
+        setPreviewTemplateStatus('idle');
+        setPreviewTemplateError('');
+        return;
+      }
+
+      setPreviewTemplateStatus('loading');
+      setPreviewTemplateError('');
+      try {
+        const monthInfo = parseMonthReference(previewRecord.month);
+        const attendanceRows = monthInfo
+          ? await window.api.attendance.listByMonth(monthInfo.year, monthInfo.month)
+          : [];
+        const payload = buildHistoryEmployeeTemplateSource(previewRecord, attendanceRows || []);
+        if (!payload) {
+          throw new Error('Dati insufficienti per rigenerare l\'anteprima storica.');
+        }
+        const result = await window.api.employeeReport.previewTemplate(payload);
+        if (cancelled) return;
+        setPreviewTemplateHtml(result?.html || '');
+        setPreviewTemplateStatus(result?.html ? 'ready' : 'error');
+        setPreviewTemplateError(result?.html ? '' : 'Anteprima storica non disponibile');
+        console.info('[history-preview-template]', {
+          recordId: previewRecord.id,
+          month: previewRecord.month,
+          employeeId: previewRecord.employee_id,
+          htmlLength: (result?.html || '').length,
+        });
+      } catch (error) {
+        if (cancelled) return;
+        console.error('[history-preview-template]', error);
+        setPreviewTemplateHtml('');
+        setPreviewTemplateStatus('error');
+        setPreviewTemplateError(error?.message || 'Errore rigenerazione anteprima storica');
+      }
+    }
+
+    loadPreviewTemplate();
+
+    return () => {
+      cancelled = true;
+    };
   }, [previewRecord]);
 
   useEffect(() => {
@@ -1140,6 +1530,11 @@ export default function StoricoOperaioPage() {
           </div>
 
           <div className="toolbar-group history-toolbar-filters">
+            <select value={viewMode} onChange={(e) => setViewMode(e.target.value)} className="history-compact-input" title="Tipo di report da mostrare">
+              <option value="all">Tutti i report</option>
+              <option value="employees">Solo dipendenti</option>
+              <option value="teams">Solo squadre</option>
+            </select>
             <select value={historyYearFilter} onChange={(e) => setHistoryYearFilter(e.target.value)} className="history-compact-input">
               {yearOptions.map((year) => (
                 <option key={year} value={String(year)}>{year}</option>
@@ -1218,6 +1613,8 @@ export default function StoricoOperaioPage() {
             </div>
           ) : null}
 
+          {viewMode !== 'teams' ? (
+          <>
           <div className="stats-grid">
             <StatCard label="Numero report inclusi" value={historySummary.reportCount} />
             <StatCard label="Operai coinvolti" value={uniqueEmployees} />
@@ -1633,6 +2030,18 @@ export default function StoricoOperaioPage() {
               </div>
             </div>
           )}
+          </>
+          ) : null}
+
+          {viewMode !== 'employees' ? (
+            <TeamReportHistorySection
+              records={filteredTeamRecords}
+              summary={teamHistorySummary}
+              onOpenLinked={handleOpenTeamLinkedReport}
+              onPrint={handlePrintTeamSnapshot}
+              onExport={handleExportTeamSnapshot}
+            />
+          ) : null}
         </>
       )}
 
@@ -1657,7 +2066,11 @@ export default function StoricoOperaioPage() {
 
       {previewRecord ? (
         <div className="modal-overlay" onClick={() => setPreviewRecord(null)}>
-          <div className="modal-dialog" style={{ maxWidth: 1240 }} onClick={(event) => event.stopPropagation()}>
+          <div
+            className="modal-dialog"
+            style={{ width: 'min(95vw, 1500px)', maxWidth: 1500, maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}
+            onClick={(event) => event.stopPropagation()}
+          >
             <div className="modal-header">
               <div>
                 <span className="page-kicker">Report processato</span>
@@ -1667,13 +2080,13 @@ export default function StoricoOperaioPage() {
               </div>
               <button type="button" className="modal-close" onClick={() => setPreviewRecord(null)}>×</button>
             </div>
-            {previewRecord.report_html_snapshot ? (
+            {previewHtmlSnapshotValid ? (
               <div className="history-preview-layout">
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   <div style={{ fontSize: 11, color: '#92400e', padding: '5px 10px', background: '#fef3c7', borderRadius: 6, borderLeft: '3px solid #f59e0b', lineHeight: 1.4 }}>
                     Anteprima storica — i valori mostrati qui riflettono il momento del salvataggio.
                   </div>
-                  <div style={{ maxHeight: '68vh', overflow: 'auto', padding: 8, background: '#f8fafc', borderRadius: 16 }}>
+                  <div style={{ maxHeight: '72vh', overflow: 'auto', padding: 8, background: '#f8fafc', borderRadius: 16 }}>
                     <div dangerouslySetInnerHTML={{ __html: previewRecord.report_html_snapshot }} />
                   </div>
                 </div>
@@ -1703,9 +2116,81 @@ export default function StoricoOperaioPage() {
                   setPreviewRecord={setPreviewRecord}
                 />
               </div>
+            ) : previewTemplateStatus === 'ready' && previewTemplateHtml ? (
+              <div className="history-preview-layout">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ fontSize: 11, color: '#92400e', padding: '5px 10px', background: '#fef3c7', borderRadius: 6, borderLeft: '3px solid #f59e0b', lineHeight: 1.4 }}>
+                    Anteprima storica rigenerata con il layout attuale usando i dati salvati del report.
+                  </div>
+                  <div style={{ height: '72vh', padding: 8, background: '#f8fafc', borderRadius: 16, overflow: 'hidden' }}>
+                    <iframe
+                      key={previewRecord?.id || 'history-preview'}
+                      title="Anteprima storica report dipendente"
+                      srcDoc={previewTemplateHtml}
+                      sandbox="allow-same-origin allow-scripts"
+                      style={{ width: '100%', height: '100%', border: 'none', background: '#ffffff', borderRadius: 12 }}
+                    />
+                  </div>
+                </div>
+                <HistoryPreviewSidebar
+                  previewRecord={previewRecord}
+                  previewCreditAmount={previewCreditAmount}
+                  previewDebtAmount={previewDebtAmount}
+                  previewPaymentSummary={previewPaymentSummary}
+                  previewPaymentStatus={previewPaymentStatus}
+                  setPreviewPaymentStatus={setPreviewPaymentStatus}
+                  previewPaymentDateInput={previewPaymentDateInput}
+                  setPreviewPaymentDateInput={setPreviewPaymentDateInput}
+                  previewPartialPaidAmount={previewPartialPaidAmount}
+                  setPreviewPartialPaidAmount={setPreviewPartialPaidAmount}
+                  previewResidualAmount={previewResidualAmount}
+                  handleUpdatePreviewPaymentStatus={handleUpdatePreviewPaymentStatus}
+                  updatingPaymentStatus={updatingPaymentStatus}
+                  busyRecordId={busyRecordId}
+                  handleUploadDocument={handleUploadDocument}
+                  handleOpenDocument={handleOpenDocument}
+                  handleDeleteDocument={handleDeleteDocument}
+                  handleArchiveRecord={handleArchiveRecord}
+                  handleRestoreRecord={handleRestoreRecord}
+                  handleDeleteRecord={handleDeleteRecord}
+                  handleOpenLinkedReport={handleOpenLinkedReport}
+                  handlePrintSnapshot={handlePrintSnapshot}
+                  setPreviewRecord={setPreviewRecord}
+                />
+              </div>
+            ) : previewTemplateStatus === 'loading' ? (
+              <div style={{ display: 'grid', gap: 18 }}>
+                <div className="panel empty-state">Rigenerazione anteprima con il layout attuale...</div>
+                <HistoryPreviewSidebar
+                  previewRecord={previewRecord}
+                  previewCreditAmount={previewCreditAmount}
+                  previewDebtAmount={previewDebtAmount}
+                  previewPaymentSummary={previewPaymentSummary}
+                  previewPaymentStatus={previewPaymentStatus}
+                  setPreviewPaymentStatus={setPreviewPaymentStatus}
+                  previewPaymentDateInput={previewPaymentDateInput}
+                  setPreviewPaymentDateInput={setPreviewPaymentDateInput}
+                  previewPartialPaidAmount={previewPartialPaidAmount}
+                  setPreviewPartialPaidAmount={setPreviewPartialPaidAmount}
+                  previewResidualAmount={previewResidualAmount}
+                  handleUpdatePreviewPaymentStatus={handleUpdatePreviewPaymentStatus}
+                  updatingPaymentStatus={updatingPaymentStatus}
+                  busyRecordId={busyRecordId}
+                  handleUploadDocument={handleUploadDocument}
+                  handleOpenDocument={handleOpenDocument}
+                  handleDeleteDocument={handleDeleteDocument}
+                  handleArchiveRecord={handleArchiveRecord}
+                  handleRestoreRecord={handleRestoreRecord}
+                  handleDeleteRecord={handleDeleteRecord}
+                  handleOpenLinkedReport={handleOpenLinkedReport}
+                  handlePrintSnapshot={handlePrintSnapshot}
+                  setPreviewRecord={setPreviewRecord}
+                  includePrintAction={false}
+                />
+              </div>
             ) : (
               <div style={{ display: 'grid', gap: 18 }}>
-                <div className="panel empty-state">Nessuna anteprima salvata per questo report.</div>
+                <div className="panel empty-state">{previewTemplateError || 'Nessuna anteprima disponibile per questo report.'}</div>
                 <HistoryPreviewSidebar
                   previewRecord={previewRecord}
                   previewCreditAmount={previewCreditAmount}
@@ -1740,6 +2225,130 @@ export default function StoricoOperaioPage() {
     </div>
   );
 }
+
+function formatDaysLabel(value) {
+  const days = Number(value || 0);
+  if (!Number.isFinite(days) || days === 0) return '0 gg';
+  return Number.isInteger(days) ? `${days} gg` : `${days.toFixed(2).replace('.', ',')} gg`;
+}
+
+function TeamReportHistorySection({ records = [], summary, onOpenLinked, onPrint, onExport }) {
+  if (!records.length) {
+    return (
+      <div className="panel empty-state">
+        Nessun report squadra per i filtri attuali.
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel panel-section" style={{ padding: 0, overflow: 'hidden' }}>
+      <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderBottom: '1px solid #f3f4f6' }}>
+        <div style={{ fontWeight: 800, fontSize: 15 }}>
+          Report squadre
+          <span style={{ marginLeft: 8, fontWeight: 500, color: '#64748b', fontSize: 13 }}>
+            {summary?.reportCount || records.length} report · {summary?.teamIds?.size || 0} squadre
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <span className="soft-chip" style={{ background: 'rgba(245, 158, 11, 0.14)', color: '#92400e' }}>
+            Ore totali: {formatHours(summary?.totalHours || 0)}
+          </span>
+          <span className="soft-chip" style={{ background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' }}>
+            Giornate eq.: {formatDaysLabel(summary?.totalDays || 0)}
+          </span>
+          <span className="soft-chip" style={{ background: 'rgba(22, 101, 52, 0.12)', color: '#166534' }}>
+            Retribuzione: {formatCurrency(summary?.totalCompensation || 0)}
+          </span>
+        </div>
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <table className="data-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ background: '#f9fafb', textAlign: 'left' }}>
+              <th style={teamHistoryThStyle}>Mese</th>
+              <th style={teamHistoryThStyle}>Squadra</th>
+              <th style={teamHistoryThStyle}>Datore</th>
+              <th style={{ ...teamHistoryThStyle, textAlign: 'right' }}>Giornate eq.</th>
+              <th style={{ ...teamHistoryThStyle, textAlign: 'right' }}>Ore totali</th>
+              <th style={{ ...teamHistoryThStyle, textAlign: 'right' }}>Retribuzione</th>
+              <th style={{ ...teamHistoryThStyle, textAlign: 'right' }}>Saldo finale</th>
+              <th style={{ ...teamHistoryThStyle, textAlign: 'right' }}>Azioni</th>
+            </tr>
+          </thead>
+          <tbody>
+            {records.map((record) => (
+              <tr key={record.id} style={{ borderTop: '1px solid #f1f5f9', opacity: record.archived_at ? 0.6 : 1 }}>
+                <td style={teamHistoryTdStyle}>{formatMonth(record.month)}</td>
+                <td style={{ ...teamHistoryTdStyle, fontWeight: 700 }}>
+                  {record.team_name || 'Squadra'}
+                  {record.archived_at ? (
+                    <span className="soft-chip" style={{ marginLeft: 8, background: 'rgba(20,33,61,0.08)', color: '#64748b', fontSize: 10 }}>
+                      archiviato
+                    </span>
+                  ) : null}
+                </td>
+                <td style={teamHistoryTdStyle}>{record.employer_key || '—'}</td>
+                <td style={{ ...teamHistoryTdStyle, textAlign: 'right' }}>{formatDaysLabel(record.equivalent_days)}</td>
+                <td style={{ ...teamHistoryTdStyle, textAlign: 'right' }}>{formatHours(record.total_hours)}</td>
+                <td style={{ ...teamHistoryTdStyle, textAlign: 'right', fontWeight: 700 }}>{formatCurrency(record.gross_compensation)}</td>
+                <td style={{ ...teamHistoryTdStyle, textAlign: 'right' }}>{formatCurrency(record.final_balance)}</td>
+                <td style={{ ...teamHistoryTdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <button type="button" className="button-secondary" style={teamHistoryActionStyle} onClick={() => onOpenLinked(record)}>
+                    Apri
+                  </button>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    style={teamHistoryActionStyle}
+                    onClick={() => onPrint(record)}
+                    disabled={!record.has_html_snapshot}
+                    title={record.has_html_snapshot ? 'Stampa il PDF salvato' : 'Nessuna stampa salvata: riapri e salva il report'}
+                  >
+                    Stampa
+                  </button>
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    style={teamHistoryActionStyle}
+                    onClick={() => onExport(record)}
+                    disabled={!record.has_html_snapshot}
+                    title={record.has_html_snapshot ? 'Esporta il PDF salvato' : 'Nessuna stampa salvata: riapri e salva il report'}
+                  >
+                    Esporta PDF
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const teamHistoryThStyle = {
+  padding: '10px 14px',
+  fontSize: 12,
+  fontWeight: 700,
+  color: '#475569',
+  borderBottom: '1px solid #e5e7eb',
+};
+
+const teamHistoryTdStyle = {
+  padding: '10px 14px',
+  fontSize: 13,
+  color: '#1f2937',
+  verticalAlign: 'middle',
+};
+
+const teamHistoryActionStyle = {
+  minHeight: 30,
+  padding: '0 10px',
+  fontSize: 12,
+  marginLeft: 6,
+};
 
 function MiniInfo({ label, value, color = '#111827' }) {
   return (
@@ -1915,9 +2524,9 @@ function HistoryPreviewSidebar({
           <div className="history-preview-control-row">
             <span className="history-preview-control-label">Stato saldo</span>
             <select value={previewPaymentStatus} onChange={(event) => setPreviewPaymentStatus(event.target.value)} style={{ minWidth: 168 }}>
-              <option value="non_pagato">Non pagato</option>
+              <option value="non_pagato">Aperto / Non saldato</option>
               <option value="parziale">Parziale</option>
-              <option value="saldato">Saldato</option>
+              <option value="saldato">Chiuso / Saldato</option>
             </select>
           </div>
           {previewPaymentStatus === 'parziale' ? (

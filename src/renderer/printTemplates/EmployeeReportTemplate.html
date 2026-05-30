@@ -15,7 +15,7 @@
 
   <!-- HEADER -->
   <header class="header">
-    <div class="brand" id="t-brand">—</div>
+    <div class="brand brand-empty" id="t-brand"></div>
     <div class="title">
       <div class="t1">Report mensile dipendente</div>
       <div class="t2">Rendicontazione presenze e compenso</div>
@@ -94,7 +94,7 @@
       </div>
       <div class="legend">
         <div class="item"><span class="sw worked"></span> <span id="t-legend-marker">Presenza</span></div>
-        <div class="item"><span class="sw overtime"></span> Straordinario</div>
+        <div class="item"><span class="legend-extra">+n</span> straordinario</div>
         <div class="item"><span class="sw absent"></span> Assenza</div>
         <div class="item"><span class="sw rest"></span> Riposo</div>
       </div>
@@ -165,7 +165,7 @@ function loadData(data) {
   document.title = 'Report Dipendente · ' + dip.nome + ' · ' + data.periodo.mese;
 
   // --- Header ---
-  el('t-brand').textContent = data.brand;
+  el('t-brand').textContent = '';
   el('t-periodo').textContent = data.periodo.header;
 
   // --- Identity ---
@@ -197,6 +197,8 @@ function loadData(data) {
   el('t-kpi-compenso').textContent = fmtEur(kpi.compensoLordo);
   el('t-kpi-compenso-note').innerHTML =
     kpi.giornateEquivalenti + ' gg × ' + fmtEur(dip.dailyRate);
+
+  el('t-kpi-compenso-note').textContent = '';
 
   // --- Calendar ---
   renderCalendar(data.calendario);
@@ -266,11 +268,13 @@ function renderDay(day) {
 
   // tipo === 'worked'
   div.className = 'day worked';
-  var taskCls = 'task' + (day.isOvertime ? ' overtime' : '');
+  var overtimeHours = Number(day.overtimeHours || 0);
+  var overtimeHtml = overtimeHours > 0
+    ? '<span class="extra">+' + fmtNum(overtimeHours) + '</span>'
+    : '';
   div.innerHTML =
     '<div class="dnum">' + label + '</div>' +
-    '<div class="hrs"><strong>' + day.ore + '</strong> h</div>' +
-    '<div class="' + taskCls + '">' + day.task + '</div>';
+    '<div class="hrs"><span><strong>' + day.ore + '</strong> h</span>' + overtimeHtml + '</div>';
   return div;
 }
 
@@ -361,6 +365,15 @@ function renderBreakdownDebits(compenso) {
     fmtEur(compenso.bustaPaga.importo),
     ''
   ));
+
+  if (compenso.showSelectedPayrollDaysInReport && compenso.selectedPayrollDaysLabel) {
+    bd.appendChild(makeRow(
+      'Date busta',
+      compenso.selectedPayrollDaysLabel,
+      '',
+      ''
+    ));
+  }
 
   // 2. Acconti (only if > 0)
   if (compenso.acconti.importo > 0) {

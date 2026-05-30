@@ -19,15 +19,24 @@ function getAttendanceEmployeeDisplayName(employee) {
   return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
 }
 
-function formatHeadcountSummary(value) {
+function formatHeadcountPresenceSummary(value) {
   const safeValue = Number(value || 0);
   if (safeValue <= 0) {
-    return '0 gg';
+    return '0 pres.';
   }
   const normalized = Number.isInteger(safeValue)
     ? String(safeValue)
     : safeValue.toFixed(2).replace(/\.?0+$/, '');
-  return `${normalized} gg`;
+  return `${normalized} pres.`;
+}
+
+function formatEquivalentDaysSummary(totalHours, standardHours) {
+  const safeTotalHours = Number(totalHours || 0);
+  const safeStandardHours = Number(standardHours || 0);
+  if (safeTotalHours <= 0 || safeStandardHours <= 0) {
+    return '0 gg eq.';
+  }
+  return `${(safeTotalHours / safeStandardHours).toFixed(2)} gg eq.`;
 }
 
 const attendancePrintCardStyle = {
@@ -511,14 +520,19 @@ const AttendancePrintAreaPaginated = React.forwardRef(function AttendancePrintAr
                         const dateStr = formatDate(day);
                         const att = getAtt(employee.id, dateStr);
                         const dayInfo = dayInfoMap[dateStr];
+                        const headcount = Number(att?.hours_worked || 0);
+                        const hoursPerPersonValue = Number(att?.overtime_hours || 0);
+                        const safeHoursPerPerson = isHeadcountRow
+                          ? (hoursPerPersonValue > 0 ? hoursPerPersonValue : Number(baseHours || 0))
+                          : 0;
                         const hours = isHeadcountRow
-                          ? Number(att?.hours_worked || 0) * Number(baseHours || 0)
+                          ? headcount * safeHoursPerPerson
                           : Number(att?.hours_worked || 0) + Number(att?.overtime_hours || 0);
                         if (hours > 0) {
                           totalHours += hours;
                         }
                         if (isHeadcountRow) {
-                          totalHeadcount += Number(att?.hours_worked || 0);
+                          totalHeadcount += headcount;
                         }
 
                         return (
@@ -564,8 +578,9 @@ const AttendancePrintAreaPaginated = React.forwardRef(function AttendancePrintAr
                           maxHeight: `${rowHeightPx}px`,
                           verticalAlign: 'middle',
                         }}
+                        title={isHeadcountRow ? `Presenze uomo: ${formatHeadcountPresenceSummary(totalHeadcount)} • Giornate equivalenti: ${formatEquivalentDaysSummary(totalHours, baseHours)} su giornata standard ${baseHours}h` : undefined}
                       >
-                        <strong>{isHeadcountRow ? formatHeadcountSummary(totalHeadcount) : formatCompactWorkedSummary(totalHours, baseHours, hoursFormat)}</strong>
+                        <strong>{isHeadcountRow ? `${formatHeadcountPresenceSummary(totalHeadcount)} • ${formatEquivalentDaysSummary(totalHours, baseHours)}` : formatCompactWorkedSummary(totalHours, baseHours, hoursFormat)}</strong>
                       </td>
                     </tr>
                   );

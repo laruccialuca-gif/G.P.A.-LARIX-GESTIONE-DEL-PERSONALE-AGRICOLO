@@ -307,6 +307,7 @@ const payrollRepo = require('./payrollRepo');
 const financialMovementsRepo = require('./financialMovementsRepo');
 const dashboardRepo = require('./dashboardRepo');
 const teamPayrollRepo = require('./teamPayrollRepo');
+const reportAutoNotesRepo = require('./reportAutoNotesRepo');
 const teamsRepo = require('./teamsRepo');
 const dpiRepo = require('./dpiRepo');
 const communicationRepo = require('./communicationRepo');
@@ -2003,7 +2004,7 @@ async function createPrintWindow({ html, landscape = false, show = false, debugR
   return printWindow;
 }
 
-async function renderPdfToFile({ html, filePath, landscape = false, debugRenderLabel = '', onProgress = () => {} }) {
+async function renderPdfBuffer({ html, landscape = false, debugRenderLabel = '', onProgress = () => {} }) {
   onProgress({
     step: 'document_generation',
     percent: 45,
@@ -2016,18 +2017,27 @@ async function renderPdfToFile({ html, filePath, landscape = false, debugRenderL
     percent: 72,
     message: 'Generazione PDF in corso...',
   });
-  const pdfBuffer = await pdfWindow.webContents.printToPDF({
-    printBackground: true,
-    pageSize: 'A4',
-    landscape,
-    margins: {
-      top: 0,
-      bottom: 0,
-      left: 0,
-      right: 0,
-    },
-    preferCSSPageSize: true,
-  });
+  try {
+    const pdfBuffer = await pdfWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      landscape,
+      margins: {
+        top: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
+      },
+      preferCSSPageSize: true,
+    });
+    return pdfBuffer;
+  } finally {
+    pdfWindow.close();
+  }
+}
+
+async function renderPdfToFile({ html, filePath, landscape = false, debugRenderLabel = '', onProgress = () => {} }) {
+  const pdfBuffer = await renderPdfBuffer({ html, landscape, debugRenderLabel, onProgress });
 
   onProgress({
     step: 'file_save',
@@ -2035,7 +2045,67 @@ async function renderPdfToFile({ html, filePath, landscape = false, debugRenderL
     message: 'Salvataggio file in corso...',
   });
   fs.writeFileSync(filePath, pdfBuffer);
-  pdfWindow.close();
+}
+
+function isBusyFileError(error) {
+  const code = String(error?.code || '').toUpperCase();
+  return code === 'EBUSY' || code === 'EPERM' || code === 'EACCES' || code === 'ETXTBSY';
+}
+
+function formatArtifactTimestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return (
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}` +
+    `-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+  );
+}
+
+function getAvailableArtifactPath(basePath) {
+  const parsed = path.parse(basePath);
+  const stamp = formatArtifactTimestamp();
+  let candidate = path.join(parsed.dir, `${parsed.name}-${stamp}${parsed.ext}`);
+  let suffix = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(parsed.dir, `${parsed.name}-${stamp}-v${suffix}${parsed.ext}`);
+    suffix += 1;
+  }
+  return candidate;
+}
+
+// Scrive prima su un file temporaneo univoco, poi prova a spostarlo sul percorso finale.
+// Se il file finale è bloccato (PDF/Excel aperto in Edge/Adobe/anteprima), invece di
+// far fallire il salvataggio crea una nuova copia con timestamp e ne restituisce il path.
+function writeBufferToAvailableFile(buffer, finalPath) {
+  const dir = path.dirname(finalPath);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const parsed = path.parse(finalPath);
+  const tempPath = path.join(dir, `${parsed.name}.tmp-${Date.now()}-${process.pid}${parsed.ext}`);
+  fs.writeFileSync(tempPath, buffer);
+
+  try {
+    fs.renameSync(tempPath, finalPath);
+    return { path: finalPath, usedFallback: false };
+  } catch (error) {
+    if (!isBusyFileError(error)) {
+      try { fs.rmSync(tempPath, { force: true }); } catch {}
+      throw error;
+    }
+  }
+
+  const fallbackPath = getAvailableArtifactPath(finalPath);
+  try {
+    fs.renameSync(tempPath, fallbackPath);
+  } catch (renameError) {
+    try {
+      fs.copyFileSync(tempPath, fallbackPath);
+      fs.rmSync(tempPath, { force: true });
+    } catch (copyError) {
+      try { fs.rmSync(tempPath, { force: true }); } catch {}
+      throw copyError;
+    }
+  }
+  return { path: fallbackPath, usedFallback: true };
 }
 
 function buildTempPdfPath(fileName = 'stampa.pdf') {
@@ -2063,29 +2133,68 @@ function buildUniquePdfPath(directoryPath, fileName) {
   return candidate;
 }
 
-async function printHtmlDocument({ html, landscape = false, fileName, onProgress = () => {} }) {
-  const tempPdfPath = buildTempPdfPath(fileName);
-  await renderPdfToFile({
+async function printHtmlDocument({ html, landscape = false, fileName, debugRenderLabel = '', onProgress = () => {} }) {
+  onProgress({
+    step: 'document_generation',
+    percent: 45,
+    message: 'Preparazione finestra di stampa...',
+  });
+  const printWindow = await createPrintWindow({
     html,
-    filePath: tempPdfPath,
     landscape,
-    onProgress,
+    show: false,
+    debugRenderLabel,
   });
 
   onProgress({
-    step: 'file_save',
-    percent: 96,
-    message: 'Apertura file generato...',
+    step: 'document_generation',
+    percent: 78,
+    message: 'Apertura finestra di stampa...',
   });
-  const openResult = await shell.openPath(tempPdfPath);
-  if (openResult) {
-    throw new Error(openResult);
-  }
 
-  return {
-    canceled: false,
-    preview_file_path: tempPdfPath,
-  };
+  try {
+    const printResult = await new Promise((resolve, reject) => {
+      printWindow.webContents.print(
+        {
+          silent: false,
+          printBackground: true,
+          landscape,
+          pageSize: 'A4',
+          margins: {
+            marginType: 'none',
+          },
+        },
+        (success, failureReason) => {
+          if (!success && failureReason) {
+            reject(new Error(failureReason));
+            return;
+          }
+
+          resolve({
+            success,
+            failureReason: failureReason || '',
+          });
+        }
+      );
+    });
+
+    onProgress({
+      step: 'file_save',
+      percent: 96,
+      message: 'Invio alla stampante...',
+    });
+
+    return {
+      canceled: !printResult.success,
+      printed: !!printResult.success,
+      preview_file_path: null,
+      file_name: fileName || 'stampa.pdf',
+    };
+  } finally {
+    if (!printWindow.isDestroyed()) {
+      printWindow.close();
+    }
+  }
 }
 
 function buildTeamTemplateRenderResult(payload = {}) {
@@ -2094,14 +2203,21 @@ function buildTeamTemplateRenderResult(payload = {}) {
   }
 
   console.info('[team-template-ipc] teamName=%s', payload?.teamName || '');
+  console.info('[team-print-template] using-new-template=true');
   const data = buildTeamReportData(payload);
   console.info('[team-print-template] data-built', {
     teamId: data?.team?.id || null,
     team: data?.team?.name || '',
+    monthReference: payload?.monthReference || '',
     month: data?.team?.monthLabel || '',
     totalHours: data?.team?.totalHours || 0,
     equivalentDays: data?.team?.equivalentDays || 0,
     finalBalance: data?.economics?.finalBalance || 0,
+  });
+  console.info('[team-report-source]', {
+    reportRecordId: payload?.recordId || null,
+    snapshotId: payload?.snapshotId || null,
+    usingSnapshot: false,
   });
   const html = renderTeamReportHtml(data);
   return { data, html };
@@ -2132,23 +2248,95 @@ async function persistCommunicationArtifacts(communicationId) {
   const pdfHtml = communicationRepo.buildCommunicationPdfHtml(communication);
   const excelXml = communicationRepo.buildCommunicationExcelXml(communication);
 
-  fs.mkdirSync(path.dirname(fileTargets.excel.absolutePath), { recursive: true });
-  fs.writeFileSync(fileTargets.excel.absolutePath, excelXml, 'utf8');
+  // Excel: scrittura sicura con fallback se il file esistente è aperto/bloccato.
+  const excelResult = writeBufferToAvailableFile(
+    Buffer.from(excelXml, 'utf8'),
+    fileTargets.excel.absolutePath
+  );
 
-  await renderPdfToFile({
-    html: pdfHtml,
-    filePath: fileTargets.pdf.absolutePath,
-    landscape: false,
-  });
+  // PDF: genera il buffer poi scrivilo con la stessa logica anti-blocco.
+  const pdfBuffer = await renderPdfBuffer({ html: pdfHtml, landscape: false });
+  const pdfResult = writeBufferToAvailableFile(pdfBuffer, fileTargets.pdf.absolutePath);
 
-  return communicationRepo.updateCommunicationFiles(communication.id, {
-    pdf_relative_path: fileTargets.pdf.relativePath,
-    pdf_sha256: hashFile(fileTargets.pdf.absolutePath),
+  const pdfRelativePath = path.join(
+    'communications',
+    String(communication.id),
+    path.basename(pdfResult.path)
+  );
+  const excelRelativePath = path.join(
+    'communications',
+    String(communication.id),
+    path.basename(excelResult.path)
+  );
+
+  const usedFallback = pdfResult.usedFallback || excelResult.usedFallback;
+  const fallbackNotice = 'Il PDF precedente era aperto o bloccato, è stata creata una nuova copia.';
+  if (usedFallback) {
+    logMainProcessEvent('communications:artifact-locked-fallback', {
+      communication_id: communication.id,
+      pdf_fallback: pdfResult.usedFallback,
+      excel_fallback: excelResult.usedFallback,
+      pdf_path: pdfResult.path,
+      excel_path: excelResult.path,
+      message: fallbackNotice,
+    });
+    console.warn(`[communications:save] ${fallbackNotice}`);
+  }
+
+  const updated = communicationRepo.updateCommunicationFiles(communication.id, {
+    pdf_relative_path: pdfRelativePath,
+    pdf_sha256: hashFile(pdfResult.path),
     pdf_created_at: new Date().toISOString(),
-    excel_relative_path: fileTargets.excel.relativePath,
-    excel_sha256: hashFile(fileTargets.excel.absolutePath),
+    excel_relative_path: excelRelativePath,
+    excel_sha256: hashFile(excelResult.path),
     excel_created_at: new Date().toISOString(),
   });
+
+  if (usedFallback && updated && typeof updated === 'object') {
+    return { ...updated, artifact_notice: fallbackNotice };
+  }
+  return updated;
+}
+
+async function generateSelectedCommunicationPdf(communicationId, selectedEmployeeIds = []) {
+  const communication = communicationRepo.getCommunicationById(communicationId);
+  if (!communication) {
+    throw new Error('Comunicazione non trovata.');
+  }
+
+  const employeeIds = [...new Set(
+    (Array.isArray(selectedEmployeeIds) ? selectedEmployeeIds : [])
+      .map(Number)
+      .filter(Number.isFinite)
+  )];
+  if (!employeeIds.length) {
+    throw new Error('Seleziona almeno un dipendente per generare il PDF selezionati.');
+  }
+
+  const fileTargets = communicationRepo.getCommunicationFileTargets(communication);
+  const parsed = path.parse(fileTargets.pdf.absolutePath);
+  const selectedPdfPath = path.join(parsed.dir, `${parsed.name}-selezionati${parsed.ext || '.pdf'}`);
+  const pdfHtml = communicationRepo.buildCommunicationPdfHtml(communication, {
+    selectedEmployeeIds: employeeIds,
+  });
+  const pdfBuffer = await renderPdfBuffer({ html: pdfHtml, landscape: false });
+  const pdfResult = writeBufferToAvailableFile(pdfBuffer, selectedPdfPath);
+  const openResult = await shell.openPath(pdfResult.path);
+
+  logMainProcessEvent('communications:selected-pdf-generated', {
+    communication_id: communication.id,
+    selected_count: employeeIds.length,
+    path: pdfResult.path,
+    used_fallback: !!pdfResult.usedFallback,
+  });
+
+  return {
+    success: !openResult,
+    message: openResult || null,
+    file_path: pdfResult.path,
+    selected_count: employeeIds.length,
+    usedFallback: !!pdfResult.usedFallback,
+  };
 }
 
 app.whenReady().then(async () => {
@@ -2706,7 +2894,7 @@ app.whenReady().then(async () => {
     }
   });
   ipcMain.handle('employees:closeEarly', async (_, employeeIds = [], terminationDate, reason = '') => {
-    requireWritableLicense('La chiusura anticipata dei dipendenti');
+    requireWritableLicense('La chiusura/cessazione dei rapporti di lavoro');
     const startedAt = Date.now();
     logMainProcessEvent('employees:close-early:start', {
       requested_count: Array.isArray(employeeIds) ? employeeIds.length : 0,
@@ -2932,7 +3120,16 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('teamPayroll:saveReportRecord', async (_, payload) => {
     requireWritableLicense('La modifica delle squadre');
-    return teamPayrollRepo.saveTeamReportRecord(payload);
+    const saved = teamPayrollRepo.saveTeamReportRecord(payload);
+    try {
+      reportAutoNotesRepo.syncTeamReportNotes(saved?.team_id ?? payload?.team_id, saved?.month ?? payload?.month);
+    } catch (error) {
+      appendMainProcessLog('reportAutoNotes:syncTeam', error);
+    }
+    return saved;
+  });
+  ipcMain.handle('teamPayroll:listReportRecords', async (_, options) => {
+    return teamPayrollRepo.listTeamReportRecords(options);
   });
   ipcMain.handle('teamPayroll:listPayrollComponents', async (_, teamId, month) => {
     return teamPayrollRepo.listPayrollComponents(teamId, month);
@@ -2951,7 +3148,13 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('teamPayroll:replacePayrollComponents', async (_, teamId, month, items) => {
     requireWritableLicense('La modifica delle squadre');
-    return teamPayrollRepo.replacePayrollComponents(teamId, month, items);
+    const saved = teamPayrollRepo.replacePayrollComponents(teamId, month, items);
+    try {
+      reportAutoNotesRepo.syncTeamReportNotes(teamId, month);
+    } catch (error) {
+      appendMainProcessLog('reportAutoNotes:syncTeamComponents', error);
+    }
+    return saved;
   });
   ipcMain.handle('employees:deletePermanently', async (_, id) => {
     requireWritableLicense('La modifica dei dipendenti');
@@ -3478,8 +3681,31 @@ app.whenReady().then(async () => {
     });
   });
 
+  ipcMain.handle('reportAutoNotes:getByMonth', async (_, month) =>
+    reportAutoNotesRepo.getAutoReportNotesByMonth(month)
+  );
+
   ipcMain.handle('communications:list', async (_, options) => communicationRepo.listCommunications(options));
-  ipcMain.handle('communications:getById', async (_, id) => communicationRepo.getCommunicationById(id));
+  ipcMain.handle('communications:getById', async (_, id) => {
+    const communication = communicationRepo.getCommunicationById(id);
+    console.info('[communication-open]', {
+      requested_id: Number(id),
+      requested_month: null,
+      loaded_id: communication?.id || null,
+      loaded_month: communication?.month_reference || null,
+    });
+    return communication;
+  });
+  ipcMain.handle('communications:getByMonth', async (_, monthReference) => {
+    const communication = communicationRepo.getCommunicationByMonth(monthReference);
+    console.info('[communication-open]', {
+      requested_id: null,
+      requested_month: String(monthReference || ''),
+      loaded_id: communication?.id || null,
+      loaded_month: communication?.month_reference || null,
+    });
+    return communication;
+  });
   ipcMain.handle('communications:save', async (_, payload) => {
     requireWritableLicense('La modifica delle comunicazioni operative');
     const communication = communicationRepo.saveCommunication(payload);
@@ -3491,6 +3717,9 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('communications:openFile', async (_, id, type) =>
     communicationRepo.openCommunicationFile(id, type)
+  );
+  ipcMain.handle('communications:generateSelectedPdf', async (_, id, selectedEmployeeIds) =>
+    generateSelectedCommunicationPdf(id, selectedEmployeeIds)
   );
   ipcMain.handle('communications:sendEmail', async (_, id, options) => {
     requireWritableLicense('La creazione di nuove comunicazioni operative');
@@ -3596,6 +3825,11 @@ app.whenReady().then(async () => {
         report_id: record.id,
         month: record.month,
       });
+    }
+    try {
+      reportAutoNotesRepo.syncEmployeeReportNotes(record.employee_id, record.month);
+    } catch (error) {
+      appendMainProcessLog('reportAutoNotes:syncEmployee', error);
     }
     return record;
   });
@@ -3828,6 +4062,44 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle('teamReport:printTemplate', async (_, payload) => {
+    try {
+      return runExclusiveOperation({
+        type: 'report-export',
+        startMessage: 'Preparazione stampa report squadra...',
+        fn: async (progress) => {
+          const result = buildTeamTemplateRenderResult(payload || {});
+          const fileName = payload?.fileName || 'report-squadra-template.pdf';
+          progress({
+            status: 'running',
+            step: 'document_generation',
+            percent: 35,
+            message: 'Preparazione stampa template report squadra...',
+            file_name: fileName,
+            concurrent_error_message: "Generazione report giÃƒÂ  in corso. Attendi il completamento prima di avviarne un'altra.",
+          });
+
+          const printResult = await printHtmlDocument({
+            html: result.html,
+            landscape: false,
+            fileName,
+            debugRenderLabel: 'team-template',
+            onProgress: progress,
+          });
+
+          console.info('[team-print-template] print');
+          return {
+            ...printResult,
+            data: result.data,
+          };
+        },
+      });
+    } catch (error) {
+      console.error('[team-print-template] error', error);
+      throw error;
+    }
+  });
+
   ipcMain.handle('employeeReport:previewTemplate', async (_, payload) => {
     try {
       return buildEmployeeTemplateRenderResult(payload || {});
@@ -3881,6 +4153,44 @@ app.whenReady().then(async () => {
     }
   });
 
+  ipcMain.handle('employeeReport:printTemplate', async (_, payload) => {
+    try {
+      return runExclusiveOperation({
+        type: 'report-export',
+        startMessage: 'Preparazione stampa report dipendente...',
+        fn: async (progress) => {
+          const result = buildEmployeeTemplateRenderResult(payload || {});
+          const fileName = payload?.fileName || 'report-dipendente-template.pdf';
+          progress({
+            status: 'running',
+            step: 'document_generation',
+            percent: 35,
+            message: 'Preparazione stampa template report dipendente...',
+            file_name: fileName,
+            concurrent_error_message: "Generazione report giÃ  in corso. Attendi il completamento prima di avviarne un'altra.",
+          });
+
+          const printResult = await printHtmlDocument({
+            html: result.html,
+            landscape: false,
+            fileName,
+            debugRenderLabel: '',
+            onProgress: progress,
+          });
+
+          console.info('[employee-template-print]');
+          return {
+            ...printResult,
+            data: result.data,
+          };
+        },
+      });
+    } catch (error) {
+      console.error('[employee-template-fallback]', error);
+      throw error;
+    }
+  });
+
   ipcMain.handle('reports:printHtml', async (_, payload) => {
     return runExclusiveOperation({
       type: 'report-export',
@@ -3919,6 +4229,7 @@ app.whenReady().then(async () => {
           html,
           landscape,
           fileName,
+          debugRenderLabel: payload?.debugRenderLabel || '',
           onProgress: progress,
         });
       },

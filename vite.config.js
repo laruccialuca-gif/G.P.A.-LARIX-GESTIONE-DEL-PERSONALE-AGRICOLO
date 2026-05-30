@@ -5,6 +5,9 @@ import path from 'path';
 export default defineConfig({
   base: './',
   plugins: [react()],
+  build: {
+    chunkSizeWarningLimit: 1200,
+  },
   server: {
     port: 5173,
     strictPort: true,

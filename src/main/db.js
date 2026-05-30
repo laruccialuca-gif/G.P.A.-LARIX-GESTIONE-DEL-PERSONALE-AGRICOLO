@@ -70,6 +70,23 @@ function ensureColumnsWithLogging(database, tableName, columns) {
   return missingColumns.map((column) => column.name);
 }
 
+function ensureTeamReportGiftColumns(database) {
+  return ensureColumnsWithLogging(database, 'team_report_records', [
+    { name: 'gift_enabled', definition: 'INTEGER DEFAULT 0' },
+    { name: 'gift_description', definition: "TEXT DEFAULT ''" },
+    { name: 'gift_amount', definition: 'REAL DEFAULT 0' },
+  ]);
+}
+
+function ensureTeamReportPreviousBalanceColumns(database) {
+  return ensureColumnsWithLogging(database, 'team_report_records', [
+    { name: 'previous_balance_type', definition: 'TEXT' },
+    { name: 'previous_balance_amount', definition: 'REAL DEFAULT 0' },
+    { name: 'previous_balance_note', definition: 'TEXT' },
+    { name: 'previous_balance_manual_override', definition: 'INTEGER DEFAULT 0' },
+  ]);
+}
+
 function ensureMigrationInfrastructure(database) {
   database.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -160,6 +177,7 @@ function runCoreSchemaMigration(database) {
       early_termination_date TEXT,
       early_termination_reason TEXT,
       archive_reason TEXT,
+      closure_type TEXT DEFAULT 'active',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
@@ -201,6 +219,8 @@ function runCoreSchemaMigration(database) {
       ore_totali REAL DEFAULT 0,
       retribuzione_calcolata REAL DEFAULT 0,
       giornate_busta_paga REAL DEFAULT 0,
+      selected_payroll_days_json TEXT DEFAULT '[]',
+      show_selected_payroll_days_in_report INTEGER DEFAULT 0,
       importo_busta_paga REAL DEFAULT 0,
       acconti REAL DEFAULT 0,
       acconti_details TEXT,
@@ -348,6 +368,7 @@ function runCoreSchemaMigration(database) {
       days REAL DEFAULT 0,
       amount REAL DEFAULT 0,
       notes TEXT,
+      selected_payroll_days_json TEXT DEFAULT '[]',
       sort_order INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -362,6 +383,13 @@ function runCoreSchemaMigration(database) {
       transport_enabled INTEGER DEFAULT 0,
       transport_description TEXT,
       transport_amount REAL DEFAULT 0,
+      gift_enabled INTEGER DEFAULT 0,
+      gift_description TEXT DEFAULT '',
+      gift_amount REAL DEFAULT 0,
+      previous_balance_type TEXT,
+      previous_balance_amount REAL DEFAULT 0,
+      previous_balance_note TEXT,
+      previous_balance_manual_override INTEGER DEFAULT 0,
       note TEXT,
       processed_at TEXT,
       archived_at TEXT,
@@ -402,6 +430,7 @@ function runCoreSchemaMigration(database) {
       month_reference TEXT,
       company_name TEXT,
       title TEXT,
+      subject TEXT,
       employer_labels_json TEXT,
       recipient_email TEXT,
       selected_employee_ids_json TEXT DEFAULT '[]',
@@ -529,6 +558,7 @@ function runCoreSchemaMigration(database) {
   ensureColumn(database, 'team_report_records', 'transport_enabled', 'INTEGER DEFAULT 0');
   ensureColumn(database, 'team_report_records', 'transport_description', 'TEXT');
   ensureColumn(database, 'team_report_records', 'transport_amount', 'REAL DEFAULT 0');
+  ensureTeamReportGiftColumns(database);
   ensureColumn(database, 'team_report_records', 'note', 'TEXT');
   ensureColumn(database, 'team_report_records', 'processed_at', 'TEXT');
   ensureColumn(database, 'team_report_records', 'archived_at', 'TEXT');
@@ -549,11 +579,15 @@ function runCoreSchemaMigration(database) {
 
   ensureColumn(database, 'payroll_records', 'datore', 'TEXT');
   ensureColumn(database, 'payroll_records', 'acconti_details', 'TEXT');
+  ensureColumn(database, 'payroll_records', 'selected_payroll_days_json', "TEXT DEFAULT '[]'");
+  ensureColumn(database, 'payroll_records', 'show_selected_payroll_days_in_report', 'INTEGER DEFAULT 0');
   ensureColumn(database, 'payroll_records', 'n_macchine_mese', 'REAL DEFAULT 0');
   ensureColumn(database, 'payroll_records', 'prezzo_per_macchina', 'REAL DEFAULT 0');
   ensureColumn(database, 'payroll_records', 'totale_trasporto', 'REAL DEFAULT 0');
   ensureColumn(database, 'payroll_records', 'regalo_importo', 'REAL DEFAULT 0');
   ensureColumn(database, 'payroll_records', 'regalo_descrizione', 'TEXT');
+  ensureColumn(database, 'payroll_records', 'selected_payroll_days_json', "TEXT DEFAULT '[]'");
+  ensureColumn(database, 'payroll_records', 'show_selected_payroll_days_in_report', 'INTEGER DEFAULT 0');
   ensureColumn(database, 'payroll_records', 'resto_pagato', 'INTEGER DEFAULT 0');
   ensureColumn(database, 'payroll_records', 'resto_pagato_data', 'TEXT');
   ensureColumn(database, 'payroll_records', 'processed_at', 'TEXT');
@@ -988,6 +1022,7 @@ function runTeamPayrollTablesMigration(database) {
       days REAL DEFAULT 0,
       amount REAL DEFAULT 0,
       notes TEXT,
+      selected_payroll_days_json TEXT DEFAULT '[]',
       sort_order INTEGER DEFAULT 0,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -998,6 +1033,7 @@ function runTeamPayrollTablesMigration(database) {
     CREATE INDEX IF NOT EXISTS idx_team_payroll_components_lookup
       ON team_payroll_components(team_id, month, sort_order, id);
   `);
+  ensureColumn(database, 'team_payroll_components', 'selected_payroll_days_json', "TEXT DEFAULT '[]'");
   console.info('[db-migration] team_payroll_components ensured');
   logDbEvent('schema-table-updated', {
     table_name: 'team_payroll_components',
@@ -1012,6 +1048,9 @@ function runTeamPayrollTablesMigration(database) {
       transport_enabled INTEGER DEFAULT 0,
       transport_description TEXT,
       transport_amount REAL DEFAULT 0,
+      gift_enabled INTEGER DEFAULT 0,
+      gift_description TEXT DEFAULT '',
+      gift_amount REAL DEFAULT 0,
       note TEXT,
       processed_at TEXT,
       archived_at TEXT,
@@ -1034,6 +1073,9 @@ function runTeamPayrollTablesMigration(database) {
   ensureColumn(database, 'team_report_records', 'transport_enabled', 'INTEGER DEFAULT 0');
   ensureColumn(database, 'team_report_records', 'transport_description', 'TEXT');
   ensureColumn(database, 'team_report_records', 'transport_amount', 'REAL DEFAULT 0');
+  ensureColumn(database, 'team_report_records', 'gift_enabled', 'INTEGER DEFAULT 0');
+  ensureColumn(database, 'team_report_records', 'gift_description', "TEXT DEFAULT ''");
+  ensureColumn(database, 'team_report_records', 'gift_amount', 'REAL DEFAULT 0');
   ensureColumn(database, 'team_report_records', 'note', 'TEXT');
   ensureColumn(database, 'team_report_records', 'processed_at', 'TEXT');
   ensureColumn(database, 'team_report_records', 'archived_at', 'TEXT');
@@ -1145,6 +1187,9 @@ function runTeamReportRecordsMigration(database) {
       transport_enabled INTEGER DEFAULT 0,
       transport_description TEXT,
       transport_amount REAL DEFAULT 0,
+      gift_enabled INTEGER DEFAULT 0,
+      gift_description TEXT DEFAULT '',
+      gift_amount REAL DEFAULT 0,
       note TEXT,
       processed_at TEXT,
       archived_at TEXT,
@@ -1163,6 +1208,9 @@ function runTeamReportRecordsMigration(database) {
   ensureColumn(database, 'team_report_records', 'transport_enabled', 'INTEGER DEFAULT 0');
   ensureColumn(database, 'team_report_records', 'transport_description', 'TEXT');
   ensureColumn(database, 'team_report_records', 'transport_amount', 'REAL DEFAULT 0');
+  ensureColumn(database, 'team_report_records', 'gift_enabled', 'INTEGER DEFAULT 0');
+  ensureColumn(database, 'team_report_records', 'gift_description', "TEXT DEFAULT ''");
+  ensureColumn(database, 'team_report_records', 'gift_amount', 'REAL DEFAULT 0');
   ensureColumn(database, 'team_report_records', 'note', 'TEXT');
   ensureColumn(database, 'team_report_records', 'processed_at', 'TEXT');
   ensureColumn(database, 'team_report_records', 'archived_at', 'TEXT');
@@ -1174,6 +1222,92 @@ function runTeamReportRecordsMigration(database) {
     migration_id: '2026-05-26-team-report-records',
     table_name: 'team_report_records',
     columns_added: ['ensured'],
+  });
+}
+
+function runTeamReportGiftColumnsMigration(database) {
+  console.info('[db-migration] [name=team-report-gift-columns] start');
+  const addedColumns = ensureTeamReportGiftColumns(database);
+  console.info('[db-migration] [name=team-report-gift-columns] ensured');
+  logDbEvent('schema-table-updated', {
+    migration_id: '2026-05-27-team-report-gift-columns',
+    table_name: 'team_report_records',
+    columns_added: addedColumns,
+  });
+}
+
+function runTeamReportPreviousBalanceMigration(database) {
+  console.info('[db-migration] [name=team-report-previous-balance] start');
+  const addedColumns = ensureTeamReportPreviousBalanceColumns(database);
+  console.info('[db-migration] [name=team-report-previous-balance] ensured');
+  logDbEvent('schema-table-updated', {
+    migration_id: '2026-05-29-team-report-previous-balance',
+    table_name: 'team_report_records',
+    columns_added: addedColumns.length ? addedColumns : ['already-present'],
+  });
+}
+
+function runTeamReportPreviousBalanceManualOverrideBackfillMigration(database) {
+  console.info('[db-migration] [name=team-report-previous-balance-manual-override] start');
+  const addedColumns = ensureColumnsWithLogging(database, 'team_report_records', [
+    { name: 'previous_balance_manual_override', definition: 'INTEGER DEFAULT 0' },
+  ]);
+  console.info('[db-migration] [name=team-report-previous-balance-manual-override] ensured');
+  logDbEvent('schema-table-updated', {
+    migration_id: '2026-05-29-team-report-previous-balance-manual-override',
+    table_name: 'team_report_records',
+    columns_added: addedColumns.length ? addedColumns : ['already-present'],
+  });
+}
+
+function runTeamPayrollComponentSelectedDaysMigration(database) {
+  console.info('[db-migration] [name=team-payroll-component-selected-days] start');
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS team_payroll_components (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL,
+      month TEXT NOT NULL,
+      employee_id INTEGER NULL,
+      employee_label TEXT,
+      days REAL DEFAULT 0,
+      amount REAL DEFAULT 0,
+      notes TEXT,
+      selected_payroll_days_json TEXT DEFAULT '[]',
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE,
+      FOREIGN KEY (employee_id) REFERENCES employees(id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_team_payroll_components_lookup
+      ON team_payroll_components(team_id, month, sort_order, id);
+  `);
+  const added = ensureColumn(database, 'team_payroll_components', 'selected_payroll_days_json', "TEXT DEFAULT '[]'")
+    ? ['selected_payroll_days_json']
+    : [];
+  console.info('[db-migration] [name=team-payroll-component-selected-days] ensured');
+  logDbEvent('schema-table-updated', {
+    migration_id: '2026-05-28-team-payroll-component-selected-days',
+    table_name: 'team_payroll_components',
+    columns_added: added.length ? added : ['already-present'],
+  });
+}
+
+function runPayrollSelectedDaysMigration(database) {
+  console.info('[db-migration] [name=payroll-selected-days] start');
+  const added = [];
+  if (ensureColumn(database, 'payroll_records', 'selected_payroll_days_json', "TEXT DEFAULT '[]'")) {
+    added.push('selected_payroll_days_json');
+  }
+  if (ensureColumn(database, 'payroll_records', 'show_selected_payroll_days_in_report', 'INTEGER DEFAULT 0')) {
+    added.push('show_selected_payroll_days_in_report');
+  }
+  console.info('[db-migration] [name=payroll-selected-days] ensured');
+  logDbEvent('schema-table-updated', {
+    migration_id: '2026-05-28-payroll-selected-days',
+    table_name: 'payroll_records',
+    columns_added: added.length ? added : ['already-present'],
   });
 }
 
@@ -1219,11 +1353,108 @@ function runEmployeeArchiveMetadataMigration(database) {
   ]);
 }
 
+function runEmployeeClosureTypeMigration(database) {
+  console.info('[db-migration] [name=employee-closure-type] start');
+
+  ensureColumnsWithLogging(database, 'employees', [
+    { name: 'closure_type', definition: "TEXT DEFAULT 'active'" },
+  ]);
+
+  database.exec(`
+    UPDATE employees
+    SET closure_type = 'manual_early'
+    WHERE COALESCE(is_deleted, 0) = 1
+      AND COALESCE(early_termination_date, '') <> ''
+      AND COALESCE(archive_reason, '') <> 'expired_contract_auto'
+      AND COALESCE(closure_type, '') IN ('', 'active');
+
+    UPDATE employees
+    SET closure_type = 'natural_expiry'
+    WHERE COALESCE(is_deleted, 0) = 1
+      AND COALESCE(archive_reason, '') = 'expired_contract_auto'
+      AND COALESCE(closure_type, '') IN ('', 'active');
+
+    UPDATE employees
+    SET closure_type = 'active'
+    WHERE COALESCE(is_deleted, 0) = 0
+      AND COALESCE(closure_type, '') = '';
+  `);
+
+  console.info('[db-migration] [name=employee-closure-type] ensured');
+}
+
 function runEmployeeDocumentPerformanceIndexesMigration(database) {
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_employee_documents_uploaded_at ON employee_documents(uploaded_at, id);
     CREATE INDEX IF NOT EXISTS idx_employee_documents_sha256 ON employee_documents(sha256);
   `);
+}
+
+function runCommunicationsSubjectColumnMigration(database) {
+  console.info('[db-migration] [name=communications-subject-column] start');
+
+  const requiredColumns = [
+    { name: 'subject', definition: 'TEXT' },
+    { name: 'title', definition: 'TEXT' },
+    { name: 'notes', definition: 'TEXT' },
+    { name: 'recipient_email', definition: 'TEXT' },
+    { name: 'company_name', definition: 'TEXT' },
+    { name: 'month_reference', definition: 'TEXT' },
+    { name: 'period_mode', definition: "TEXT NOT NULL DEFAULT 'monthly'" },
+    { name: 'period_start', definition: 'TEXT' },
+    { name: 'period_end', definition: 'TEXT' },
+    { name: 'selected_employee_ids_json', definition: "TEXT DEFAULT '[]'" },
+    { name: 'employer_labels_json', definition: 'TEXT' },
+    { name: 'show_compensation_in_pdf', definition: 'INTEGER DEFAULT 1' },
+  ];
+
+  const addedColumns = [];
+  for (const column of requiredColumns) {
+    if (ensureColumn(database, 'communications', column.name, column.definition)) {
+      addedColumns.push(column.name);
+      console.info(`[db:migration] communications added missing column ${column.name}`);
+    }
+  }
+
+  console.info('[db-migration] [name=communications-subject-column] ensured');
+  logDbEvent('schema-table-updated', {
+    migration_id: '2026-05-28-communications-subject-column',
+    table_name: 'communications',
+    columns_added: addedColumns.length ? addedColumns : ['already-present'],
+  });
+}
+
+function runReportAutoNotesMigration(database) {
+  console.info('[db-migration] [name=report-auto-notes] start');
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS report_auto_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      month_reference TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_id INTEGER NOT NULL,
+      employee_id INTEGER,
+      employee_label TEXT NOT NULL,
+      sigla TEXT,
+      giornate REAL NOT NULL DEFAULT 0,
+      dates_json TEXT NOT NULL DEFAULT '[]',
+      manual_note TEXT,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_report_auto_notes_month
+      ON report_auto_notes(month_reference, source_type, source_id, sort_order, id);
+  `);
+
+  const addedTeamReportColumn = ensureColumn(database, 'team_report_records', 'employer_key', 'TEXT');
+
+  console.info('[db-migration] [name=report-auto-notes] ensured');
+  logDbEvent('schema-table-updated', {
+    migration_id: '2026-05-28-report-auto-notes',
+    table_name: 'report_auto_notes',
+    columns_added: addedTeamReportColumn ? ['team_report_records.employer_key'] : ['already-present'],
+  });
 }
 
 const MIGRATIONS = [
@@ -1304,6 +1535,26 @@ const MIGRATIONS = [
     run: runTeamReportRecordsMigration,
   },
   {
+    id: '2026-05-27-team-report-gift-columns',
+    run: runTeamReportGiftColumnsMigration,
+  },
+  {
+    id: '2026-05-29-team-report-previous-balance',
+    run: runTeamReportPreviousBalanceMigration,
+  },
+  {
+    id: '2026-05-29-team-report-previous-balance-manual-override',
+    run: runTeamReportPreviousBalanceManualOverrideBackfillMigration,
+  },
+  {
+    id: '2026-05-28-team-payroll-component-selected-days',
+    run: runTeamPayrollComponentSelectedDaysMigration,
+  },
+  {
+    id: '2026-05-28-payroll-selected-days',
+    run: runPayrollSelectedDaysMigration,
+  },
+  {
     id: '2026-05-21-dpi-schema',
     run: runDpiSchemaMigration,
   },
@@ -1314,6 +1565,18 @@ const MIGRATIONS = [
   {
     id: '2026-05-26-employee-document-performance-indexes',
     run: runEmployeeDocumentPerformanceIndexesMigration,
+  },
+  {
+    id: '2026-05-29-employee-closure-type',
+    run: runEmployeeClosureTypeMigration,
+  },
+  {
+    id: '2026-05-28-report-auto-notes',
+    run: runReportAutoNotesMigration,
+  },
+  {
+    id: '2026-05-28-communications-subject-column',
+    run: runCommunicationsSubjectColumnMigration,
   },
 ];
 
@@ -1408,6 +1671,10 @@ function runMigrations(database) {
   setMetadata(database, 'last_started_at', new Date().toISOString());
   setMetadata(database, 'data_root', getUserDataRoot());
   setMetadata(database, 'database_path', getDbPath());
+}
+
+function ensureRuntimeSchemaCompatibility(database) {
+  ensureTeamReportGiftColumns(database);
 }
 
 function seedOccupations(database) {
@@ -1614,6 +1881,7 @@ function getDb() {
   db.pragma('busy_timeout = 5000');
   if (!dbReadOnlyMode) {
     runMigrations(db);
+    ensureRuntimeSchemaCompatibility(db);
   }
   return db;
 }

@@ -43,6 +43,32 @@ function normalizeInstallments(installments = []) {
     .filter((installment) => installment.target_month && installment.amount > 0);
 }
 
+function normalizeSelectedPayrollDays(value) {
+  let source = value;
+  if (typeof source === 'string') {
+    const text = source.trim();
+    if (!text) {
+      source = [];
+    } else {
+      try {
+        source = JSON.parse(text);
+      } catch {
+        source = text.split(/[,\s;]+/);
+      }
+    }
+  }
+
+  if (!Array.isArray(source)) {
+    return [];
+  }
+
+  return [...new Set(
+    source
+      .map((day) => Number(day))
+      .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31)
+  )].sort((a, b) => a - b);
+}
+
 function loadAdvancesMap(payrollRecordIds) {
   const db = getDb();
   if (!payrollRecordIds.length) {
@@ -112,6 +138,7 @@ function attachAdvances(records, options = {}) {
       : null;
     const snapshotInstallments = Number(snapshot?.current_installments_total || 0);
     const liveInfo = liveInstallmentsMap.get(record.id) || { total: 0, count: 0 };
+    const selectedPayrollDays = normalizeSelectedPayrollDays(record.selected_payroll_days_json);
 
     return {
       ...record,
@@ -121,6 +148,9 @@ function attachAdvances(records, options = {}) {
       remaining_balance: Number(record.remaining_balance || 0),
       is_processed: !!record.processed_at,
       is_archived: !!record.archived_at,
+      selected_payroll_days: selectedPayrollDays,
+      selected_payroll_days_json: JSON.stringify(selectedPayrollDays),
+      show_selected_payroll_days_in_report: !!record.show_selected_payroll_days_in_report,
       report_snapshot_json: includePreviewData ? snapshot : null,
       report_html_snapshot: includePreviewData ? (record.report_html_snapshot || null) : null,
       live_installments_total: liveInfo.total,
@@ -203,6 +233,54 @@ function getJoinedRecordSql(whereClause) {
       AND pd.category = '${PAYROLL_DOCUMENT_CATEGORY}'
     ${whereClause}
   `;
+}
+
+function getEmployeeHistorySummary(employeeId) {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT
+      e.id,
+      e.first_name,
+      e.last_name,
+      e.role,
+      e.status,
+      e.is_deleted,
+      e.hired_by,
+      e.daily_pay,
+      e.standard_hours,
+      team_lookup.team_names
+    FROM employees e
+    LEFT JOIN (
+      SELECT
+        tm.employee_id,
+        GROUP_CONCAT(DISTINCT t.name) AS team_names
+      FROM team_members tm
+      JOIN teams t ON t.id = tm.team_id
+      GROUP BY tm.employee_id
+    ) AS team_lookup ON team_lookup.employee_id = e.id
+    WHERE e.id = ?
+    LIMIT 1
+  `).get(employeeId);
+
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    first_name: row.first_name,
+    last_name: row.last_name,
+    role: row.role || '',
+    status: row.status || 'attivo',
+    is_deleted: !!row.is_deleted,
+    hired_by: row.hired_by || '',
+    daily_pay: Number(row.daily_pay || 0),
+    standard_hours: Number(row.standard_hours || 0),
+    team_names: row.team_names
+      ? String(row.team_names)
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : [],
+  };
 }
 
 function getHistoryListSql(whereClause) {
@@ -475,6 +553,8 @@ function upsertPayrollRecord(data) {
         ore_totali,
         retribuzione_calcolata,
         giornate_busta_paga,
+        selected_payroll_days_json,
+        show_selected_payroll_days_in_report,
         importo_busta_paga,
         acconti,
         acconti_details,
@@ -510,6 +590,8 @@ function upsertPayrollRecord(data) {
         @ore_totali,
         @retribuzione_calcolata,
         @giornate_busta_paga,
+        @selected_payroll_days_json,
+        @show_selected_payroll_days_in_report,
         @importo_busta_paga,
         @acconti,
         @acconti_details,
@@ -544,6 +626,8 @@ function upsertPayrollRecord(data) {
         ore_totali = excluded.ore_totali,
         retribuzione_calcolata = excluded.retribuzione_calcolata,
         giornate_busta_paga = excluded.giornate_busta_paga,
+        selected_payroll_days_json = excluded.selected_payroll_days_json,
+        show_selected_payroll_days_in_report = excluded.show_selected_payroll_days_in_report,
         importo_busta_paga = excluded.importo_busta_paga,
         acconti = excluded.acconti,
         acconti_details = excluded.acconti_details,
@@ -579,6 +663,10 @@ function upsertPayrollRecord(data) {
       ore_totali: data.ore_totali ?? 0,
       retribuzione_calcolata: data.retribuzione_calcolata ?? 0,
       giornate_busta_paga: data.giornate_busta_paga ?? 0,
+      selected_payroll_days_json: JSON.stringify(normalizeSelectedPayrollDays(
+        data.selected_payroll_days_json ?? data.selected_payroll_days ?? data.selectedPayrollDays
+      )),
+      show_selected_payroll_days_in_report: data.show_selected_payroll_days_in_report ? 1 : 0,
       importo_busta_paga: data.importo_busta_paga ?? 0,
       acconti: totalAdvances,
       acconti_details: JSON.stringify(
@@ -931,6 +1019,7 @@ function getPayrollRecord(employeeId, month) {
   if (!record) return null;
   return {
     ...record,
+    employee: getEmployeeHistorySummary(employeeId),
     debt_plans: getDebtPlansByEmployee(employeeId, { includeArchived: true }),
   };
 }
@@ -1065,6 +1154,7 @@ function getPayrollRecordById(id) {
   if (!record) return null;
   return {
     ...record,
+    employee: getEmployeeHistorySummary(record.employee_id),
     debt_plans: getDebtPlansByEmployee(record.employee_id, { includeArchived: true }),
   };
 }

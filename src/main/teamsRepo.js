@@ -46,10 +46,56 @@ function mapMemberRow(row) {
       hire_date: row.hire_date || null,
       hire_date_from: row.hire_date_from || null,
       hire_date_to: row.hire_date_to || null,
+      early_termination_date: row.early_termination_date || null,
       medical_visit_expiry: row.medical_visit_expiry || null,
       art37_expiry: row.art37_expiry || null,
+      employment_periods: [],
     },
   };
+}
+
+function loadEmploymentPeriodsByEmployeeId(employeeIds = []) {
+  const db = getDb();
+  const normalizedIds = [...new Set(
+    employeeIds
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0)
+  )];
+  if (!normalizedIds.length) {
+    return new Map();
+  }
+
+  const placeholders = normalizedIds.map(() => '?').join(', ');
+  const rows = db.prepare(`
+    SELECT
+      id,
+      employee_id,
+      hire_date_from,
+      hire_date_to,
+      hired_by,
+      status,
+      is_current
+    FROM employee_employment_periods
+    WHERE employee_id IN (${placeholders})
+    ORDER BY employee_id ASC, is_current DESC, COALESCE(hire_date_from, created_at) DESC, id DESC
+  `).all(...normalizedIds);
+
+  const periodsByEmployeeId = new Map();
+  for (const row of rows) {
+    const list = periodsByEmployeeId.get(row.employee_id) || [];
+    list.push({
+      id: row.id,
+      employee_id: row.employee_id,
+      hire_date_from: row.hire_date_from || null,
+      hire_date_to: row.hire_date_to || null,
+      hired_by: row.hired_by || null,
+      status: row.status || 'attivo',
+      is_current: !!row.is_current,
+    });
+    periodsByEmployeeId.set(row.employee_id, list);
+  }
+
+  return periodsByEmployeeId;
 }
 
 function attachTeamMembers(teamRows) {
@@ -76,6 +122,7 @@ function attachTeamMembers(teamRows) {
       e.hire_date,
       e.hire_date_from,
       e.hire_date_to,
+      e.early_termination_date,
       e.medical_visit_expiry,
       e.art37_expiry
     FROM team_members tm
@@ -84,10 +131,14 @@ function attachTeamMembers(teamRows) {
     ORDER BY tm.team_id ASC, tm.sort_order ASC, e.last_name COLLATE NOCASE, e.first_name COLLATE NOCASE
   `).all(...teamRows.map((team) => team.id));
 
+  const periodsByEmployeeId = loadEmploymentPeriodsByEmployeeId(memberRows.map((row) => row.employee_id));
+
   const membersByTeam = new Map();
   for (const row of memberRows) {
     const list = membersByTeam.get(row.team_id) || [];
-    list.push(mapMemberRow(row));
+    const mappedRow = mapMemberRow(row);
+    mappedRow.employee.employment_periods = periodsByEmployeeId.get(row.employee_id) || [];
+    list.push(mappedRow);
     membersByTeam.set(row.team_id, list);
   }
 

@@ -475,11 +475,42 @@ const MemoEmployeeRow = React.memo(EmployeeRow);
 const MemoTeamRow = React.memo(TeamRow);
 
 function getArchiveReasonBadge(employee) {
+  const closureType = String(employee?.closure_type || '').trim().toLowerCase();
   const reason = String(employee?.archive_reason || '').trim().toLowerCase();
+  if (closureType === 'manual_early') {
+    return {
+      label: 'Chiusura anticipata',
+      style: { background: 'rgba(245, 158, 11, 0.14)', color: '#b45309' },
+    };
+  }
+  if (closureType === 'natural_expiry') {
+    return {
+      label: 'Scadenza contratto',
+      style: { background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' },
+    };
+  }
   if (reason === 'early_termination') {
     return {
       label: 'Chiusura anticipata',
       style: { background: 'rgba(245, 158, 11, 0.14)', color: '#b45309' },
+    };
+  }
+  if (reason === 'contract_end') {
+    return {
+      label: 'Fine contratto',
+      style: { background: 'rgba(37, 99, 235, 0.12)', color: '#1d4ed8' },
+    };
+  }
+  if (reason === 'permanent_contract_ended') {
+    return {
+      label: 'Cessato',
+      style: { background: 'rgba(79, 70, 229, 0.12)', color: '#4338ca' },
+    };
+  }
+  if (reason === 'employment_ended') {
+    return {
+      label: 'Rapporto chiuso',
+      style: { background: 'rgba(20, 184, 166, 0.12)', color: '#0f766e' },
     };
   }
   if (reason === 'expired_contract_auto') {
@@ -1054,10 +1085,10 @@ export default function EmployeesPage() {
       });
       exitSelectionMode();
       setShowEarlyCloseModal(false);
-      alert(`Chiusura anticipata completata per ${result?.archived_count || 0} dipendenti.`);
+      alert(`Chiusura rapporto completata per ${result?.archived_count || 0} dipendenti.`);
     } catch (error) {
       console.error(error);
-      alert(error?.message || 'Errore chiusura anticipata dipendenti');
+      alert(error?.message || 'Errore chiusura rapporto dipendenti');
     } finally {
       setEarlyCloseSubmitting(false);
     }
@@ -1768,10 +1799,10 @@ export default function EmployeesPage() {
                         type="button"
                         className="button"
                         style={compactFilterButtonStyle}
-                        onClick={openEarlyCloseModal}
-                        disabled={isWriteBlocked}
-                      >
-                        Chiusura anticipata
+                      onClick={openEarlyCloseModal}
+                      disabled={isWriteBlocked}
+                    >
+                        Chiudi rapporto
                       </button>
                     ) : null}
                     <button
@@ -2155,7 +2186,7 @@ export default function EmployeesPage() {
           >
             <div className="modal-header">
               <div>
-                <h3 style={{ margin: 0, fontSize: 22, color: '#111827' }}>Chiusura anticipata contratto</h3>
+                <h3 style={{ margin: 0, fontSize: 22, color: '#111827' }}>Chiusura / cessazione rapporto</h3>
                 <p style={{ margin: '8px 0 0', color: '#64748b', fontSize: 14 }}>
                   I dipendenti verranno archiviati e non compariranno piu tra gli attivi.
                 </p>
@@ -2177,7 +2208,7 @@ export default function EmployeesPage() {
                   />
                 </label>
                 <label className="print-hub-field">
-                  <span>Motivo / note chiusura anticipata</span>
+                  <span>Motivo / note chiusura rapporto</span>
                   <input
                     type="text"
                     value={earlyCloseReason}
@@ -2209,7 +2240,7 @@ export default function EmployeesPage() {
                 Annulla
               </button>
               <button type="button" className="button" onClick={handleConfirmEarlyClose} disabled={earlyCloseSubmitting}>
-                {earlyCloseSubmitting ? 'Chiusura in corso...' : 'Conferma chiusura'}
+                {earlyCloseSubmitting ? 'Chiusura in corso...' : 'Conferma chiusura rapporto'}
               </button>
             </div>
           </div>

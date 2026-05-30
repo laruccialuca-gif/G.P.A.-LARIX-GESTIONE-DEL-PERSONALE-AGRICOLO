@@ -48,15 +48,6 @@ function formatDateLabel(value) {
   return `${day}/${month}/${year}`;
 }
 
-function formatShortDateLabel(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) {
-    return '-';
-  }
-
-  const [, month, day] = value.split('-');
-  return `${day}/${month}`;
-}
-
 function normalizeDateList(dates = []) {
   return [...new Set(
     (Array.isArray(dates) ? dates : [])
@@ -72,29 +63,6 @@ function normalizeEmployeeDatesMap(value) {
       .map(([employeeId, dates]) => [String(Number(employeeId)), normalizeDateList(dates)])
       .filter(([employeeId, dates]) => employeeId !== 'NaN' && dates.length)
   );
-}
-
-function formatEmployeeName(employee) {
-  return `${employee?.last_name || ''} ${employee?.first_name || ''}`.trim();
-}
-
-function compareEmployeesByName(a, b) {
-  const lastCompare = String(a?.last_name || '').localeCompare(String(b?.last_name || ''), 'it', { sensitivity: 'base' });
-  if (lastCompare !== 0) return lastCompare;
-  return String(a?.first_name || '').localeCompare(String(b?.first_name || ''), 'it', { sensitivity: 'base' });
-}
-
-function employeeMatchesSearch(employee, label, search) {
-  const needle = String(search || '').trim().toLowerCase();
-  if (!needle) return true;
-  const haystack = [
-    label,
-    employee?.last_name,
-    employee?.first_name,
-    employee?.role,
-    ...(employee?.team_history || []).map((team) => team.name),
-  ].filter(Boolean).join(' ').toLowerCase();
-  return haystack.includes(needle);
 }
 
 function formatPeriodLabel(start, end) {
@@ -239,6 +207,31 @@ function buildEmployeeRows(employees, existingRows = []) {
     });
 }
 
+function formatAutoReportDates(days) {
+  return [...new Set(
+    (Array.isArray(days) ? days : [])
+      .map((day) => Number(day))
+      .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31)
+  )]
+    .sort((a, b) => a - b)
+    .join('-');
+}
+
+function mergeAutoDatesIntoNote(existingNote, datesStr) {
+  const note = String(existingNote || '').trim();
+  if (!datesStr) {
+    return note;
+  }
+  if (!note) {
+    return datesStr;
+  }
+  // Evita duplicati: se la stessa sequenza di date è già presente, lascia invariato.
+  if (note.split(/\s+/).includes(datesStr) || note.includes(datesStr)) {
+    return note;
+  }
+  return `${note} ${datesStr}`.trim();
+}
+
 function historyToDraftRows(details = []) {
   return details.map((detail, index) => ({
     employee_id: detail.employee_id || null,
@@ -296,6 +289,38 @@ function getDraftReferenceYear(draft, effectivePeriod, fallbackYear) {
   return extractYear(effectivePeriod?.start) ?? extractYear(effectivePeriod?.end) ?? fallbackYear;
 }
 
+function normalizeFilterText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function hasCommunicationValue(value) {
+  return String(value ?? '').trim() !== '';
+}
+
+function getEmployeeTeamHistory(employee) {
+  return Array.isArray(employee?.team_history) ? employee.team_history : [];
+}
+
+function employeeMatchesCommunicationTeam(employee, teamFilter) {
+  if (!teamFilter || teamFilter === 'all') return true;
+  return getEmployeeTeamHistory(employee).some((entry) => String(entry?.team_id) === String(teamFilter));
+}
+
+function isCommunicationRowCompiled(row, compensation) {
+  const hasCompensation = compensation && Math.abs(Number(compensation.totale || 0)) > 0.005;
+  return (
+    hasCommunicationValue(row.giornate_primo) ||
+    hasCommunicationValue(row.giornate_secondo) ||
+    hasCommunicationValue(row.detail_note) ||
+    Boolean(hasCompensation)
+  );
+}
+
 export default function CommunicationPage() {
   const COMMUNICATION_PAGE_SIZE = 50;
   const navigate = useNavigate();
@@ -310,15 +335,10 @@ export default function CommunicationPage() {
   const [saving, setSaving] = useState(false);
   const [emailing, setEmailing] = useState(false);
   const [historySearch, setHistorySearch] = useState('');
-  const [employeeSearch, setEmployeeSearch] = useState('');
-  const [selectedTeamId, setSelectedTeamId] = useState('');
-  const [dateModal, setDateModal] = useState(null);
-  const [dateModalDates, setDateModalDates] = useState([]);
-  const [dateModalInput, setDateModalInput] = useState('');
-  const [dateModalError, setDateModalError] = useState('');
   const [historyOffset, setHistoryOffset] = useState(0);
   const [includeExcelInEmail, setIncludeExcelInEmail] = useState(true);
   const [draft, setDraft] = useState(blankDraft([]));
+  const [autoReportNotes, setAutoReportNotes] = useState({ entries: [] });
   const [emailContacts, setEmailContacts] = useState([]);
   const [showAddressBook, setShowAddressBook] = useState(false);
   const [contactForm, setContactForm] = useState({ id: '', name: '', email: '' });
@@ -328,9 +348,14 @@ export default function CommunicationPage() {
   const [activeCompensationKey, setActiveCompensationKey] = useState(null);
   const [lockedCompensationKey, setLockedCompensationKey] = useState(null);
   const [compensationPopoverPosition, setCompensationPopoverPosition] = useState({ left: 12, top: 12 });
+  const [communicationTableSearch, setCommunicationTableSearch] = useState('');
+  const [communicationTableTeam, setCommunicationTableTeam] = useState('all');
+  const [communicationTableEmployer, setCommunicationTableEmployer] = useState('all');
+  const [communicationTableCompilation, setCommunicationTableCompilation] = useState('all');
+  const [monthlyCommunicationNotice, setMonthlyCommunicationNotice] = useState('');
   const compensationCloseTimerRef = useRef(null);
   const deferredHistorySearch = useDeferredValue(historySearch);
-  const deferredEmployeeSearch = useDeferredValue(employeeSearch);
+  const deferredCommunicationTableSearch = useDeferredValue(communicationTableSearch);
 
   async function loadBaseData() {
     setLoading(true);
@@ -437,12 +462,6 @@ export default function CommunicationPage() {
   }, [selectedYear, deferredHistorySearch]);
 
   useEffect(() => {
-    if (dateModal) {
-      console.info('[communication-dates] modal rendered', { employeeId: dateModal.employeeId, label: dateModal.employeeLabel });
-    }
-  }, [dateModal]);
-
-  useEffect(() => {
     setDraft((current) => {
       if (current.id || current.period_mode !== 'monthly') {
         return current;
@@ -482,6 +501,147 @@ export default function CommunicationPage() {
     }));
   }, [draft.month_reference, draft.period_mode]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const monthReference = draft.period_mode === 'monthly' ? String(draft.month_reference || '') : '';
+    const referenceRange = draft.period_mode === 'monthly'
+      ? monthToRange(draft.month_reference)
+      : { start: draft.period_start, end: draft.period_end };
+    const referenceYear = getDraftReferenceYear(draft, referenceRange, selectedYear);
+    const monthlyVisibleEmployees = employees.filter((employee) => employeeIsActiveInYear(employee, referenceYear));
+
+    if (!/^\d{4}-\d{2}$/.test(monthReference) || typeof window.api?.communications?.getByMonth !== 'function') {
+      setMonthlyCommunicationNotice('');
+      return undefined;
+    }
+
+    window.api.communications
+      .getByMonth(monthReference)
+      .then((communication) => {
+        if (cancelled) return;
+        if (!communication) {
+          setMonthlyCommunicationNotice('');
+          setDraft((current) => {
+            if (current.period_mode !== 'monthly' || current.month_reference !== monthReference || !current.id) {
+              return current;
+            }
+            const nextBlank = blankDraft(monthlyVisibleEmployees, settings);
+            const range = monthToRange(monthReference);
+            return {
+              ...nextBlank,
+              id: null,
+              month_reference: monthReference,
+              period_start: range.start,
+              period_end: range.end,
+            };
+          });
+          return;
+        }
+
+        setMonthlyCommunicationNotice('Comunicazione mensile già esistente: i nuovi dati saranno aggiunti/aggiornati.');
+        setDraft((current) => {
+          if (current.period_mode !== 'monthly' || current.month_reference !== monthReference || current.id === communication.id) {
+            return current;
+          }
+          const communicationRange = getCommunicationReferenceRange(communication);
+          return {
+            id: communication.id,
+            company_name: communication.company_name || current.company_name,
+            title: communication.title || current.title,
+            recipient_email: communication.recipient_email || current.recipient_email,
+            show_compensation_in_pdf: communication.show_compensation_in_pdf !== false,
+            selected_employee_ids: communication.selected_employee_ids?.length
+              ? communication.selected_employee_ids
+              : (communication.details || []).map((detail) => detail.employee_id).filter(Boolean),
+            employee_dates: normalizeEmployeeDatesMap(communication.employee_dates || {}),
+            notes: communication.notes || '',
+            employer_labels: communication.employer_labels || current.employer_labels || employerOptions,
+            period_mode: communication.period_mode || 'monthly',
+            month_reference: communication.month_reference || monthReference,
+            period_start: communicationRange.start || current.period_start,
+            period_end: communicationRange.end || current.period_end,
+            details: buildEmployeeRows(monthlyVisibleEmployees, historyToDraftRows(communication.details || [])),
+          };
+        });
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          console.error(err);
+          setMonthlyCommunicationNotice('');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.month_reference, draft.period_mode, draft.period_start, draft.period_end, employees, selectedYear, settings]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const monthReference = draft.period_mode === 'monthly' ? String(draft.month_reference || '') : '';
+
+    if (!window.api?.reportAutoNotes || !/^\d{4}-\d{2}$/.test(monthReference)) {
+      setAutoReportNotes({ entries: [] });
+      return undefined;
+    }
+
+    window.api.reportAutoNotes
+      .getByMonth(monthReference)
+      .then((result) => {
+        if (cancelled) return;
+        setAutoReportNotes({
+          entries: Array.isArray(result?.entries) ? result.entries : [],
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAutoReportNotes({ entries: [] });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.month_reference, draft.period_mode, draft.id]);
+
+  const autoDatesByEmployee = useMemo(() => {
+    const map = new Map();
+    for (const entry of autoReportNotes.entries || []) {
+      const employeeId = entry?.employee_id ? String(entry.employee_id) : '';
+      if (!employeeId || !Array.isArray(entry.dates) || !entry.dates.length) {
+        continue;
+      }
+      const existing = map.get(employeeId) || [];
+      map.set(employeeId, [...existing, ...entry.dates]);
+    }
+    return map;
+  }, [autoReportNotes]);
+
+  // Mappa employee_id -> { primo, secondo } con il totale giornate per sigla:
+  // LG alimenta giornate_primo, LC alimenta giornate_secondo.
+  const autoPayrollByEmployee = useMemo(() => {
+    const map = new Map();
+    for (const entry of autoReportNotes.entries || []) {
+      const employeeId = entry?.employee_id ? String(entry.employee_id) : '';
+      const sigla = String(entry?.sigla || '').trim().toUpperCase();
+      const giornate = Number(entry?.giornate || 0);
+      if (!employeeId || !Number.isInteger(giornate) || giornate <= 0) {
+        continue;
+      }
+      if (sigla !== 'LG' && sigla !== 'LC') {
+        continue;
+      }
+      const current = map.get(employeeId) || { primo: 0, secondo: 0 };
+      if (sigla === 'LG') {
+        current.primo += giornate;
+      } else {
+        current.secondo += giornate;
+      }
+      map.set(employeeId, current);
+    }
+    return map;
+  }, [autoReportNotes]);
+
   const effectivePeriod = useMemo(() => {
     if (draft.period_mode === 'monthly') {
       return monthToRange(draft.month_reference);
@@ -504,52 +664,84 @@ export default function CommunicationPage() {
     () => employees.filter((employee) => employeeIsActiveInYear(employee, communicationYear)),
     [employees, communicationYear]
   );
-  const employeeById = useMemo(
-    () => new Map(visibleEmployees.map((employee) => [Number(employee.id), employee])),
-    [visibleEmployees]
+  const employeesById = useMemo(
+    () => new Map(employees.map((employee) => [String(employee.id), employee])),
+    [employees]
   );
-  const teamOptions = useMemo(() => {
+  const communicationTeamOptions = useMemo(() => {
     const teams = new Map();
     visibleEmployees.forEach((employee) => {
-      (employee.team_history || []).forEach((team) => {
-        if (!team?.team_id || team.is_archived) return;
-        teams.set(String(team.team_id), {
-          id: String(team.team_id),
-          name: team.name || `Squadra ${team.team_id}`,
-        });
+      getEmployeeTeamHistory(employee).forEach((entry) => {
+        if (!entry?.team_id || entry.is_archived) return;
+        teams.set(String(entry.team_id), String(entry.name || `Squadra ${entry.team_id}`));
       });
     });
-    return [...teams.values()].sort((a, b) =>
-      String(a.name || '').localeCompare(String(b.name || ''), 'it', { sensitivity: 'base' })
-    );
+    return [...teams.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => normalizeFilterText(a.name).localeCompare(normalizeFilterText(b.name), 'it', { sensitivity: 'base' }));
   }, [visibleEmployees]);
-  const filteredDetailEntries = useMemo(() =>
-    draft.details
-      .map((row, index) => ({
-        row,
-        index,
-        employee: employeeById.get(Number(row.employee_id)) || null,
-      }))
-      .filter(({ row, employee }) => {
-        const matchesTeam = !selectedTeamId || (employee?.team_history || []).some(
-          (team) => String(team.team_id) === String(selectedTeamId) && !team.is_archived
-        );
-        return matchesTeam && employeeMatchesSearch(employee, row.employee_label, deferredEmployeeSearch);
-      }),
-    [deferredEmployeeSearch, draft.details, employeeById, selectedTeamId]
+  const filteredDetailEntries = useMemo(
+    () => {
+      const search = normalizeFilterText(deferredCommunicationTableSearch);
+      return draft.details
+        .map((row, index) => ({ row, index }))
+        .filter(({ row }) => {
+          const employee = employeesById.get(String(row.employee_id));
+          const employeeSearchText = normalizeFilterText([
+            row.employee_label,
+            employee?.first_name,
+            employee?.last_name,
+            employee?.full_name,
+            employee?.name,
+          ].filter(Boolean).join(' '));
+
+          if (search && !employeeSearchText.includes(search)) {
+            return false;
+          }
+
+          if (!employeeMatchesCommunicationTeam(employee, communicationTableTeam)) {
+            return false;
+          }
+
+          if (communicationTableEmployer === 'LG' && !hasCommunicationValue(row.giornate_primo)) {
+            return false;
+          }
+
+          if (communicationTableEmployer === 'LC' && !hasCommunicationValue(row.giornate_secondo)) {
+            return false;
+          }
+
+          const compensation = buildCompensationSummary(payrollByEmployee[String(row.employee_id)], communicationMonth);
+          const compiled = isCommunicationRowCompiled(row, compensation);
+          if (communicationTableCompilation === 'compiled' && !compiled) {
+            return false;
+          }
+          if (communicationTableCompilation === 'empty' && compiled) {
+            return false;
+          }
+
+          return true;
+        });
+    },
+    [
+      communicationMonth,
+      communicationTableCompilation,
+      communicationTableEmployer,
+      communicationTableTeam,
+      deferredCommunicationTableSearch,
+      draft.details,
+      employeesById,
+      payrollByEmployee,
+    ]
   );
   const filteredEmployeeIds = useMemo(
     () => filteredDetailEntries.map(({ row }) => row.employee_id).filter(Boolean),
     [filteredDetailEntries]
   );
-  const selectedTeamEmployees = useMemo(() => {
-    if (!selectedTeamId) return [];
-    return visibleEmployees
-      .filter((employee) =>
-        (employee.team_history || []).some((team) => String(team.team_id) === String(selectedTeamId) && !team.is_archived)
-      )
-      .sort(compareEmployeesByName);
-  }, [selectedTeamId, visibleEmployees]);
+  const selectedFilteredEmployeeCount = useMemo(
+    () => filteredEmployeeIds.filter((id) => (draft.selected_employee_ids || []).includes(id)).length,
+    [draft.selected_employee_ids, filteredEmployeeIds]
+  );
   const visibleCommunications = communications;
   const communicationCurrentPage = Math.floor(historyOffset / COMMUNICATION_PAGE_SIZE) + 1;
   const communicationTotalPages = Math.max(1, Math.ceil(communicationTotal / COMMUNICATION_PAGE_SIZE));
@@ -557,6 +749,51 @@ export default function CommunicationPage() {
     () => draft.details.map((row) => row.employee_id).filter(Boolean).join('|'),
     [draft.details]
   );
+
+  // Dai report (squadra/dipendente) compila automaticamente, per ogni riga dipendente:
+  // - box "Nota libera" = date busta (es. 8-11-12-13-14-18)
+  // - box LG (giornate_primo) oppure LC (giornate_secondo) = totale giornate, in base alla sigla.
+  // Non sovrascrive valori manuali già presenti e non duplica (idempotente, niente loop).
+  useEffect(() => {
+    if (!autoDatesByEmployee.size && !autoPayrollByEmployee.size) {
+      return;
+    }
+    setDraft((current) => {
+      let changed = false;
+      const nextDetails = current.details.map((row) => {
+        const employeeId = String(row.employee_id);
+        let nextRow = row;
+
+        const days = autoDatesByEmployee.get(employeeId);
+        if (days && days.length) {
+          const datesStr = formatAutoReportDates(days);
+          const nextNote = mergeAutoDatesIntoNote(nextRow.detail_note, datesStr);
+          if (nextNote !== String(nextRow.detail_note || '')) {
+            nextRow = { ...nextRow, detail_note: nextNote };
+            changed = true;
+          }
+        }
+
+        const payroll = autoPayrollByEmployee.get(employeeId);
+        if (payroll) {
+          if (payroll.primo > 0 && String(nextRow.giornate_primo ?? '').trim() === '') {
+            nextRow = { ...nextRow, giornate_primo: String(payroll.primo) };
+            changed = true;
+          }
+          if (payroll.secondo > 0 && String(nextRow.giornate_secondo ?? '').trim() === '') {
+            nextRow = { ...nextRow, giornate_secondo: String(payroll.secondo) };
+            changed = true;
+          }
+        }
+
+        return nextRow;
+      });
+      if (!changed) {
+        return current;
+      }
+      return { ...current, details: nextDetails };
+    });
+  }, [autoDatesByEmployee, autoPayrollByEmployee, communicationEmployeeIdsKey]);
 
   useEffect(() => {
     setDraft((current) => {
@@ -690,24 +927,7 @@ export default function CommunicationPage() {
 
     setSaving(true);
     try {
-      let saved;
-
-      try {
-        saved = await window.api.communications.save(basePayload);
-      } catch (err) {
-        if (err?.code === 'COMMUNICATION_MONTH_EXISTS' || String(err?.message || '').includes('Esiste già una comunicazione per questo mese')) {
-          const confirmed = window.confirm('Esiste già una comunicazione per questo mese. Vuoi sovrascriverla?');
-          if (!confirmed) {
-            return null;
-          }
-          saved = await window.api.communications.save({
-            ...basePayload,
-            overwrite_existing: true,
-          });
-        } else {
-          throw err;
-        }
-      }
+      let saved = await window.api.communications.save(basePayload);
 
       setDraft((current) => ({
         ...current,
@@ -730,7 +950,8 @@ export default function CommunicationPage() {
   async function handleSave() {
     const saved = await persistDraft();
     if (saved) {
-      alert('Comunicazione salvata nello storico con PDF ed Excel aggiornati.');
+      const baseMessage = 'Comunicazione salvata nello storico con PDF ed Excel aggiornati.';
+      alert(saved.artifact_notice ? `${baseMessage}\n\n${saved.artifact_notice}` : baseMessage);
     }
   }
 
@@ -748,6 +969,30 @@ export default function CommunicationPage() {
     } catch (err) {
       console.error(err);
       alert(`Errore apertura ${type === 'pdf' ? 'PDF' : 'Excel'}`);
+    }
+  }
+
+  async function handleOpenSelectedPdf() {
+    const selectedIds = [...new Set((draft.selected_employee_ids || []).map(Number).filter(Number.isFinite))];
+    if (!selectedIds.length) {
+      alert('Seleziona almeno un dipendente per generare il PDF selezionati.');
+      return;
+    }
+
+    const saved = await persistDraft();
+    if (!saved) return;
+
+    try {
+      if (typeof window.api?.communications?.generateSelectedPdf !== 'function') {
+        throw new Error('Bridge Electron non aggiornato: riavvia GPA per caricare la nuova funzione generateSelectedPdf.');
+      }
+      const result = await window.api.communications.generateSelectedPdf(saved.id, selectedIds);
+      if (result && !result.success && result.message) {
+        alert(result.message);
+      }
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || 'Errore generazione PDF selezionati');
     }
   }
 
@@ -799,6 +1044,12 @@ export default function CommunicationPage() {
     );
     try {
       const fullCommunication = await window.api.communications.getById(communicationId);
+      console.info('[communication-open]', {
+        requested_id: communicationId,
+        requested_month: null,
+        loaded_id: fullCommunication?.id || null,
+        loaded_month: fullCommunication?.month_reference || null,
+      });
       if (fullCommunication) {
         setHistoryById((current) => ({
           ...current,
@@ -816,10 +1067,22 @@ export default function CommunicationPage() {
   }
 
   async function loadHistoryCommunication(communicationSummary) {
+    console.info('[communication-open]', {
+      requested_id: communicationSummary?.id || null,
+      requested_month: communicationSummary?.month_reference || null,
+      loaded_id: null,
+      loaded_month: null,
+    });
     const communication =
       historyById[communicationSummary.id] ||
       (await ensureHistoryCommunicationLoaded(communicationSummary.id)) ||
       communicationSummary;
+    console.info('[communication-open]', {
+      requested_id: communicationSummary?.id || null,
+      requested_month: communicationSummary?.month_reference || null,
+      loaded_id: communication?.id || null,
+      loaded_month: communication?.month_reference || null,
+    });
     const communicationRange = getCommunicationReferenceRange(communication);
     setDraft({
       id: communication.id,
@@ -890,71 +1153,6 @@ export default function CommunicationPage() {
       ...current,
       selected_employee_ids: (current.selected_employee_ids || []).filter((id) => !ids.has(Number(id))),
     }));
-  }
-
-  function openEmployeeDatesModal(employee) {
-    console.info('[communication-dates] click Inserisci date', employee?.id);
-    if (!employee?.id) {
-      console.warn('[communication-dates] employee.id non trovato');
-      return;
-    }
-    const modalState = {
-      employeeId: Number(employee.id),
-      employeeLabel: formatEmployeeName(employee),
-      role: employee.role || '',
-    };
-    console.info('[communication-dates] open modal', modalState);
-    setDateModal(modalState);
-    setDateModalDates(normalizeDateList(draft.employee_dates?.[String(employee.id)] || []));
-    setDateModalInput(effectivePeriod.start || todayIso());
-    setDateModalError('');
-  }
-
-  function addDateToModal() {
-    const normalized = String(dateModalInput || '').trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
-      setDateModalError('Inserisci una data valida.');
-      return;
-    }
-    setDateModalDates((current) => normalizeDateList([...current, normalized]));
-    setDateModalInput('');
-    setDateModalError('');
-  }
-
-  function removeDateFromModal(dateValue) {
-    setDateModalDates((current) => current.filter((date) => date !== dateValue));
-    setDateModalError('');
-  }
-
-  function saveEmployeeDates() {
-    if (!dateModal?.employeeId) return;
-    const nextDates = normalizeDateList(dateModalDates);
-    if (!nextDates.length) {
-      setDateModalError('Inserisci almeno una data oppure usa "Cancella date".');
-      return;
-    }
-    console.info('[communication-dates] save dates', { employeeId: dateModal.employeeId, count: nextDates.length });
-    setDraft((current) => ({
-      ...current,
-      employee_dates: {
-        ...(current.employee_dates || {}),
-        [String(dateModal.employeeId)]: nextDates,
-      },
-    }));
-    setDateModal(null);
-  }
-
-  function clearEmployeeDates() {
-    if (!dateModal?.employeeId) return;
-    setDraft((current) => {
-      const nextDates = { ...(current.employee_dates || {}) };
-      delete nextDates[String(dateModal.employeeId)];
-      return {
-        ...current,
-        employee_dates: nextDates,
-      };
-    });
-    setDateModal(null);
   }
 
   function updateDetailRow(index, field, value) {
@@ -1096,6 +1294,13 @@ export default function CommunicationPage() {
             <button className="button-secondary" onClick={() => handleOpenGenerated('pdf')} disabled={saving}>
               Genera PDF
             </button>
+            <button
+              className="button-secondary"
+              onClick={handleOpenSelectedPdf}
+              disabled={saving || !(draft.selected_employee_ids || []).length}
+            >
+              Genera PDF selezionati
+            </button>
             <button className="button-secondary" onClick={() => handleOpenGenerated('excel')} disabled={saving}>
               Esporta Excel
             </button>
@@ -1120,6 +1325,11 @@ export default function CommunicationPage() {
             </button>
           </div>
         </div>
+        {monthlyCommunicationNotice ? (
+          <div className="form-info" style={{ marginTop: 10 }}>
+            {monthlyCommunicationNotice}
+          </div>
+        ) : null}
       </div>
 
       <section className="panel panel-section">
@@ -1293,117 +1503,87 @@ export default function CommunicationPage() {
         </div>
 
         <div className="communication-card" style={{ marginTop: 18 }}>
-          <div className="communication-table-head">
-            <div>
-              <h2 className="communication-section-title" style={{ marginBottom: 4 }}>Tabella giornate</h2>
-              <p className="page-subtitle" style={{ marginTop: 0, maxWidth: 'none' }}>
-                Documento indipendente dalle presenze: i valori qui sono manuali e completamente modificabili.
-              </p>
-            </div>
-          </div>
-
-          <div className="communication-selection-panel">
-            <div className="communication-selection-toolbar">
-              <label className="communication-search-field">
-                <span className="communication-field-label">Cerca dipendente</span>
-                <input
-                  className="search-input"
-                  value={employeeSearch}
-                  onChange={(event) => setEmployeeSearch(event.target.value)}
-                  placeholder="Cerca per nome, mansione o squadra..."
-                />
-              </label>
-
-              <label className="communication-team-field">
-                <span className="communication-field-label">Squadra</span>
-                <select value={selectedTeamId} onChange={(event) => setSelectedTeamId(event.target.value)}>
-                  <option value="">Tutte le squadre</option>
-                  {teamOptions.map((team) => (
-                    <option key={team.id} value={team.id}>{team.name}</option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="communication-selection-counter">
-                <span className="communication-field-label">Selezionati</span>
-                <strong>
-                  {(draft.selected_employee_ids || []).length} / {draft.details.filter((r) => r.employee_id).length}
-                </strong>
-              </div>
-
-              <div className="communication-selection-actions">
-                <button
-                  type="button"
-                  className="button-secondary"
-                  onClick={() => selectFilteredPdfEmployees(filteredEmployeeIds)}
-                  disabled={!filteredEmployeeIds.length}
-                >
-                  Seleziona filtrati
-                </button>
-                <button
-                  type="button"
-                  className="button-secondary"
-                  onClick={() => clearFilteredPdfEmployees(filteredEmployeeIds)}
-                  disabled={!filteredEmployeeIds.length}
-                >
-                  Deseleziona filtrati
-                </button>
-              </div>
-            </div>
-
-            {selectedTeamId ? (
-              <div className="communication-team-members">
-                <div className="communication-team-members-title">
-                  <strong>{selectedTeamEmployees.length} dipendenti nella squadra</strong>
-                  <span>Inserisci date specifiche per ogni operaio, se servono nella comunicazione.</span>
-                </div>
-
-                {selectedTeamEmployees.length ? selectedTeamEmployees.map((employee) => {
-                  const dates = normalizeDateList(draft.employee_dates?.[String(employee.id)] || []);
-                  return (
-                    <div className="communication-team-member-row" key={employee.id}>
-                      <label className="communication-team-member-name">
-                        <input
-                          type="checkbox"
-                          checked={(draft.selected_employee_ids || []).includes(employee.id)}
-                          onChange={() => togglePdfEmployee(employee.id)}
-                        />
-                        <span>
-                          <strong>{formatEmployeeName(employee)}</strong>
-                          <small>{employee.role || 'Mansione non indicata'}</small>
-                        </span>
-                      </label>
-                      <div className="communication-date-box">
-                        {dates.length ? (
-                          <>
-                            <span>{dates.map(formatShortDateLabel).join(', ')}</span>
-                            <strong>Totale: {dates.length}</strong>
-                          </>
-                        ) : (
-                          <span>Nessuna data inserita</span>
-                        )}
-                      </div>
-                      <button
-                        type="button"
-                        className="button-secondary"
-                        onClick={() => openEmployeeDatesModal(employee)}
-                      >
-                        Inserisci date
-                      </button>
-                    </div>
-                  );
-                }) : (
-                  <div className="empty-state" style={{ padding: 12 }}>Nessun dipendente in questa squadra.</div>
-                )}
-              </div>
-            ) : null}
-          </div>
-
           {loading ? (
             <div className="empty-state" style={{ padding: '24px 0' }}>Caricamento dipendenti...</div>
           ) : (
-            <div className="communication-table-shell communication-days-table-shell">
-              <div className="communication-days-grid-header">
+            <>
+              <div className="communication-selection-panel communication-main-filters">
+                <div className="communication-selection-toolbar communication-main-filter-toolbar">
+                  <label className="communication-search-field">
+                    <span className="communication-field-label">Cerca nome</span>
+                    <input
+                      type="search"
+                      placeholder="Cerca per nome..."
+                      value={communicationTableSearch}
+                      onChange={(event) => setCommunicationTableSearch(event.target.value)}
+                    />
+                  </label>
+
+                  <label className="communication-team-field">
+                    <span className="communication-field-label">Squadra</span>
+                    <select
+                      value={communicationTableTeam}
+                      onChange={(event) => setCommunicationTableTeam(event.target.value)}
+                    >
+                      <option value="all">Tutte le squadre</option>
+                      {communicationTeamOptions.map((team) => (
+                        <option key={team.id} value={team.id}>{team.name}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="communication-team-field">
+                    <span className="communication-field-label">Datore</span>
+                    <select
+                      value={communicationTableEmployer}
+                      onChange={(event) => setCommunicationTableEmployer(event.target.value)}
+                    >
+                      <option value="all">Tutti i datori</option>
+                      <option value="LG">LG</option>
+                      <option value="LC">LC</option>
+                    </select>
+                  </label>
+
+                  <label className="communication-team-field">
+                    <span className="communication-field-label">Compilazione</span>
+                    <select
+                      value={communicationTableCompilation}
+                      onChange={(event) => setCommunicationTableCompilation(event.target.value)}
+                    >
+                      <option value="all">Tutti</option>
+                      <option value="compiled">Già compilati</option>
+                      <option value="empty">Vuoti</option>
+                    </select>
+                  </label>
+
+                  <div className="communication-selection-counter">
+                    <span className="communication-field-label">Selezionati / visibili</span>
+                    <strong>{selectedFilteredEmployeeCount} / {filteredEmployeeIds.length}</strong>
+                  </div>
+
+                  <div className="communication-selection-actions">
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      disabled={!filteredEmployeeIds.length}
+                      onClick={() => selectFilteredPdfEmployees(filteredEmployeeIds)}
+                    >
+                      Seleziona filtrati
+                    </button>
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      disabled={!filteredEmployeeIds.length}
+                      onClick={() => clearFilteredPdfEmployees(filteredEmployeeIds)}
+                    >
+                      Deseleziona filtrati
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="communication-table-shell communication-days-table-shell">
+                <div className="communication-days-grid-header">
                 <div
                   className="communication-select-cell"
                   title="Includi nel PDF"
@@ -1435,8 +1615,8 @@ export default function CommunicationPage() {
                 <div>{employerOptions[1] ? employerOptions[1].short_name : 'LG'}</div>
                 <div>Compenso mese</div>
                 <div>Note</div>
-              </div>
-              <div className="communication-days-grid-body">
+                </div>
+                <div className="communication-days-grid-body">
                   {!filteredDetailEntries.length ? (
                     <div className="empty-state" style={{ padding: 18 }}>
                       Nessun dipendente trovato con i filtri correnti.
@@ -1586,8 +1766,9 @@ export default function CommunicationPage() {
                       </div>
                     );
                   })}
+                </div>
               </div>
-            </div>
+            </>
           )}
         </div>
       </section>
@@ -1789,81 +1970,6 @@ export default function CommunicationPage() {
           </div>
         )}
       </section>
-
-      {dateModal ? createPortal(
-        <div className="modal-backdrop">
-          <div className="communication-date-modal">
-            <div className="modal-header">
-              <div>
-                <h2>Inserisci date</h2>
-                <p>
-                  {dateModal.employeeLabel}
-                  {dateModal.role ? ` - ${dateModal.role}` : ''}
-                </p>
-              </div>
-              <button type="button" className="modal-close" onClick={() => setDateModal(null)}>
-                ×
-              </button>
-            </div>
-
-            <div className="communication-date-modal-body">
-              <div className="communication-date-add-row">
-                <input
-                  type="date"
-                  value={dateModalInput}
-                  onChange={(event) => setDateModalInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      addDateToModal();
-                    }
-                  }}
-                />
-                <button type="button" className="button-secondary" onClick={addDateToModal}>
-                  Aggiungi data
-                </button>
-              </div>
-
-              {dateModalError ? <div className="form-error">{dateModalError}</div> : null}
-
-              <div className="communication-date-chip-list">
-                {dateModalDates.length ? dateModalDates.map((date) => (
-                  <span className="communication-date-chip" key={date}>
-                    {formatShortDateLabel(date)}
-                    <button type="button" onClick={() => removeDateFromModal(date)} aria-label={`Rimuovi ${formatDateLabel(date)}`}>
-                      ×
-                    </button>
-                  </span>
-                )) : (
-                  <div className="empty-state" style={{ padding: 12 }}>Nessuna data inserita.</div>
-                )}
-              </div>
-
-              <div className="communication-date-total">
-                Totale date: <strong>{dateModalDates.length}</strong>
-              </div>
-            </div>
-
-            <div className="modal-actions">
-              <button type="button" className="button-secondary" onClick={() => setDateModal(null)}>
-                Annulla
-              </button>
-              <button
-                type="button"
-                className="button-danger"
-                onClick={clearEmployeeDates}
-                disabled={!normalizeDateList(draft.employee_dates?.[String(dateModal.employeeId)] || []).length}
-              >
-                Cancella date
-              </button>
-              <button type="button" className="button" onClick={saveEmployeeDates}>
-                Salva date
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      ) : null}
     </div>
   );
 }
