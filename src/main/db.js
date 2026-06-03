@@ -219,6 +219,7 @@ function runCoreSchemaMigration(database) {
       ore_totali REAL DEFAULT 0,
       retribuzione_calcolata REAL DEFAULT 0,
       giornate_busta_paga REAL DEFAULT 0,
+      residual_hourly_rate REAL,
       selected_payroll_days_json TEXT DEFAULT '[]',
       show_selected_payroll_days_in_report INTEGER DEFAULT 0,
       importo_busta_paga REAL DEFAULT 0,
@@ -594,6 +595,7 @@ function runCoreSchemaMigration(database) {
   ensureColumn(database, 'payroll_records', 'archived_at', 'TEXT');
   ensureColumn(database, 'payroll_records', 'report_html_snapshot', 'TEXT');
   ensureColumn(database, 'payroll_records', 'report_snapshot_json', 'TEXT');
+  ensureColumn(database, 'payroll_records', 'residual_hourly_rate', 'REAL');
   ensureColumn(database, 'communications', 'employer_labels_json', 'TEXT');
   ensureColumn(database, 'communication_details', 'detail_note', 'TEXT');
 
@@ -1424,6 +1426,24 @@ function runCommunicationsSubjectColumnMigration(database) {
   });
 }
 
+// Garantisce la colonna payroll_records.residual_hourly_rate sui DB esistenti.
+// Su install fresche la colonna è già nello schema (vedi `runCoreSchemaMigration`),
+// ma DB migrati prima dell'introduzione della colonna non avevano l'`ensureColumn`
+// → la migration core risulta già "applied" e non re-esegue, lasciando lo schema indietro.
+// Questa è una migration dedicata con id nuovo per recuperare anche quei DB.
+function runPayrollResidualHourlyRateMigration(database) {
+  console.info('[db-migration] [name=payroll-residual-hourly-rate] start');
+  const added = ensureColumn(database, 'payroll_records', 'residual_hourly_rate', 'REAL DEFAULT NULL')
+    ? ['residual_hourly_rate']
+    : [];
+  console.info('[db-migration] [name=payroll-residual-hourly-rate] ensured');
+  logDbEvent('schema-table-updated', {
+    migration_id: '2026-05-29-payroll-residual-hourly-rate',
+    table_name: 'payroll_records',
+    columns_added: added.length ? added : ['already-present'],
+  });
+}
+
 function runReportAutoNotesMigration(database) {
   console.info('[db-migration] [name=report-auto-notes] start');
   database.exec(`
@@ -1577,6 +1597,10 @@ const MIGRATIONS = [
   {
     id: '2026-05-28-communications-subject-column',
     run: runCommunicationsSubjectColumnMigration,
+  },
+  {
+    id: '2026-05-29-payroll-residual-hourly-rate',
+    run: runPayrollResidualHourlyRateMigration,
   },
 ];
 

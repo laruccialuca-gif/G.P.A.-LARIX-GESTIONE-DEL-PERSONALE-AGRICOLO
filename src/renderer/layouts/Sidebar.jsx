@@ -72,6 +72,7 @@ const links = [
   { path: '/', label: 'Dashboard', icon: '\u25eb' },
   { path: '/dipendenti', label: 'Dipendenti', icon: <PersonIcon /> },
   { path: '/presenze', label: 'Presenze', icon: <AttendanceIcon /> },
+  { path: '/preview-pagamenti', label: 'Preview pagamenti', icon: <MoneyIcon /> },
   { path: '/acconti-rate', label: 'Acconti e Rate', icon: <MoneyIcon /> },
   { path: '/report', label: 'Report', icon: '\u25ea' },
   { path: '/storico-operaio', label: 'Storico', icon: '\u25ce' },

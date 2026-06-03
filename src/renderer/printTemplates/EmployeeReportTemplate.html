@@ -198,7 +198,13 @@ function loadData(data) {
   el('t-kpi-compenso-note').innerHTML =
     kpi.giornateEquivalenti + ' gg × ' + fmtEur(dip.dailyRate);
 
-  el('t-kpi-compenso-note').textContent = '';
+  if (comp.straordinariImporto > 0 && kpi.straordinari > 0) {
+    el('t-kpi-compenso-note').textContent =
+      'Ordinario ' + fmtEur(comp.retribuzione) + ' + straordinari ' + fmtEur(comp.straordinariImporto);
+  } else {
+    el('t-kpi-compenso-note').textContent =
+      kpi.giornateEquivalenti.toLocaleString('it-IT', { maximumFractionDigits: 2 }) + ' gg × ' + fmtEur(dip.dailyRate);
+  }
 
   // --- Calendar ---
   renderCalendar(data.calendario);
@@ -312,14 +318,12 @@ function renderBreakdownCredits(compenso, dip) {
     ));
   }
 
-  // 3. Regalo (only if > 0)
-  if (compenso.regalo > 0) {
-    bd.appendChild(makeRow(
-      'Regalo',
-      'Voce aggiuntiva del mese',
-      fmtEur(compenso.regalo),
-      ''
-    ));
+  // 3. Voce extra positiva: usa l'etichetta in stampa salvata; default "Voce extra".
+  //    Importi negativi NON appaiono qui: vengono mostrati nei Debiti come trattenuta.
+  var regaloCreditValue = Number(compenso.regalo || 0);
+  if (regaloCreditValue > 0) {
+    var regaloCreditLabel = String(compenso.regaloNote || compenso.regaloLabel || '').trim() || 'Voce extra';
+    bd.appendChild(makeRow(regaloCreditLabel, null, fmtEur(regaloCreditValue), ''));
   }
 
   // 4. Trasporto (only if > 0)
@@ -395,6 +399,20 @@ function renderBreakdownDebits(compenso) {
     ));
   }
 
+  // 3b. Voce extra negativa: il valore signato `compenso.regalo` se < 0 va qui
+  //     come trattenuta a importo positivo. Label = "Etichetta in stampa" salvata,
+  //     fallback "Voce extra". Importo positivo già incluso in totalDebits.
+  var regaloDebitValue = Number(compenso.regalo || 0);
+  if (regaloDebitValue < 0) {
+    var regaloDebitLabel = String(compenso.regaloNote || compenso.regaloLabel || '').trim() || 'Voce extra';
+    bd.appendChild(makeRow(
+      regaloDebitLabel,
+      null,
+      fmtEur(Math.abs(regaloDebitValue)),
+      ''
+    ));
+  }
+
   // 4. Subtotal
   bd.appendChild(makeRow(
     'Totale debiti',
@@ -403,7 +421,7 @@ function renderBreakdownDebits(compenso) {
     'subtotal'
   ));
 
-  // 5. Saldo finale (riga nera)
+  // 5. Saldo finale del mese (riga nera) — SALDO ORIGINARIO, non residuo.
   bd.appendChild(makeRow(
     'Saldo finale',
     compenso.balanceStatusLabel,
@@ -411,8 +429,53 @@ function renderBreakdownDebits(compenso) {
     'total'
   ));
 
+  // 6. Chiusura saldo (pagamento parziale o saldo totale registrato a posteriori).
+  renderBreakdownChiusuraSaldo(bd, compenso);
+
   el('t-debits-breakdown').innerHTML = '';
   el('t-debits-breakdown').appendChild(bd);
+}
+
+function renderBreakdownChiusuraSaldo(container, compenso) {
+  var chiusura = compenso && compenso.chiusuraSaldo;
+  if (!chiusura) {
+    return;
+  }
+
+  var status = String(chiusura.status || '').toLowerCase();
+  // Non mostrare nulla se non c'è ancora alcun pagamento/incasso registrato.
+  if (status !== 'parziale' && status !== 'saldato') {
+    return;
+  }
+
+  var paidLabel = chiusura.paidActionLabel || 'Pagato';
+  var residualLabel = chiusura.residualLabel || 'Residuo';
+  var dateSuffix = chiusura.paidDateLabel ? ' il ' + chiusura.paidDateLabel : '';
+
+  // Titolo della sezione.
+  container.appendChild(makeRow(
+    'Chiusura saldo',
+    'Stato: ' + (chiusura.statusLabel || ''),
+    '',
+    'subtotal'
+  ));
+
+  // Importo pagato/incassato.
+  container.appendChild(makeRow(
+    paidLabel + dateSuffix,
+    null,
+    fmtEur(Number(chiusura.partialPaidAmount || 0)),
+    ''
+  ));
+
+  // Residuo (per status saldato il residuo è 0).
+  var residualAmount = status === 'saldato' ? 0 : Number(chiusura.residualAmount || 0);
+  container.appendChild(makeRow(
+    residualLabel,
+    null,
+    fmtEur(residualAmount),
+    ''
+  ));
 }
 
 // Auto-load if data was injected before script execution

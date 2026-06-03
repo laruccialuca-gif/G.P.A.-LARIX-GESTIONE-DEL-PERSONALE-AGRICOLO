@@ -1,6 +1,6 @@
 import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useYearContext } from '../context/YearContext';
 import { dispatchRouteReady } from '../utils/navigationPerf';
 import { employeeIsActiveInYear, isDateRangeActiveInYear } from '../utils/yearScope';
@@ -324,6 +324,7 @@ function isCommunicationRowCompiled(row, compensation) {
 export default function CommunicationPage() {
   const COMMUNICATION_PAGE_SIZE = 50;
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { selectedYear } = useYearContext();
   const [employees, setEmployees] = useState([]);
   const [communications, setCommunications] = useState([]);
@@ -356,6 +357,26 @@ export default function CommunicationPage() {
   const compensationCloseTimerRef = useRef(null);
   const deferredHistorySearch = useDeferredValue(historySearch);
   const deferredCommunicationTableSearch = useDeferredValue(communicationTableSearch);
+
+  useEffect(() => {
+    const requestedMonth = String(searchParams.get('month') || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(requestedMonth)) {
+      return;
+    }
+    const range = monthToRange(requestedMonth);
+    setDraft((current) => {
+      if (current.month_reference === requestedMonth && current.period_mode === 'monthly') {
+        return current;
+      }
+      return {
+        ...current,
+        period_mode: 'monthly',
+        month_reference: requestedMonth,
+        period_start: range.start,
+        period_end: range.end,
+      };
+    });
+  }, [searchParams]);
 
   async function loadBaseData() {
     setLoading(true);

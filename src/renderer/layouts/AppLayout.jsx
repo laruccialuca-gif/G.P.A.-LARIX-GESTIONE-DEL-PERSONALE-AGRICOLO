@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import LicenseGate from '../components/LicenseGate';
+import LarixAssistant from '../components/larix/LarixAssistant';
+import LarixLauncher from '../components/larix/LarixLauncher';
 import { getSoftwareBrandingLabel } from '../config/branding';
 import { useYearContext } from '../context/YearContext';
 import { useAuth } from '../context/AuthContext';
@@ -31,6 +33,7 @@ export default function AppLayout() {
   const [settingsInfo, setSettingsInfo] = useState(null);
   const [licenseStatus, setLicenseStatus] = useState(null);
   const [activeOperations, setActiveOperations] = useState([]);
+  const [isLarixOpen, setIsLarixOpen] = useState(false);
 
   const dismissToast = useCallback((toastId) => {
     const timerId = toastTimersRef.current.get(toastId);
@@ -451,6 +454,18 @@ export default function AppLayout() {
       </main>
 
       <LicenseGate />
+
+      <LarixAssistant
+        isOpen={isLarixOpen}
+        onClose={() => setIsLarixOpen(false)}
+        navigate={navigate}
+        selectedYear={selectedYear}
+        setSelectedYear={setSelectedYear}
+      />
+      <LarixLauncher
+        isOpen={isLarixOpen}
+        onToggle={() => setIsLarixOpen((current) => !current)}
+      />
 
       {toasts.length ? (
         <div className="toast-stack no-print" aria-live="polite" aria-atomic="true">

@@ -1337,6 +1337,7 @@ export default function ReportPage() {
   const [selectedPayrollDays, setSelectedPayrollDays] = useState([]);
   const [showSelectedPayrollDaysInReport, setShowSelectedPayrollDaysInReport] = useState(false);
   const [dailyPayInput, setDailyPayInput] = useState('');
+  const [residualHourlyRateInput, setResidualHourlyRateInput] = useState('');
   const [savingDailyPay, setSavingDailyPay] = useState(false);
   const [advances, setAdvances] = useState([createEmptyAdvance()]);
   const [restoPrecedente, setRestoPrecedente] = useState('');
@@ -1401,6 +1402,7 @@ export default function ReportPage() {
   const [employeeTemplatePreviewLoading, setEmployeeTemplatePreviewLoading] = useState(false);
   const [employeeTemplatePreviewError, setEmployeeTemplatePreviewError] = useState('');
   const lastEmployeeTemplatePreviewKeyRef = useRef('');
+  const employeeTemplatePreviewInFlightKeyRef = useRef('');
   const employeeTemplatePreviewTimeoutRef = useRef(null);
   const latestEmployeeTemplateSourceRef = useRef(null);
   const [employeeTemplatePreviewMode, setEmployeeTemplatePreviewMode] = useState('fit-width');
@@ -1570,12 +1572,6 @@ export default function ReportPage() {
   const selectedReportMonthKey = monthString(currentMonth);
   const monthName = MONTH_NAMES[currentMonth.getMonth()];
   const yearStr = String(currentMonth.getFullYear());
-  console.count('[report-render]');
-  console.count('[report-template-render]');
-
-  useEffect(() => {
-    console.info('[report-template] monthName', monthName);
-  }, [monthName]);
 
   useEffect(() => {
     if (!loading) {
@@ -2213,6 +2209,7 @@ export default function ReportPage() {
     setGiornateBustaPaga(draft.giornateBustaPaga || '');
     setSelectedPayrollDays(normalizeTeamPayrollSelectedDays(draft.selectedPayrollDays || draft.selected_payroll_days_json));
     setShowSelectedPayrollDaysInReport(!!draft.showSelectedPayrollDaysInReport);
+    setResidualHourlyRateInput(draft.residualHourlyRateInput || '');
     setAdvances(Array.isArray(draft.advances) && draft.advances.length ? draft.advances : [createEmptyAdvance()]);
     setRestoPrecedente(draft.restoPrecedente || '');
     setTrasportoAttivo(!!draft.trasportoAttivo);
@@ -2724,6 +2721,13 @@ export default function ReportPage() {
             currentMonth
           ),
           showSelectedPayrollDaysInReport: !!record.show_selected_payroll_days_in_report,
+          residualHourlyRateInput:
+            record.residual_hourly_rate !== null && record.residual_hourly_rate !== undefined
+              ? String(record.residual_hourly_rate)
+              : record?.report_snapshot_json?.residual_hourly_rate !== null &&
+                record?.report_snapshot_json?.residual_hourly_rate !== undefined
+              ? String(record.report_snapshot_json.residual_hourly_rate)
+              : '',
           advances: buildEditorAdvances(record.advances),
           restoPrecedente: record.resto_precedente !== null && record.resto_precedente !== undefined ? String(record.resto_precedente) : '',
           trasportoAttivo: savedNMacchine > 0 || savedPrezzo > 0 || savedTrasporto > 0,
@@ -2770,6 +2774,7 @@ export default function ReportPage() {
           giornateBustaPaga: '',
           selectedPayrollDays: [],
           showSelectedPayrollDaysInReport: false,
+          residualHourlyRateInput: '',
           advances: [createEmptyAdvance()],
           restoPrecedente: previous?.previousBalance !== null && previous?.previousBalance !== undefined ? String(previous.previousBalance) : '',
           trasportoAttivo: false,
@@ -2804,6 +2809,7 @@ export default function ReportPage() {
         setGiornateBustaPaga(nextState.giornateBustaPaga);
         setSelectedPayrollDays(nextState.selectedPayrollDays || []);
         setShowSelectedPayrollDaysInReport(!!nextState.showSelectedPayrollDaysInReport);
+        setResidualHourlyRateInput(nextState.residualHourlyRateInput || '');
         setAdvances(nextState.advances);
         setRestoPrecedente(nextState.restoPrecedente);
         setTrasportoAttivo(nextState.trasportoAttivo);
@@ -2865,6 +2871,7 @@ export default function ReportPage() {
               giornateBustaPaga: nextSavedState.giornateBustaPaga,
               selectedPayrollDays: nextSavedState.selectedPayrollDays,
               showSelectedPayrollDaysInReport: nextSavedState.showSelectedPayrollDaysInReport,
+              residualHourlyRateInput: nextSavedState.residualHourlyRateInput,
               advances: nextSavedState.advances,
               restoPrecedente: nextSavedState.restoPrecedente,
               trasportoAttivo: nextSavedState.trasportoAttivo,
@@ -2908,6 +2915,7 @@ export default function ReportPage() {
             datore: nextSavedState.datore,
             importoBustaPaga: nextSavedState.importoBustaPaga,
             giornateBustaPaga: nextSavedState.giornateBustaPaga,
+            residualHourlyRateInput: nextSavedState.residualHourlyRateInput,
             advances: nextSavedState.advances,
             restoPrecedente: nextSavedState.restoPrecedente,
             trasportoAttivo: nextSavedState.trasportoAttivo,
@@ -3644,7 +3652,7 @@ export default function ReportPage() {
           }))
           .filter((installment) => installment.target_month && installment.amount > 0),
       }))
-      .filter((plan) => plan.status !== 'active' || (plan.total_amount > 0 && plan.installments.length));
+      .filter((plan) => plan.status === 'active' && (plan.total_amount > 0 || plan.installments.length > 0));
     const importoBustaPagaNum = parseFloat(importoBustaPaga) || 0;
     const restoPrecedenteNum = parseFloat(restoPrecedente) || 0;
     const nMacchineMeseNum = trasportoAttivo ? parseFloat(nMacchineMese) || 0 : 0;
@@ -3692,6 +3700,7 @@ export default function ReportPage() {
         ore_totali: employeeTotals.totalHours,
         retribuzione_calcolata: totalCalculatedPay,
         giornate_busta_paga: giornateBustaPaga ? Number(giornateBustaPaga) : 0,
+        residual_hourly_rate: hasManualResidualHourlyRate ? effectiveResidualHourlyRate : null,
         selected_payroll_days: normalizedSelectedPayrollDays,
         selected_payroll_days_json: JSON.stringify(normalizedSelectedPayrollDays),
         show_selected_payroll_days_in_report: showSelectedPayrollDaysInReport,
@@ -3726,6 +3735,11 @@ export default function ReportPage() {
           totalCalculatedPay,
           totalRegularPay,
           totalOvertimePay,
+          residual_hourly_rate: hasManualResidualHourlyRate ? effectiveResidualHourlyRate : null,
+          regularDaysCompensation: regularWorkedDays * dailyPay,
+          residualHoursCompensation: regularResidualHours * effectiveResidualHourlyRate,
+          regularWorkedDays,
+          regularResidualHours,
           overtimeHourlyRate,
           workedDays,
           totalHours: employeeTotals.totalHours,
@@ -3787,6 +3801,7 @@ export default function ReportPage() {
       setBalanceClosedAt(normalizedBalanceClosedAt);
       setSelectedPayrollDays(normalizedSelectedPayrollDays);
       setShowSelectedPayrollDaysInReport(!!showSelectedPayrollDaysInReport);
+      setResidualHourlyRateInput(hasManualResidualHourlyRate ? String(effectiveResidualHourlyRate) : '');
       const nextEditorAdvances = buildEditorAdvances(saved?.advances, advances);
       setAdvances(nextEditorAdvances);
       if (!options.autosave) {
@@ -3804,6 +3819,7 @@ export default function ReportPage() {
         giornateBustaPaga,
         selectedPayrollDays: normalizedSelectedPayrollDays,
         showSelectedPayrollDaysInReport,
+        residualHourlyRateInput: hasManualResidualHourlyRate ? String(effectiveResidualHourlyRate) : '',
         advances: nextEditorAdvances,
         restoPrecedente,
         trasportoAttivo,
@@ -3841,6 +3857,7 @@ export default function ReportPage() {
           giornateBustaPaga: nextSavedState.giornateBustaPaga,
           selectedPayrollDays: nextSavedState.selectedPayrollDays,
           showSelectedPayrollDaysInReport: nextSavedState.showSelectedPayrollDaysInReport,
+          residualHourlyRateInput: nextSavedState.residualHourlyRateInput,
           advances: nextSavedState.advances,
           restoPrecedente: nextSavedState.restoPrecedente,
           trasportoAttivo: nextSavedState.trasportoAttivo,
@@ -4648,10 +4665,17 @@ export default function ReportPage() {
   const dailyPay = Number(dailyPayInput || 0);
   const standardHours = getSafeStandardHours(employee?.standard_hours);
   const regularHourlyRate = standardHours > 0 ? dailyPay / standardHours : 0;
+  const normalizedResidualHourlyRateInput = String(residualHourlyRateInput || '').trim();
+  const hasManualResidualHourlyRate = normalizedResidualHourlyRateInput !== '' && Number.isFinite(Number(normalizedResidualHourlyRateInput));
+  const effectiveResidualHourlyRate = hasManualResidualHourlyRate
+    ? Number(normalizedResidualHourlyRateInput)
+    : regularHourlyRate;
   const overtimeHourlyRate = overtimeRateOverride !== '' ? (Number(overtimeRateOverride) || 0) : getEffectiveOvertimeRate(employee, settings);
   const overtimeView = getOvertimeViewSettings(settings);
   const workedDays = employeeTotals.completeDaysTotal;
-  const totalRegularPay = employeeTotals.totalRegularHours * regularHourlyRate;
+  const regularWorkedDays = employeeTotals.completeDaysRegular;
+  const regularResidualHours = employeeTotals.remainingRegularHours;
+  const totalRegularPay = (regularWorkedDays * dailyPay) + (regularResidualHours * effectiveResidualHourlyRate);
   const totalOvertimePay = employeeTotals.totalOvertimeHours * overtimeHourlyRate;
   const totalCalculatedPay = totalRegularPay + totalOvertimePay;
   const totalCalculatedPayForReport = showOvertimeInReport ? totalCalculatedPay : totalRegularPay;
@@ -4659,6 +4683,9 @@ export default function ReportPage() {
   const showPayCalculationDetail = !!settings?.report?.show_pay_calculation_detail;
   const equivalentWorkedDays = attendanceBaseHours > 0
     ? employeeTotals.totalHours / attendanceBaseHours
+    : 0;
+  const regularEquivalentWorkedDays = attendanceBaseHours > 0
+    ? employeeTotals.totalRegularHours / attendanceBaseHours
     : 0;
   const normalizedAdvances = advances
     .map((advance, index) => ({
@@ -4684,7 +4711,7 @@ export default function ReportPage() {
         }))
         .filter((installment) => installment.target_month && installment.amount > 0),
     }))
-    .filter((plan) => plan.total_amount > 0 || plan.installments.length > 0);
+    .filter((plan) => plan.status === 'active' && (plan.total_amount > 0 || plan.installments.length > 0));
   const currentInstallments = normalizedDebtPlans.flatMap((plan) =>
     plan.installments
       .map((installment, index) => ({
@@ -4703,6 +4730,71 @@ export default function ReportPage() {
       .filter((installment) => installment.target_month === monthString(currentMonth))
   );
   const currentInstallmentTotal = currentInstallments.reduce((sum, installment) => sum + installment.amount, 0);
+  const restoPrecedenteNum = parseFloat(restoPrecedente) || 0;
+
+  // [TEMP DEBUG rate/debiti — PERPARIM CARA / 2026-04 soltanto] -------------
+  useEffect(() => {
+    const firstNameUp = String(employee?.first_name || '').toUpperCase();
+    const lastNameUp = String(employee?.last_name || '').toUpperCase();
+    const matchesPerparim = firstNameUp.includes('PERPARIM') || lastNameUp.includes('CARA');
+    const matchesMonth = monthString(currentMonth) === '2026-04';
+    if (!matchesPerparim || !matchesMonth) {
+      return;
+    }
+    let snapshot = null;
+    try {
+      const raw = currentPayrollRecord?.report_snapshot_json;
+      snapshot = typeof raw === 'string' ? JSON.parse(raw) : raw || null;
+    } catch (_) {
+      snapshot = null;
+    }
+    const rateImportoFormula =
+      currentInstallmentTotal + Math.abs(Math.min(restoPrecedenteNum, 0));
+    console.info('[rate-debiti-trace] ReportPage-live PERPARIM-CARA 2026-04', {
+      employee_id: employee?.id || null,
+      employee_name: `${employee?.first_name || ''} ${employee?.last_name || ''}`.trim(),
+      payroll_record_id: currentPayrollRecord?.id || null,
+      month: monthString(currentMonth),
+      snapshot_current_installments_total: snapshot?.current_installments_total ?? null,
+      snapshot_debt_plans: snapshot?.debt_plans ?? null,
+      record_resto_precedente_raw: currentPayrollRecord?.resto_precedente ?? null,
+      restoPrecedenteNum_live: restoPrecedenteNum,
+      currentInstallmentTotal_live: currentInstallmentTotal,
+      compenso_rate_importo_calcolato: rateImportoFormula,
+      currentInstallments_live_summed: currentInstallments.map((item) => ({
+        id: item.id ?? null,
+        plan_id: item.plan_id ?? null,
+        planLabel: item.planLabel ?? null,
+        amount: item.amount,
+        target_month: item.target_month,
+        is_paid: item.is_paid ?? null,
+        paid_record_id: item.paid_record_id ?? null,
+      })),
+      debtPlans_state: debtPlans.map((plan) => ({
+        id: plan.id ?? null,
+        label: plan.label ?? null,
+        status: plan.status ?? null,
+        total_amount: plan.total_amount ?? null,
+        installments: (plan.installments || []).map((item) => ({
+          id: item.id ?? null,
+          target_month: item.target_month ?? null,
+          amount: item.amount ?? null,
+          is_paid: item.is_paid ?? null,
+          paid_record_id: item.paid_record_id ?? null,
+        })),
+      })),
+    });
+  }, [
+    employee?.id,
+    employee?.first_name,
+    employee?.last_name,
+    currentMonth,
+    currentPayrollRecord?.id,
+    currentInstallmentTotal,
+    restoPrecedenteNum,
+  ]);
+  // [/TEMP DEBUG] -----------------------------------------------------------
+
   const emptyPreviewAttendanceSummary = useMemo(
     () => createEmptyAttendanceSummary(attendanceBaseHours),
     [attendanceBaseHours]
@@ -4714,7 +4806,6 @@ export default function ReportPage() {
       .reduce((acc, installment) => acc + installment.amount, 0);
     return sum + Math.max(plan.total_amount - paidInstallments - currentInstallmentTotal, 0);
   }, 0);
-  const restoPrecedenteNum = parseFloat(restoPrecedente) || 0;
   const previousBalanceBadgeLabel = getPreviousBalanceLabel(restoPrecedenteNum);
   const nMacchineMeseNum = trasportoAttivo ? parseFloat(nMacchineMese) || 0 : 0;
   const prezzoPerMacchinaNum = trasportoAttivo ? parseFloat(prezzoPerMacchina) || 0 : 0;
@@ -4996,6 +5087,7 @@ export default function ReportPage() {
     giornateBustaPaga,
     selectedPayrollDays: validSelectedPayrollDays,
     showSelectedPayrollDaysInReport,
+    residualHourlyRateInput,
     advances,
     restoPrecedente,
     trasportoAttivo,
@@ -5027,6 +5119,7 @@ export default function ReportPage() {
       giornateBustaPaga,
       selectedPayrollDays: validSelectedPayrollDays,
       showSelectedPayrollDaysInReport,
+      residualHourlyRateInput,
       advances,
       restoPrecedente,
       trasportoAttivo,
@@ -5077,6 +5170,7 @@ export default function ReportPage() {
       payslipCustomDays,
       previousBalanceReference,
       prezzoPerMacchina,
+      residualHourlyRateInput,
       resolvedDebtPlans,
       restoPrecedente,
       selectedReportMonthKey,
@@ -5229,9 +5323,6 @@ export default function ReportPage() {
     if (lastTeamTemplatePreviewKeyRef.current === teamTemplatePreviewRequestKey) {
       return;
     }
-    console.info('[team-template-data] teamId=%s teamName=%s', selectedTeam?.id || '', selectedTeam?.name || '');
-    console.info('[team-print-template] using-new-template=true');
-    console.count('[team-template-preview-trigger]');
     lastTeamTemplatePreviewKeyRef.current = teamTemplatePreviewRequestKey;
     setTeamTemplatePreviewHtml('');
     setTeamTemplatePreviewData(null);
@@ -5515,36 +5606,6 @@ export default function ReportPage() {
   );
   const remainingBalanceNum = balanceSettlement.remainingBalance;
 
-  useEffect(() => {
-    const showControls = restoPrecedenteNum !== 0 || differenzaFinale !== 0;
-    const reason = !showControls
-      ? 'differenzaFinale === 0 and restoPrecedenteNum === 0'
-      : differenzaFinale > 0
-      ? 'differenzaFinale > 0 (resto da dare)'
-      : differenzaFinale < 0
-      ? 'differenzaFinale < 0 (da ricevere)'
-      : 'restoPrecedenteNum !== 0';
-    console.info('[report-debug] payment status visibility', {
-      employee_id: employee?.id ?? null,
-      month: monthString(currentMonth),
-      finalBalance: differenzaFinale,
-      payroll_record_id: currentPayrollRecord?.id ?? null,
-      isProcessedRecord: !!currentPayrollRecord?.processed_at,
-      balanceStatus,
-      showPaymentStatusControls: showControls,
-      reasonHidden: showControls ? null : 'differenzaFinale === 0 and restoPrecedenteNum === 0',
-      condition: reason,
-    });
-  }, [
-    balanceStatus,
-    currentMonth,
-    currentPayrollRecord?.id,
-    currentPayrollRecord?.processed_at,
-    differenzaFinale,
-    employee?.id,
-    restoPrecedenteNum,
-  ]);
-
   const employeeTemplateSource = useMemo(() => {
     if (!employee) {
       return null;
@@ -5615,17 +5676,24 @@ export default function ReportPage() {
         standardHours,
       },
       kpi: {
-        giornateIntere: workedDays,
-        oreResidue: employeeTotals.remainingTotalHours,
-        oreTotali: displayTotalHours,
+        giornateIntere: showOvertimeInReport ? regularWorkedDays : workedDays,
+        oreResidue: showOvertimeInReport ? regularResidualHours : employeeTotals.remainingTotalHours,
+        oreTotali: showOvertimeInReport ? employeeTotals.totalHours : displayTotalHours,
         straordinari: showOvertimeInReport ? employeeTotals.totalOvertimeHours : 0,
-        giornateEquivalenti: equivalentWorkedDays,
-        compensoLordo: totalRegularPay,
+        giornateEquivalenti: showOvertimeInReport ? regularEquivalentWorkedDays : equivalentWorkedDays,
+        compensoLordo: showOvertimeInReport ? totalCalculatedPay : totalRegularPay,
       },
       compenso: {
         retribuzione: totalRegularPay,
+        regularDaysCompensation: regularWorkedDays * dailyPay,
+        residualHours: regularResidualHours,
+        residualHourlyRate: effectiveResidualHourlyRate,
+        residualHoursCompensation: regularResidualHours * effectiveResidualHourlyRate,
+        hasManualResidualHourlyRate,
         straordinariImporto: overtimeAmountForTemplate,
         regalo: giftAmountNum,
+        regaloNote: String(giftLabel || '').trim(),
+        regaloLabel: String(giftLabel || '').trim(),
         trasporto: trasportoAttivo ? totaleTrasporto : 0,
         creditoPrecedente: Math.max(restoPrecedenteNum, 0),
         bustaPaga: {
@@ -5649,8 +5717,42 @@ export default function ReportPage() {
             ? `${currentInstallments.length} rata/e nel mese`
             : (restoPrecedenteNum < 0 ? 'Debito precedente riportato' : 'nessuna rata'),
         },
-        saldoFinale: remainingBalanceNum,
-        balanceStatusLabel: getPaymentStatusLabel(balanceSettlement.status),
+        // Saldo originario del mese (NON sostituito dal pagamento parziale).
+        // Il dettaglio di "Chiusura saldo" è mostrato come blocco aggiuntivo per
+        // restare allineato 1:1 col modale dello Storico.
+        saldoFinale: Number(differenzaFinale || 0),
+        balanceStatusLabel: differenzaFinale < 0
+          ? 'Saldo da ricevere dall’operaio'
+          : differenzaFinale > 0
+          ? 'Saldo da dare all’operaio'
+          : 'Saldo del mese',
+        chiusuraSaldo: (() => {
+          const grossAbs = Math.abs(Number(differenzaFinale || 0));
+          const status = balanceSettlement.status;
+          const direction = differenzaFinale < 0 ? 'incoming' : 'outgoing';
+          const directionLabel = direction === 'incoming' ? 'da ricevere' : 'da pagare';
+          const paidActionLabel = direction === 'incoming' ? 'Incassato' : 'Pagato';
+          const residualLabel = status === 'saldato' ? 'Saldato' : `Residuo ${directionLabel}`;
+          const statusLabel = status === 'saldato'
+            ? 'Saldato'
+            : status === 'parziale'
+            ? 'Parziale'
+            : 'Non saldato';
+          const paidDate = balanceClosedAt || '';
+          return {
+            status,
+            statusLabel,
+            direction,
+            directionLabel,
+            paidActionLabel,
+            residualLabel,
+            originAmount: grossAbs,
+            partialPaidAmount: Number(balanceSettlement.partialPaidAmount || 0),
+            residualAmount: Number(balanceSettlement.remainingAbs || Math.abs(balanceSettlement.remainingBalance || 0)),
+            paidDate,
+            paidDateLabel: paidDate ? formatDisplayDate(paidDate) : '',
+          };
+        })(),
       },
       presenze,
       note: balanceNotes || '',
@@ -5658,8 +5760,13 @@ export default function ReportPage() {
   }, [
     attendanceBaseHours,
     attendanceMap,
+    balanceClosedAt,
     balanceNotes,
     balanceSettlement.status,
+    balanceSettlement.partialPaidAmount,
+    balanceSettlement.remainingAbs,
+    balanceSettlement.remainingBalance,
+    differenzaFinale,
     currentInstallmentTotal,
     currentInstallments.length,
     currentMonth,
@@ -5667,10 +5774,16 @@ export default function ReportPage() {
     datore,
     displayTotalHours,
     employee,
+    employeeTotals.completeDaysRegular,
     employeeTotals.remainingTotalHours,
+    employeeTotals.remainingRegularHours,
+    employeeTotals.totalHours,
     employeeTotals.totalOvertimeHours,
     equivalentWorkedDays,
+    effectiveResidualHourlyRate,
     giftAmountNum,
+    giftLabel,
+    hasManualResidualHourlyRate,
     giornateBustaPaga,
     showSelectedPayrollDaysInReport,
     validSelectedPayrollDays,
@@ -5681,10 +5794,15 @@ export default function ReportPage() {
     payrollPaymentMethod,
     payrollPaymentStatus,
     remainingBalanceNum,
+    residualHourlyRateInput,
     reportAttendanceDays,
     restoPrecedenteNum,
+    regularEquivalentWorkedDays,
+    regularResidualHours,
+    regularWorkedDays,
     showOvertimeInReport,
     standardHours,
+    totalCalculatedPay,
     totalAdvances,
     totalOvertimePay,
     totalRegularPay,
@@ -5693,10 +5811,33 @@ export default function ReportPage() {
     workedDays,
   ]);
 
-  const employeeTemplatePreviewRequestKey = useMemo(
-    () => (employeeTemplateSource ? JSON.stringify(employeeTemplateSource) : ''),
-    [employeeTemplateSource]
-  );
+  const employeeTemplatePreviewRequestKey = useMemo(() => {
+    if (!employee?.id) {
+      return '';
+    }
+    const lastModifiedAt =
+      currentPayrollRecord?.updated_at ||
+      currentPayrollRecord?.processed_at ||
+      currentPayrollRecord?.balance_closed_at ||
+      currentPayrollRecord?.archived_at ||
+      '';
+    return [
+      employee.id,
+      selectedReportMonthKey,
+      selectedYear,
+      currentPayrollRecord?.id || 0,
+      lastModifiedAt,
+    ].join('::');
+  }, [
+    currentPayrollRecord?.archived_at,
+    currentPayrollRecord?.balance_closed_at,
+    currentPayrollRecord?.id,
+    currentPayrollRecord?.processed_at,
+    currentPayrollRecord?.updated_at,
+    employee?.id,
+    selectedReportMonthKey,
+    selectedYear,
+  ]);
   latestEmployeeTemplateSourceRef.current = employeeTemplateSource;
 
   useEffect(() => {
@@ -5706,37 +5847,36 @@ export default function ReportPage() {
         employeeTemplatePreviewTimeoutRef.current = null;
       }
       lastEmployeeTemplatePreviewKeyRef.current = '';
+      employeeTemplatePreviewInFlightKeyRef.current = '';
       setEmployeeTemplatePreviewHtml('');
       setEmployeeTemplatePreviewError('');
       setEmployeeTemplatePreviewStatus('idle');
       setEmployeeTemplatePreviewLoading(false);
-      console.info('[report-preview-loading] type=employee loading=false');
       return;
     }
 
-    if (lastEmployeeTemplatePreviewKeyRef.current === employeeTemplatePreviewRequestKey) {
+    if (
+      lastEmployeeTemplatePreviewKeyRef.current === employeeTemplatePreviewRequestKey ||
+      employeeTemplatePreviewInFlightKeyRef.current === employeeTemplatePreviewRequestKey
+    ) {
       return;
     }
     lastEmployeeTemplatePreviewKeyRef.current = employeeTemplatePreviewRequestKey;
 
     let cancelled = false;
-    setEmployeeTemplatePreviewHtml('');
+    if (!employeeTemplatePreviewLoading) {
+      setEmployeeTemplatePreviewHtml('');
+    }
     setEmployeeTemplatePreviewError('');
     setEmployeeTemplatePreviewStatus('loading');
     setEmployeeTemplatePreviewLoading(true);
-    console.info(
-      '[report-preview-start] type=employee employeeId=%s month=%s year=%s',
-      employee?.id || '',
-      monthName,
-      yearStr
-    );
-    console.info('[report-preview-loading] type=employee loading=true');
 
     if (employeeTemplatePreviewTimeoutRef.current) {
       clearTimeout(employeeTemplatePreviewTimeoutRef.current);
     }
 
     employeeTemplatePreviewTimeoutRef.current = setTimeout(async () => {
+      employeeTemplatePreviewInFlightKeyRef.current = employeeTemplatePreviewRequestKey;
       try {
         const source = latestEmployeeTemplateSourceRef.current;
         const result = await window.api.employeeReport.previewTemplate(source);
@@ -5746,11 +5886,6 @@ export default function ReportPage() {
         setEmployeeTemplatePreviewHtml((current) => (current === (result?.html || '') ? current : (result?.html || '')));
         setEmployeeTemplatePreviewError('');
         setEmployeeTemplatePreviewStatus('ready');
-        console.info(
-          '[report-preview-success] type=employee htmlLength=%s usingTemplate=true',
-          (result?.html || '').length
-        );
-        console.info('[employee-template-preview]', source?.dipendente?.nome || '');
       } catch (error) {
         if (cancelled) {
           return;
@@ -5759,15 +5894,13 @@ export default function ReportPage() {
         setEmployeeTemplatePreviewHtml('');
         setEmployeeTemplatePreviewError(error?.message || 'Template dipendente non disponibile');
         setEmployeeTemplatePreviewStatus('error');
-        console.error('[report-preview-error] type=employee', error);
-        console.error('[employee-template-fallback]', error);
       } finally {
         if (!cancelled) {
+          employeeTemplatePreviewInFlightKeyRef.current = '';
           setEmployeeTemplatePreviewLoading(false);
-          console.info('[report-preview-loading] type=employee loading=false');
         }
       }
-    }, 350);
+    }, 300);
 
     return () => {
       cancelled = true;
@@ -5776,7 +5909,12 @@ export default function ReportPage() {
         employeeTemplatePreviewTimeoutRef.current = null;
       }
     };
-  }, [employee?.id, employeeTemplatePreviewRequestKey, isEmployeeMode, monthName, yearStr]);
+  }, [
+    employee?.id,
+    employeeTemplatePreviewLoading,
+    employeeTemplatePreviewRequestKey,
+    isEmployeeMode,
+  ]);
 
   useEffect(() => {
     if (!employee) {
@@ -6177,6 +6315,22 @@ export default function ReportPage() {
                     >
                       {savingDailyPay ? 'Salvataggio...' : 'Salva'}
                     </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div style={fieldLabelStyle}>Tariffa ore residue (EUR/h)</div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={residualHourlyRateInput}
+                    onChange={(e) => setResidualHourlyRateInput(e.target.value)}
+                    placeholder={`automatico: ${regularHourlyRate.toFixed(2)}`}
+                    style={fieldStyle}
+                  />
+                  <div style={fieldSubtleStyle}>
+                    Se vuoto, usa la tariffa automatica derivata da retribuzione giornaliera / ore standard.
                   </div>
                 </div>
 

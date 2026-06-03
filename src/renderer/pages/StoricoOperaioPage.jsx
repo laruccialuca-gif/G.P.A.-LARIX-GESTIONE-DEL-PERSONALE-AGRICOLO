@@ -1,5 +1,5 @@
 import React, { useDeferredValue, useEffect, useMemo, useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { formatDisplayDateTime } from '../utils/dateFormat';
 import { formatCurrency } from '../utils/currencyFormat';
 import { useYearContext } from '../context/YearContext';
@@ -115,6 +115,38 @@ function buildHistoryEmployeeTemplateSource(record, attendanceRows = []) {
   const paymentSummary = getRecordPaymentSummary(record, snapshot);
   const installmentsTotal = getCurrentInstallmentsTotal(record, snapshot);
   const currentInstallmentsTotal = Number((snapshot.current_installments_total ?? installmentsTotal) || 0);
+  // [TEMP DEBUG rate/debiti — PERPARIM CARA / 2026-04 soltanto] -------------
+  try {
+    const firstNameUp = String(record?.employee?.first_name || '').toUpperCase();
+    const lastNameUp = String(record?.employee?.last_name || '').toUpperCase();
+    const matchesPerparim = firstNameUp.includes('PERPARIM') || lastNameUp.includes('CARA');
+    const matchesMonth = String(record?.month || '') === '2026-04';
+    if (matchesPerparim && matchesMonth) {
+      const restoPrec = Number(record.resto_precedente || snapshot.resto_precedente || 0);
+      console.info('[rate-debiti-trace] Storico-modal PERPARIM-CARA 2026-04', {
+        employee_id: record?.employee_id || null,
+        employee_name: `${record?.employee?.first_name || ''} ${record?.employee?.last_name || ''}`.trim(),
+        payroll_record_id: record?.id || null,
+        month: record?.month || '',
+        record_resto_precedente_raw: record?.resto_precedente ?? null,
+        snapshot_resto_precedente: snapshot?.resto_precedente ?? null,
+        record_live_installments_total: record?.live_installments_total ?? null,
+        record_live_installments_count: record?.live_installments_count ?? null,
+        record_snapshot_installments_total: record?.snapshot_installments_total ?? null,
+        record_installments_snapshot_mismatch: record?.installments_snapshot_mismatch ?? null,
+        snapshot_current_installments_total: snapshot?.current_installments_total ?? null,
+        snapshot_debt_plans: snapshot?.debt_plans ?? null,
+        installmentsTotal_helper: installmentsTotal,
+        currentInstallmentsTotal_used: currentInstallmentsTotal,
+        restoPrecedenteNum_used: restoPrec,
+        compenso_rate_importo_calcolato:
+          currentInstallmentsTotal + Math.abs(Math.min(restoPrec, 0)),
+      });
+    }
+  } catch (_) {
+    // ignore
+  }
+  // [/TEMP DEBUG] -----------------------------------------------------------
   const rawSelectedDays =
     snapshot.selected_payroll_days ??
     snapshot.selected_payroll_days_json ??
@@ -157,6 +189,8 @@ function buildHistoryEmployeeTemplateSource(record, attendanceRows = []) {
     })
     .filter(Boolean);
 
+  const gift = extractHistoryGift(record, snapshot);
+
   const normalizedPayrollStatus = String(record.payroll_payment_status || '').trim().toLowerCase() === 'pagato'
     ? 'paid'
     : 'unpaid';
@@ -164,6 +198,36 @@ function buildHistoryEmployeeTemplateSource(record, attendanceRows = []) {
   const totalCalculatedPay = Number((snapshot.totalCalculatedPay ?? record.retribuzione_calcolata) || 0);
   const totalOvertimePay = Number(snapshot.totalOvertimePay || 0);
   const totalRegularPay = Number(snapshot.totalRegularPay ?? Math.max(totalCalculatedPay - totalOvertimePay, 0));
+
+  // Chiusura saldo: stato + pagamento parziale/saldo registrati nello Storico.
+  // grossBalance < 0 -> devo ricevere dall'operaio (incassato); grossBalance > 0 -> devo dare (pagato).
+  const balanceDirection = paymentSummary.grossBalance < 0 ? 'incoming' : 'outgoing';
+  const balanceDirectionLabel = balanceDirection === 'incoming' ? 'da ricevere' : 'da pagare';
+  const balancePaidActionLabel = balanceDirection === 'incoming' ? 'Incassato' : 'Pagato';
+  const balanceResidualLabel = paymentSummary.status === 'saldato'
+    ? 'Saldato'
+    : `Residuo ${balanceDirectionLabel}`;
+  const balanceStatusLabel = paymentSummary.status === 'saldato'
+    ? 'Saldato'
+    : paymentSummary.status === 'parziale'
+    ? 'Parziale'
+    : 'Non saldato';
+  const chiusuraSaldo = {
+    status: paymentSummary.status,
+    statusLabel: balanceStatusLabel,
+    direction: balanceDirection,
+    directionLabel: balanceDirectionLabel,
+    paidActionLabel: balancePaidActionLabel,
+    residualLabel: balanceResidualLabel,
+    originAmount: Number(paymentSummary.originAmount || 0),
+    partialPaidAmount: Number(paymentSummary.partialPaidAmount || 0),
+    residualAmount: Number(paymentSummary.residualAmount || 0),
+    paidDate: paymentSummary.paidDate || '',
+    paidDateLabel: paymentSummary.paidDate ? formatDateOnly(paymentSummary.paidDate) : '',
+  };
+  const residualHourlyRate = Number((snapshot.residual_hourly_rate ?? record.residual_hourly_rate) || 0);
+  const regularDaysCompensation = Number((snapshot.regularDaysCompensation ?? (fullDays * Number(record.employee?.daily_pay || snapshot.payslip_simulator?.daily_amount || 0))) || 0);
+  const residualHoursCompensation = Number((snapshot.residualHoursCompensation ?? (residualHours * residualHourlyRate)) || 0);
 
   return {
     employeeId: record.employee_id,
@@ -194,8 +258,15 @@ function buildHistoryEmployeeTemplateSource(record, attendanceRows = []) {
     },
     compenso: {
       retribuzione: totalRegularPay,
+      regularDaysCompensation,
+      residualHours,
+      residualHourlyRate,
+      residualHoursCompensation,
+      hasManualResidualHourlyRate: residualHourlyRate > 0,
       straordinariImporto: totalOvertimePay,
-      regalo: Number(record.regalo_importo || snapshot.regalo_importo || 0),
+      regalo: gift.amount,
+      regaloNote: gift.note,
+      regaloLabel: gift.note,
       trasporto: Number(record.totale_trasporto || snapshot.trasporto_totale || 0),
       creditoPrecedente: Math.max(Number(record.resto_precedente || snapshot.resto_precedente || 0), 0),
       bustaPaga: {
@@ -219,8 +290,15 @@ function buildHistoryEmployeeTemplateSource(record, attendanceRows = []) {
         importo: currentInstallmentsTotal + Math.abs(Math.min(Number(record.resto_precedente || snapshot.resto_precedente || 0), 0)),
         note: currentInstallmentsTotal > 0 ? 'Rate del mese' : (Number(record.resto_precedente || snapshot.resto_precedente || 0) < 0 ? 'Debito precedente riportato' : 'nessuna rata'),
       },
-      saldoFinale: Number(paymentSummary.residual || 0),
-      balanceStatusLabel: paymentSummary.label || 'Non pagato',
+      // Saldo originario del mese (NON sostituito dal pagamento parziale).
+      // L'eventuale pagamento/incasso parziale viene mostrato nella sezione "Chiusura saldo".
+      saldoFinale: Number(paymentSummary.grossBalance || 0),
+      balanceStatusLabel: paymentSummary.grossBalance < 0
+        ? 'Saldo da ricevere dall’operaio'
+        : paymentSummary.grossBalance > 0
+        ? 'Saldo da dare all’operaio'
+        : 'Saldo del mese',
+      chiusuraSaldo,
     },
     presenze,
     note: String(record.balance_notes || snapshot.note || '').trim(),
@@ -275,14 +353,139 @@ function getCurrentInstallmentsTotal(record, snapshot = null) {
   );
 }
 
+function coerceHistoryNumeric(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const num = Number(String(value).replace(',', '.'));
+  return Number.isFinite(num) ? num : 0;
+}
+
+function findHistoryGiftInCollection(collection) {
+  if (!Array.isArray(collection)) return null;
+  return collection.find((item) => {
+    const label = String(
+      item?.label ?? item?.name ?? item?.title ?? item?.description ?? item?.note ?? item?.key ?? ''
+    ).toLowerCase();
+    return /regalo|gift|bonus|premio|reward/.test(label);
+  });
+}
+
+// Estrae importo + nota del Regalo da un record/snapshot storico, accettando
+// nomi-campo eredità per non perdere la voce su report già elaborati prima
+// del nuovo layout (record.regalo_importo, snapshot.regalo_*, snapshot.gift_*,
+// snapshot.bonus_amount, snapshot.regalo.{importo,note}, snapshot.credits/earnings).
+function extractHistoryGift(record, snapshot) {
+  const snap = snapshot || {};
+  const amountCandidates = [
+    record?.regalo_importo,
+    snap.regalo_importo,
+    snap.regalo_amount,
+    snap.regaloAmount,
+    snap.gift_amount,
+    snap.giftAmount,
+    snap.bonus_amount,
+    snap.bonusAmount,
+    snap.reward_amount,
+    snap.rewardAmount,
+    snap.extra_amount,
+    snap.extraAmount,
+    snap.regalo?.importo,
+    snap.regalo?.amount,
+    snap.regalo?.value,
+  ];
+  let amount = 0;
+  for (const candidate of amountCandidates) {
+    const numeric = coerceHistoryNumeric(candidate);
+    if (numeric !== 0) {
+      amount = numeric;
+      break;
+    }
+  }
+
+  if (!amount) {
+    const collections = [
+      snap.credits,
+      snap.earnings,
+      snap.voci_guadagno,
+      snap.additional_credits,
+      snap.custom_credits,
+    ];
+    for (const collection of collections) {
+      const item = findHistoryGiftInCollection(collection);
+      if (item) {
+        const numeric = coerceHistoryNumeric(item.amount ?? item.value ?? item.importo);
+        if (numeric !== 0) {
+          amount = numeric;
+          break;
+        }
+      }
+    }
+  }
+
+  const noteCandidates = [
+    record?.regalo_descrizione,
+    record?.regalo_label,
+    record?.etichetta_stampa,
+    snap.regalo_descrizione,
+    snap.regalo_note,
+    snap.regaloNote,
+    snap.regalo_label,
+    snap.regaloLabel,
+    snap.gift_note,
+    snap.giftNote,
+    snap.gift_description,
+    snap.giftDescription,
+    snap.gift_label,
+    snap.giftLabel,
+    snap.etichetta_stampa,
+    snap.etichettaStampa,
+    snap.regalo?.descrizione,
+    snap.regalo?.note,
+    snap.regalo?.description,
+    snap.regalo?.label,
+    snap.regalo?.etichetta,
+  ];
+  let note = '';
+  for (const candidate of noteCandidates) {
+    const trimmed = String(candidate ?? '').trim();
+    if (trimmed) {
+      note = trimmed;
+      break;
+    }
+  }
+
+  if (!note && amount) {
+    const collections = [
+      snap.credits,
+      snap.earnings,
+      snap.voci_guadagno,
+      snap.additional_credits,
+      snap.custom_credits,
+    ];
+    for (const collection of collections) {
+      const item = findHistoryGiftInCollection(collection);
+      if (item) {
+        const trimmed = String(item.description ?? item.note ?? item.label ?? '').trim();
+        if (trimmed) {
+          note = trimmed;
+          break;
+        }
+      }
+    }
+  }
+
+  return { amount, note };
+}
+
 function getRecordEffectiveBalance(record) {
-  const currentInstallmentsTotal = getCurrentInstallmentsTotal(record);
+  const snapshot = getSnapshot(record);
+  const currentInstallmentsTotal = getCurrentInstallmentsTotal(record, snapshot);
+  const gift = extractHistoryGift(record, snapshot);
 
   return (
     Number(record?.retribuzione_calcolata || 0) +
     Number(record?.resto_precedente || 0) +
     Number(record?.totale_trasporto || 0) +
-    Number(record?.regalo_importo || 0) -
+    gift.amount -
     Number(record?.acconti || 0) -
     Number(record?.importo_busta_paga || 0) -
     currentInstallmentsTotal
@@ -469,12 +672,14 @@ function getRecordPaymentSummary(record, precomputedSnapshot = null) {
 }
 
 function getSyntheticFinancialSummary(record, precomputedSnapshot = null) {
-  const payment = getRecordPaymentSummary(record, precomputedSnapshot);
+  const snapshot = precomputedSnapshot !== null ? precomputedSnapshot : getSnapshot(record);
+  const payment = getRecordPaymentSummary(record, snapshot);
+  const gift = extractHistoryGift(record, snapshot);
   const totalCredits =
     Number(record?.retribuzione_calcolata || 0) +
     Number(record?.resto_precedente || 0) +
     Number(record?.totale_trasporto || 0) +
-    Number(record?.regalo_importo || 0);
+    gift.amount;
   const totalDeductions =
     Number(record?.acconti || 0) +
     Number(payment.currentInstallmentsTotal || 0);
@@ -498,6 +703,7 @@ export default function StoricoOperaioPage() {
   console.log(`[storico-perf] mount start: ${mountStart - PAGE_PERF_START}ms from page load`);
 
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { selectedYear, yearOptions } = useYearContext();
   const [records, setRecords] = useState([]);
   const [teamRecords, setTeamRecords] = useState([]);
@@ -529,6 +735,23 @@ export default function StoricoOperaioPage() {
   const [historyTotal, setHistoryTotal] = useState(0);
   const deferredSearch = useDeferredValue(search);
   const snapshotCacheRef = useRef(new Map());
+
+  useEffect(() => {
+    const requestedMonth = String(searchParams.get('month') || '').trim();
+    const requestedEmployee = String(searchParams.get('employee') || '').trim();
+
+    if (/^\d{4}-\d{2}$/.test(requestedMonth)) {
+      setHistoryYearFilter(String(Number(requestedMonth.slice(0, 4)) || selectedYear));
+      setMonthFilter(String(Number(requestedMonth.slice(5, 7)) || 'all'));
+    }
+
+    const nextEmployeeIds = requestedEmployee
+      ? requestedEmployee.split(',').map((value) => Number(value)).filter(Number.isFinite)
+      : [];
+    if (selectedEmployeeIds.join(',') !== nextEmployeeIds.join(',')) {
+      setSelectedEmployeeIds(nextEmployeeIds);
+    }
+  }, [searchParams, selectedEmployeeIds, selectedYear]);
 
   async function buildFallbackHistory() {
     const employees = await window.api.employees.list({ includeDeleted: true });

@@ -218,6 +218,8 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.invoke('payroll:updatePaymentStatus', id, paymentStatus, paymentDate, partialPaidAmount, remainingBalance),
     getPreviousBalance: (employeeId, month) =>
       ipcRenderer.invoke('payroll:getPreviousBalance', employeeId, month),
+    getPaymentPreviewByMonth: (options) =>
+      ipcRenderer.invoke('payroll:getPaymentPreviewByMonth', options),
     uploadDocument: (employeeId, month) => ipcRenderer.invoke('payroll:uploadDocument', employeeId, month),
     openDocument: (employeeId, month) => ipcRenderer.invoke('payroll:openDocument', employeeId, month),
     deleteDocument: (employeeId, month) => ipcRenderer.invoke('payroll:deleteDocument', employeeId, month),

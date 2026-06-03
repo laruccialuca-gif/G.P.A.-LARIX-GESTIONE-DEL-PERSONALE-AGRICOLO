@@ -1,4 +1,5 @@
 const { getDb } = require('./db');
+const settingsService = require('./settingsService');
 const {
   describeStoredFile,
   openStoredDocument,
@@ -67,6 +68,602 @@ function normalizeSelectedPayrollDays(value) {
       .map((day) => Number(day))
       .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31)
   )].sort((a, b) => a - b);
+}
+
+function normalizeMonthKey(value) {
+  const raw = String(value || '').trim();
+  if (/^\d{4}-\d{2}$/.test(raw)) {
+    return raw;
+  }
+  return '';
+}
+
+function getMonthDateRange(monthKey) {
+  const normalized = normalizeMonthKey(monthKey);
+  if (!normalized) {
+    return null;
+  }
+  const [year, month] = normalized.split('-').map(Number);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null;
+  }
+  const lastDay = new Date(year, month, 0).getDate();
+  return {
+    monthKey: normalized,
+    year,
+    month,
+    from: `${year}-${String(month).padStart(2, '0')}-01`,
+    to: `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`,
+  };
+}
+
+function getSafeStandardHours(value, fallback = 7) {
+  const amount = Number(value || fallback);
+  return Number.isFinite(amount) && amount > 0 ? amount : fallback;
+}
+
+function tableHasColumn(database, tableName, columnName) {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all();
+  return columns.some((column) => String(column.name || '').trim() === columnName);
+}
+
+function calculateHoursBreakdown(totalRegularHours, totalOvertimeHours, standardHours, splitOvertime) {
+  const safeStandardHours = getSafeStandardHours(standardHours);
+  const effectiveRegularHours = splitOvertime
+    ? Number(totalRegularHours || 0)
+    : Number(totalRegularHours || 0) + Number(totalOvertimeHours || 0);
+  const fullDays = Math.floor(effectiveRegularHours / safeStandardHours);
+  const residualHours = Number((effectiveRegularHours % safeStandardHours).toFixed(2));
+  return {
+    safeStandardHours,
+    effectiveRegularHours,
+    fullDays,
+    residualHours,
+  };
+}
+
+function resolveOvertimeRateForPreview(employeeRow, settings, payrollRecord) {
+  const snapshot = parseJsonValue(payrollRecord?.report_snapshot_json, null);
+  const snapshotRate = Number(snapshot?.overtimeHourlyRate || 0);
+  if (snapshotRate > 0) {
+    return snapshotRate;
+  }
+
+  const overtimeEnabled = !!settings?.general?.overtime_enabled;
+  if (!overtimeEnabled) {
+    return 0;
+  }
+
+  if (employeeRow?.overtime_use_general_rate === 0) {
+    return Number(employeeRow?.overtime_hourly_rate || 0) || 0;
+  }
+
+  return Number(settings?.general?.overtime_hourly_rate || 0) || 0;
+}
+
+function coerceHistoryNumeric(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const num = Number(String(value).replace(',', '.'));
+  return Number.isFinite(num) ? num : 0;
+}
+
+function findGiftInCollection(collection) {
+  if (!Array.isArray(collection)) return null;
+  return collection.find((item) => {
+    const label = String(
+      item?.label ?? item?.name ?? item?.title ?? item?.description ?? item?.note ?? item?.key ?? ''
+    ).toLowerCase();
+    return /regalo|gift|bonus|premio|reward/.test(label);
+  });
+}
+
+// Estrae l'importo del Regalo da un payroll_record, accettando le stesse chiavi
+// legacy usate dallo Storico (extractHistoryGift) in modo che i report storici
+// salvati prima del nuovo layout non perdano il regalo nemmeno lato backend.
+// Ritorna { amount, source } dove source indica la fonte che ha matchato.
+function extractPayrollGift(row, precomputedSnapshot) {
+  const snapshot =
+    precomputedSnapshot !== undefined
+      ? precomputedSnapshot
+      : parseJsonValue(row?.report_snapshot_json, null);
+
+  const directColumn = coerceHistoryNumeric(row?.regalo_importo);
+  if (directColumn !== 0) {
+    return { amount: directColumn, source: 'row.regalo_importo' };
+  }
+
+  const snap = snapshot || {};
+  const candidates = [
+    ['snapshot.regalo_importo', snap.regalo_importo],
+    ['snapshot.regalo_amount', snap.regalo_amount],
+    ['snapshot.regaloAmount', snap.regaloAmount],
+    ['snapshot.gift_amount', snap.gift_amount],
+    ['snapshot.giftAmount', snap.giftAmount],
+    ['snapshot.bonus_amount', snap.bonus_amount],
+    ['snapshot.bonusAmount', snap.bonusAmount],
+    ['snapshot.reward_amount', snap.reward_amount],
+    ['snapshot.rewardAmount', snap.rewardAmount],
+    ['snapshot.extra_amount', snap.extra_amount],
+    ['snapshot.extraAmount', snap.extraAmount],
+    ['snapshot.regalo.importo', snap.regalo?.importo],
+    ['snapshot.regalo.amount', snap.regalo?.amount],
+    ['snapshot.regalo.value', snap.regalo?.value],
+  ];
+  for (const [source, value] of candidates) {
+    const numeric = coerceHistoryNumeric(value);
+    if (numeric !== 0) {
+      return { amount: numeric, source };
+    }
+  }
+
+  const collections = [
+    ['snapshot.credits', snap.credits],
+    ['snapshot.earnings', snap.earnings],
+    ['snapshot.voci_guadagno', snap.voci_guadagno],
+    ['snapshot.additional_credits', snap.additional_credits],
+    ['snapshot.custom_credits', snap.custom_credits],
+  ];
+  for (const [source, collection] of collections) {
+    const item = findGiftInCollection(collection);
+    if (item) {
+      const numeric = coerceHistoryNumeric(item.amount ?? item.value ?? item.importo);
+      if (numeric !== 0) {
+        return { amount: numeric, source: `${source}[regalo]` };
+      }
+    }
+  }
+
+  return { amount: 0, source: '' };
+}
+
+function getPreviousMonthKey(monthKey) {
+  const match = /^(\d{4})-(\d{2})$/.exec(String(monthKey || ''));
+  if (!match) return '';
+  let year = Number(match[1]);
+  let month = Number(match[2]) - 1;
+  if (month < 1) {
+    month = 12;
+    year -= 1;
+  }
+  return `${year}-${String(month).padStart(2, '0')}`;
+}
+
+// Calcola il saldo residuo SIGNATO del record (positivo = credito al dipendente,
+// negativo = debito del dipendente verso l'azienda).
+// Rispetta lo stato di "Chiusura saldo" registrato a posteriori:
+//   - saldato       -> 0
+//   - parziale      -> remaining_balance se valorizzato, altrimenti gross - sign*partial_paid
+//   - non_pagato/'' -> gross balance originario del mese
+function computePayrollResidualBalance(row) {
+  if (!row) return 0;
+  const snapshot = parseJsonValue(row.report_snapshot_json, null);
+  const explicitRemaining = Number(row.remaining_balance || 0);
+  const partialPaid = Math.max(0, Number(row.partial_paid_amount || 0));
+  const currentInstallments = Number(
+    snapshot?.current_installments_total ??
+      snapshot?.current_installments_total_amount ??
+      0
+  );
+  const gift = extractPayrollGift(row, snapshot);
+  // Logga solo quando il regalo è stato recuperato da un fallback (non dalla colonna):
+  // così si nota subito il "salvataggio" su report storici pre-cambio layout.
+  if (gift.amount !== 0 && gift.source && gift.source !== 'row.regalo_importo') {
+    try {
+      console.info('[payment-preview-gift-debug]', {
+        recordId: row?.id,
+        employeeId: row?.employee_id,
+        monthReference: row?.month,
+        giftAmount: gift.amount,
+        source: gift.source,
+      });
+    } catch {}
+  }
+  const grossBalance =
+    Number(row.retribuzione_calcolata || 0) +
+    Number(row.resto_precedente || 0) +
+    Number(row.totale_trasporto || 0) +
+    gift.amount -
+    Number(row.acconti || 0) -
+    Number(row.importo_busta_paga || 0) -
+    currentInstallments;
+
+  let status = String(row.balance_status || '').trim().toLowerCase();
+  if (status === 'pagato') status = 'saldato';
+  if (!status) {
+    if (Math.abs(grossBalance) <= 0.009 || row.resto_pagato) {
+      status = 'saldato';
+    } else {
+      status = 'non_pagato';
+    }
+  }
+
+  if (status === 'saldato') return 0;
+  if (status === 'parziale') {
+    if (Math.abs(explicitRemaining) > 0.009) {
+      return Number(explicitRemaining);
+    }
+    const sign = grossBalance >= 0 ? 1 : -1;
+    return sign * Math.max(Math.abs(grossBalance) - partialPaid, 0);
+  }
+  return grossBalance;
+}
+
+function getPreviousMonthBalances(db, employeeIds, previousMonthKey, options = {}) {
+  console.info('[payment-preview-debug-loaded] getPreviousMonthBalances', {
+    previousMonthKey,
+    employeeIdsCount: employeeIds?.length || 0,
+    currentMonthKey: options?.currentMonthKey || '',
+  });
+  if (!previousMonthKey || !employeeIds.length) {
+    return new Map();
+  }
+  const placeholders = employeeIds.map(() => '?').join(', ');
+  const rows = db.prepare(`
+    SELECT
+      pr.id AS payroll_record_id,
+      pr.employee_id,
+      pr.balance_status,
+      pr.partial_paid_amount,
+      pr.remaining_balance,
+      pr.retribuzione_calcolata,
+      pr.resto_precedente,
+      pr.totale_trasporto,
+      pr.regalo_importo,
+      pr.acconti,
+      pr.importo_busta_paga,
+      pr.resto_pagato,
+      pr.archived_at,
+      pr.report_snapshot_json,
+      e.first_name || ' ' || e.last_name AS employee_name
+    FROM payroll_records pr
+    LEFT JOIN employees e ON e.id = pr.employee_id
+    WHERE pr.employee_id IN (${placeholders})
+      AND pr.month = ?
+      AND pr.archived_at IS NULL
+  `).all(...employeeIds, previousMonthKey);
+
+  // Statement preparati una volta sola e riusati per i log diagnostici live.
+  const liveAdvancesStmt = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS rows
+    FROM payroll_advances
+    WHERE payroll_record_id = ?
+  `);
+  const liveInstallmentsStmt = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS rows
+    FROM payroll_debt_installments i
+    JOIN payroll_debt_plans p ON p.id = i.plan_id
+    WHERE i.employee_id = ?
+      AND target_month = ?
+      AND i.is_paid = 0
+      AND p.status = 'active'
+  `);
+
+  console.info('[payment-preview-debug-loaded] getPreviousMonthBalances rows', {
+    previousMonthKey,
+    rowsReturned: rows.length,
+  });
+
+  const map = new Map();
+  for (const row of rows) {
+    console.info('[payment-preview-debug-employee]', {
+      employeeId: Number(row.employee_id),
+      employeeName: row.employee_name || '',
+      previousMonthKey,
+      previousRecordId: row.payroll_record_id,
+      balanceStatus: row.balance_status || '',
+      archivedAt: row.archived_at || null,
+    });
+    const balance = Number(computePayrollResidualBalance(row).toFixed(2));
+    map.set(Number(row.employee_id), balance);
+
+    // Log diagnostico mirato: solo quando il riporto non è zero, con il
+    // confronto tra valori memorizzati nel record e conteggi live.
+    // Non corregge nulla: serve solo a capire da dove arriva il debito.
+    if (balance !== 0) {
+      try {
+        const snapshot = parseJsonValue(row.report_snapshot_json, null);
+        const liveAdvances = liveAdvancesStmt.get(row.payroll_record_id) || { total: 0, rows: 0 };
+        const liveInstallments = liveInstallmentsStmt.get(row.employee_id, previousMonthKey) || { total: 0, rows: 0 };
+        const storedAcconti = Number(row.acconti || 0);
+        const snapshotInstallments = Number(
+          snapshot?.current_installments_total ??
+            snapshot?.current_installments_total_amount ??
+            0
+        );
+
+        console.info('[payment-preview-previous-balance-debug]', {
+          employeeName: row.employee_name || '',
+          employeeId: Number(row.employee_id),
+          currentMonth: options.currentMonthKey || '',
+          previousMonth: previousMonthKey,
+          previousRecordId: row.payroll_record_id,
+          archivedAt: row.archived_at || null,
+          balanceStatus: row.balance_status || '',
+          partialPaidAmount: Number(row.partial_paid_amount || 0),
+          remainingBalance: Number(row.remaining_balance || 0),
+          recordRetribuzioneCalcolata: Number(row.retribuzione_calcolata || 0),
+          recordRestoPrecedente: Number(row.resto_precedente || 0),
+          recordTrasporto: Number(row.totale_trasporto || 0),
+          recordRegaloImporto: Number(row.regalo_importo || 0),
+          recordImportoBustaPaga: Number(row.importo_busta_paga || 0),
+          recordAccontiStored: storedAcconti,
+          snapshotInstallmentsTotal: snapshotInstallments,
+          // Confronti vs DB live (per individuare disallineamenti)
+          liveAdvancesSum: Number(liveAdvances.total || 0),
+          liveAdvancesRows: Number(liveAdvances.rows || 0),
+          liveAdvancesMismatch: Math.abs(storedAcconti - Number(liveAdvances.total || 0)) > 0.009,
+          livePendingInstallmentsSum: Number(liveInstallments.total || 0),
+          livePendingInstallmentsRows: Number(liveInstallments.rows || 0),
+          installmentsMismatch: Math.abs(snapshotInstallments - Number(liveInstallments.total || 0)) > 0.009,
+          computedResidual: balance,
+        });
+      } catch (_) {
+        // best-effort logging
+      }
+    }
+  }
+  return map;
+}
+
+function getPaymentPreviewByMonth(options = {}) {
+  console.info('[payment-preview-debug-loaded] getPaymentPreviewByMonth', {
+    options,
+  });
+  const db = getDb();
+  const settings = settingsService.getSettings();
+  const monthKey = normalizeMonthKey(
+    options.month_reference ||
+    options.month ||
+    `${options.year}-${String(options.month_number || options.monthValue || options.monthIndex || '').padStart(2, '0')}`
+  );
+  console.info('[payment-preview] repo-called', {
+    options,
+    monthKey,
+  });
+  const range = getMonthDateRange(monthKey);
+  const hasResidualHourlyRateColumn = tableHasColumn(db, 'payroll_records', 'residual_hourly_rate');
+
+  if (!range) {
+    console.info('[payment-preview] rows=0 invalid-range');
+    return {
+      month: '',
+      settings: {
+        standard_day_hours: getSafeStandardHours(settings?.general?.standard_day_hours),
+      },
+      rows: [],
+      summary: {
+        employeesCount: 0,
+        ordinaryFullDays: 0,
+        ordinaryResidualHours: 0,
+        overtimeHours: 0,
+        ordinaryCompensation: 0,
+        overtimeCompensation: 0,
+        grossCompensation: 0,
+        pendingAdvances: 0,
+        totalToPay: 0,
+        totalCompensation: 0,
+      },
+    };
+  }
+
+  const attendanceRows = db.prepare(`
+    SELECT
+      a.employee_id,
+      a.date,
+      a.status,
+      a.marker_code,
+      a.entry_code,
+      a.hours_worked,
+      a.overtime_hours,
+      e.first_name,
+      e.last_name,
+      e.hired_by,
+      e.daily_pay,
+      e.standard_hours,
+      e.overtime_use_general_rate,
+      e.overtime_hourly_rate,
+      team_lookup.team_names
+    FROM attendance a
+    JOIN employees e ON e.id = a.employee_id
+    LEFT JOIN (
+      SELECT
+        tm.employee_id,
+        GROUP_CONCAT(DISTINCT t.name) AS team_names
+      FROM team_members tm
+      JOIN teams t ON t.id = tm.team_id
+      GROUP BY tm.employee_id
+    ) AS team_lookup ON team_lookup.employee_id = e.id
+    WHERE a.date BETWEEN ? AND ?
+      AND e.is_deleted = 0
+    ORDER BY e.last_name COLLATE NOCASE ASC, e.first_name COLLATE NOCASE ASC, a.date ASC
+  `).all(range.from, range.to);
+
+  const groupedByEmployee = new Map();
+  for (const row of attendanceRows) {
+    const key = Number(row.employee_id);
+    const current = groupedByEmployee.get(key) || {
+      employee: row,
+      records: [],
+    };
+    current.records.push(row);
+    groupedByEmployee.set(key, current);
+  }
+
+  const employeeIds = [...groupedByEmployee.keys()];
+  if (!employeeIds.length) {
+    console.info('[payment-preview] rows=0 no-attendance');
+    return {
+      month: range.monthKey,
+      settings: {
+        standard_day_hours: getSafeStandardHours(settings?.general?.standard_day_hours),
+      },
+      rows: [],
+      summary: {
+        employeesCount: 0,
+        ordinaryFullDays: 0,
+        ordinaryResidualHours: 0,
+        overtimeHours: 0,
+        ordinaryCompensation: 0,
+        overtimeCompensation: 0,
+        grossCompensation: 0,
+        pendingAdvances: 0,
+        totalToPay: 0,
+        totalCompensation: 0,
+      },
+    };
+  }
+
+  const placeholders = employeeIds.map(() => '?').join(', ');
+  const payrollRows = db.prepare(`
+    SELECT
+      pr.id,
+      pr.employee_id,
+      pr.month,
+      pr.datore,
+      ${hasResidualHourlyRateColumn ? 'pr.residual_hourly_rate' : 'NULL AS residual_hourly_rate'},
+      pr.report_snapshot_json,
+      pr.processed_at
+    FROM payroll_records pr
+    WHERE pr.employee_id IN (${placeholders})
+      AND pr.month = ?
+      AND pr.archived_at IS NULL
+  `).all(...employeeIds, range.monthKey);
+
+  const payrollMap = new Map(payrollRows.map((row) => [Number(row.employee_id), row]));
+  const pendingAdvanceRows = db.prepare(`
+    SELECT
+      employee_id,
+      COALESCE(SUM(amount), 0) AS total_amount
+    FROM employee_financial_movements
+    WHERE employee_id IN (${placeholders})
+      AND type = 'advance'
+      AND status = 'pending'
+      AND substr(movement_date, 1, 7) = ?
+    GROUP BY employee_id
+  `).all(...employeeIds, range.monthKey);
+  const pendingAdvancesMap = new Map(
+    pendingAdvanceRows.map((row) => [Number(row.employee_id), Number(row.total_amount || 0)])
+  );
+  const previousMonthKey = getPreviousMonthKey(range.monthKey);
+  const previousBalancesMap = getPreviousMonthBalances(db, employeeIds, previousMonthKey, {
+    currentMonthKey: range.monthKey,
+  });
+  const defaultStandardHours = getSafeStandardHours(settings?.general?.standard_day_hours);
+
+  const rows = [...groupedByEmployee.values()]
+    .map(({ employee, records }) => {
+      const payrollRecord = payrollMap.get(Number(employee.employee_id)) || null;
+      const snapshot = parseJsonValue(payrollRecord?.report_snapshot_json, null);
+      const totalRegularHours = records.reduce((sum, item) => sum + Number(item.hours_worked || 0), 0);
+      const totalOvertimeHours = records.reduce((sum, item) => sum + Number(item.overtime_hours || 0), 0);
+      const totalHours = totalRegularHours + totalOvertimeHours;
+
+      if (!(totalHours > 0)) {
+        return null;
+      }
+
+      const standardHours = getSafeStandardHours(employee.standard_hours, defaultStandardHours);
+      const dailyPay = Number(employee.daily_pay || 0);
+      const residualHourlyRate =
+        payrollRecord?.residual_hourly_rate !== null && payrollRecord?.residual_hourly_rate !== undefined
+          ? Number(payrollRecord.residual_hourly_rate || 0)
+          : snapshot?.residual_hourly_rate !== null && snapshot?.residual_hourly_rate !== undefined
+          ? Number(snapshot.residual_hourly_rate || 0)
+          : standardHours > 0
+          ? dailyPay / standardHours
+          : 0;
+      const showOvertimeInReport = snapshot?.showOvertimeInReport !== false;
+      const overtimeRate = resolveOvertimeRateForPreview(employee, settings, payrollRecord);
+      const splitOvertime = showOvertimeInReport;
+      const workedBreakdown = calculateHoursBreakdown(
+        totalRegularHours,
+        totalOvertimeHours,
+        standardHours,
+        splitOvertime
+      );
+      const ordinaryCompensation =
+        (workedBreakdown.fullDays * dailyPay) +
+        (workedBreakdown.residualHours * residualHourlyRate);
+      const overtimeCompensation = splitOvertime ? totalOvertimeHours * overtimeRate : 0;
+      const grossCompensation = ordinaryCompensation + overtimeCompensation;
+      const pendingAdvancesAmount = Number(pendingAdvancesMap.get(Number(employee.employee_id)) || 0);
+      // Saldo precedente: positivo = credito dipendente (aumenta totale da pagare),
+      // negativo = debito dipendente (diminuisce totale da pagare).
+      const previousBalance = Number(previousBalancesMap.get(Number(employee.employee_id)) || 0);
+      const totalToPay = grossCompensation - pendingAdvancesAmount + previousBalance;
+      const teamNames = employee.team_names
+        ? String(employee.team_names)
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : [];
+
+      return {
+        employee_id: Number(employee.employee_id),
+        month: range.monthKey,
+        payroll_record_id: payrollRecord?.id || null,
+        employee_name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
+        first_name: employee.first_name || '',
+        last_name: employee.last_name || '',
+        team_name: teamNames.join(' • '),
+        datore: payrollRecord?.datore || employee.hired_by || '',
+        standard_hours: standardHours,
+        daily_pay: dailyPay,
+        residual_hourly_rate: residualHourlyRate,
+        overtime_hourly_rate: overtimeRate,
+        show_overtime_in_report: splitOvertime,
+        total_regular_hours: Number(totalRegularHours.toFixed(2)),
+        total_overtime_hours: Number(totalOvertimeHours.toFixed(2)),
+        total_hours: Number(totalHours.toFixed(2)),
+        ordinary_full_days: workedBreakdown.fullDays,
+        ordinary_residual_hours: workedBreakdown.residualHours,
+        ordinary_compensation: Number(ordinaryCompensation.toFixed(2)),
+        overtime_compensation: Number(overtimeCompensation.toFixed(2)),
+        pending_advances_amount: Number(pendingAdvancesAmount.toFixed(2)),
+        previous_balance: Number(previousBalance.toFixed(2)),
+        previous_credit: previousBalance > 0 ? Number(previousBalance.toFixed(2)) : 0,
+        previous_debit: previousBalance < 0 ? Number(Math.abs(previousBalance).toFixed(2)) : 0,
+        gross_compensation: Number(grossCompensation.toFixed(2)),
+        total_to_pay: Number(totalToPay.toFixed(2)),
+        total_compensation: Number(grossCompensation.toFixed(2)),
+        is_processed: !!payrollRecord?.processed_at,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) =>
+      String(left.last_name || '').localeCompare(String(right.last_name || ''), 'it', { sensitivity: 'base' }) ||
+      String(left.first_name || '').localeCompare(String(right.first_name || ''), 'it', { sensitivity: 'base' })
+    );
+
+  const summaryOrdinaryHours = rows.reduce((sum, row) => sum + Number(row.ordinary_full_days * row.standard_hours + row.ordinary_residual_hours), 0);
+  const summaryOvertimeHours = rows.reduce((sum, row) => sum + Number(row.total_overtime_hours || 0), 0);
+  const summaryOrdinaryBreakdown = calculateHoursBreakdown(summaryOrdinaryHours, 0, defaultStandardHours, true);
+  const summary = {
+    employeesCount: rows.length,
+    ordinaryFullDays: summaryOrdinaryBreakdown.fullDays,
+    ordinaryResidualHours: summaryOrdinaryBreakdown.residualHours,
+    overtimeHours: Number(summaryOvertimeHours.toFixed(2)),
+    ordinaryCompensation: Number(rows.reduce((sum, row) => sum + Number(row.ordinary_compensation || 0), 0).toFixed(2)),
+    overtimeCompensation: Number(rows.reduce((sum, row) => sum + Number(row.overtime_compensation || 0), 0).toFixed(2)),
+    grossCompensation: Number(rows.reduce((sum, row) => sum + Number(row.gross_compensation || 0), 0).toFixed(2)),
+    pendingAdvances: Number(rows.reduce((sum, row) => sum + Number(row.pending_advances_amount || 0), 0).toFixed(2)),
+    previousCreditsTotal: Number(rows.reduce((sum, row) => sum + Number(row.previous_credit || 0), 0).toFixed(2)),
+    previousDebitsTotal: Number(rows.reduce((sum, row) => sum + Number(row.previous_debit || 0), 0).toFixed(2)),
+    previousBalanceNet: Number(rows.reduce((sum, row) => sum + Number(row.previous_balance || 0), 0).toFixed(2)),
+    totalToPay: Number(rows.reduce((sum, row) => sum + Number(row.total_to_pay || 0), 0).toFixed(2)),
+    totalCompensation: Number(rows.reduce((sum, row) => sum + Number(row.gross_compensation || 0), 0).toFixed(2)),
+  };
+
+  console.info('[payment-preview] rows=%d advances=%d totalToPay=%s', rows.length, pendingAdvanceRows.length, summary.totalToPay);
+
+  return {
+    month: range.monthKey,
+    settings: {
+      standard_day_hours: defaultStandardHours,
+    },
+    rows,
+    summary,
+  };
 }
 
 function loadAdvancesMap(payrollRecordIds) {
@@ -533,6 +1130,23 @@ function syncInstallmentPayments(employeeId, month, payrollRecordId) {
 
 function upsertPayrollRecord(data) {
   const db = getDb();
+  // Safety net runtime: alcuni DB esistenti possono essere stati migrati prima
+  // dell'introduzione di `residual_hourly_rate`. Se per qualunque motivo la
+  // migration dedicata non fosse ancora andata a buon fine, recuperiamo qui
+  // con un ALTER idempotente (verifica via PRAGMA prima di toccare lo schema).
+  if (!tableHasColumn(db, 'payroll_records', 'residual_hourly_rate')) {
+    try {
+      db.exec('ALTER TABLE payroll_records ADD COLUMN residual_hourly_rate REAL DEFAULT NULL');
+      console.info('[db:migration] payroll_records added missing column residual_hourly_rate (runtime self-heal)');
+    } catch (error) {
+      // Race condition tra processi che condividono il DB: se un altro processo
+      // ha appena aggiunto la colonna, l'ALTER fallisce con "duplicate column".
+      // Verifica di nuovo e propaga solo errori reali.
+      if (!tableHasColumn(db, 'payroll_records', 'residual_hourly_rate')) {
+        throw error;
+      }
+    }
+  }
   const normalizedAdvances = normalizeAdvances(data.advances || data.acconti_details || []);
   const totalAdvances = normalizedAdvances.reduce((sum, advance) => sum + advance.amount, 0);
   const existingRecord = db.prepare(`
@@ -553,6 +1167,7 @@ function upsertPayrollRecord(data) {
         ore_totali,
         retribuzione_calcolata,
         giornate_busta_paga,
+        residual_hourly_rate,
         selected_payroll_days_json,
         show_selected_payroll_days_in_report,
         importo_busta_paga,
@@ -590,6 +1205,7 @@ function upsertPayrollRecord(data) {
         @ore_totali,
         @retribuzione_calcolata,
         @giornate_busta_paga,
+        @residual_hourly_rate,
         @selected_payroll_days_json,
         @show_selected_payroll_days_in_report,
         @importo_busta_paga,
@@ -626,6 +1242,7 @@ function upsertPayrollRecord(data) {
         ore_totali = excluded.ore_totali,
         retribuzione_calcolata = excluded.retribuzione_calcolata,
         giornate_busta_paga = excluded.giornate_busta_paga,
+        residual_hourly_rate = excluded.residual_hourly_rate,
         selected_payroll_days_json = excluded.selected_payroll_days_json,
         show_selected_payroll_days_in_report = excluded.show_selected_payroll_days_in_report,
         importo_busta_paga = excluded.importo_busta_paga,
@@ -663,6 +1280,7 @@ function upsertPayrollRecord(data) {
       ore_totali: data.ore_totali ?? 0,
       retribuzione_calcolata: data.retribuzione_calcolata ?? 0,
       giornate_busta_paga: data.giornate_busta_paga ?? 0,
+      residual_hourly_rate: data.residual_hourly_rate ?? null,
       selected_payroll_days_json: JSON.stringify(normalizeSelectedPayrollDays(
         data.selected_payroll_days_json ?? data.selected_payroll_days ?? data.selectedPayrollDays
       )),
@@ -1020,7 +1638,7 @@ function getPayrollRecord(employeeId, month) {
   return {
     ...record,
     employee: getEmployeeHistorySummary(employeeId),
-    debt_plans: getDebtPlansByEmployee(employeeId, { includeArchived: true }),
+    debt_plans: getDebtPlansByEmployee(employeeId),
   };
 }
 
@@ -1155,7 +1773,7 @@ function getPayrollRecordById(id) {
   return {
     ...record,
     employee: getEmployeeHistorySummary(record.employee_id),
-    debt_plans: getDebtPlansByEmployee(record.employee_id, { includeArchived: true }),
+    debt_plans: getDebtPlansByEmployee(record.employee_id),
   };
 }
 
@@ -1417,6 +2035,7 @@ module.exports = {
   deletePayrollDocument,
   getPayrollRecord,
   getPayrollRecordById,
+  getPaymentPreviewByMonth,
   getPreviousBalance,
   listPayrollHistory,
   listPayrollYears,

@@ -3863,6 +3863,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('payroll:getPreviousBalance', async (_, employeeId, month) =>
     payrollRepo.getPreviousBalance(employeeId, month)
   );
+  console.log('[payment-preview] registering IPC payroll:getPaymentPreviewByMonth');
+  ipcMain.handle('payroll:getPaymentPreviewByMonth', async (_, options) => {
+    console.info('[payment-preview] handler-called options=%j', options || {});
+    const result = payrollRepo.getPaymentPreviewByMonth(options || {});
+    console.info('[payment-preview] handler-result rows=%d', Array.isArray(result?.rows) ? result.rows.length : 0);
+    return result;
+  });
   ipcMain.handle('payroll:uploadDocument', async (_, employeeId, month) => {
     requireWritableLicense('Il caricamento di nuove buste paga');
     return payrollRepo.uploadPayrollDocument(mainWindow, employeeId, month);

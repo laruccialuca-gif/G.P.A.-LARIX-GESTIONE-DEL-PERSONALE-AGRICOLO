@@ -83,6 +83,10 @@ function formatWorkedTimeLabel(days, residualHours) {
   return `${dayLabel} + ${safeHours.toLocaleString('it-IT', { maximumFractionDigits: 2 })} h`;
 }
 
+function formatCurrencyValue(value) {
+  return `€ ${Number(value || 0).toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function normalizeSelectedPayrollDays(value) {
   let source = value;
   if (typeof source === 'string') {
@@ -133,18 +137,44 @@ function buildEmployeeReportData(input) {
   const otHFmt     = kpi.straordinari.toLocaleString('it-IT', { maximumFractionDigits: 1 });
   const workedTimeLabel = formatWorkedTimeLabel(kpi.giornateIntere, kpi.oreResidue);
   const selectedPayrollDays = normalizeSelectedPayrollDays(compenso.bustaPaga.selectedPayrollDays ?? compenso.bustaPaga.selected_payroll_days);
+  const residualHourlyRate = Number(compenso.residualHourlyRate || 0);
+  const regularDaysCompensation = Number(compenso.regularDaysCompensation || 0);
+  const residualHoursCompensation = Number(compenso.residualHoursCompensation || 0);
+  const residualHours = Number(compenso.residualHours || 0);
+
+  const retribuzioneLines = [];
+  if (Number(kpi.giornateIntere || 0) > 0) {
+    retribuzioneLines.push(
+      `${kpi.giornateIntere} gg × € ${tariffaFmt} = ${formatCurrencyValue(regularDaysCompensation)}`
+    );
+  }
+  if (residualHours > 0) {
+    retribuzioneLines.push(
+      `${residualHours.toLocaleString('it-IT', { maximumFractionDigits: 2 })} h × € ${residualHourlyRate.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} = ${formatCurrencyValue(residualHoursCompensation)}`
+    );
+  }
+  const retribuzioneNote = retribuzioneLines.length
+    ? retribuzioneLines.join(' + ')
+    : workedTimeLabel + ' · tariffa € ' + tariffaFmt;
+
+  // Voce extra (storica "Regalo"): se importo positivo finisce nei CREDITI,
+  // se negativo si converte in valore positivo e va nei DEBITI (trattenuta).
+  const regaloSigned = Number(compenso.regalo || 0);
+  const regaloCredit = regaloSigned > 0 ? regaloSigned : 0;
+  const regaloDebit = regaloSigned < 0 ? Math.abs(regaloSigned) : 0;
 
   const totalCredits =
     compenso.retribuzione +
     compenso.straordinariImporto +
-    compenso.regalo +
+    regaloCredit +
     compenso.trasporto +
     compenso.creditoPrecedente;
 
   const totalDebits =
     compenso.bustaPaga.importo +
     compenso.acconti.importo +
-    compenso.rate.importo;
+    compenso.rate.importo +
+    regaloDebit;
 
   return {
     brand:      '',
@@ -178,10 +208,13 @@ function buildEmployeeReportData(input) {
     },
     compenso: {
       retribuzione:         compenso.retribuzione,
-      retribuzioneNote:     workedTimeLabel + ' · tariffa € ' + tariffaFmt,
+      retribuzioneNote:     retribuzioneNote,
       straordinariImporto:  compenso.straordinariImporto,
       straordinariNote:     otHFmt + ' h × € ' + otRateFmt,
       regalo:               compenso.regalo,
+      // L'etichetta in stampa salvata dal report (giftLabel / regalo_descrizione / regaloNote / regaloLabel)
+      // arriva al template attraverso `regaloNote`. Accetta sia `regaloNote` che `regaloLabel`.
+      regaloNote:           String(compenso.regaloNote || compenso.regaloLabel || '').trim(),
       trasporto:            compenso.trasporto,
       creditoPrecedente:    compenso.creditoPrecedente,
       totalCredits,
@@ -193,7 +226,8 @@ function buildEmployeeReportData(input) {
       rate:                 compenso.rate,
       totalDebits,
       saldoFinale:          compenso.saldoFinale,
-      balanceStatusLabel:   compenso.balanceStatusLabel
+      balanceStatusLabel:   compenso.balanceStatusLabel,
+      chiusuraSaldo:        compenso.chiusuraSaldo || null
     },
     calendario: buildCalendar(inizio, fine, input.presenze),
     note:       input.note || ''
