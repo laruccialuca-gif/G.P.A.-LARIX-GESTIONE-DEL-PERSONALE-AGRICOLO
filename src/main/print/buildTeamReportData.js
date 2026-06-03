@@ -371,33 +371,6 @@ function buildTeamReportData(input = {}) {
     );
   const calendar = runtimeCalendar || createEmptyMonthCalendar(year, monthIndex);
 
-  console.info('[team-report-debug]', {
-    teamId: source.teamId || null,
-    teamName: source.teamName || '',
-    monthReference: source.monthReference || `${year}-${String(month).padStart(2, '0')}`,
-    month,
-    year,
-    attendanceRows: Array.isArray(source.calendarEntries) ? source.calendarEntries.length : 0,
-    componentsCount: componentItems.length,
-    recordId: source.recordId || null,
-    snapshotId: source.snapshotId || null,
-  });
-  console.info('[team-report-source]', {
-    reportRecordId: source.recordId || null,
-    snapshotId: source.snapshotId || null,
-    usingSnapshot: false,
-  });
-  console.info('[team-report-calendar]', {
-    attendanceRows: Array.isArray(source.calendarEntries) ? source.calendarEntries.length : 0,
-    attendanceMonth: `${year}-${String(month).padStart(2, '0')}`,
-    attendanceTeamId: source.teamId || null,
-  });
-  console.info('[team-report-summary]', {
-    totalHours,
-    equivalentDays,
-    grossCompensation,
-  });
-
   return {
     title: `Report Squadra · ${String(source.teamName || '').trim()} · ${monthLabel}`,
     meta: {

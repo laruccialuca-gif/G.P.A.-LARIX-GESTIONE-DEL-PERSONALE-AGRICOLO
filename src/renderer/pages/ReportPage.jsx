@@ -1947,46 +1947,6 @@ export default function ReportPage() {
     teamTransportEnabled,
     yearStr,
   ]);
-  useEffect(() => {
-    console.info('[team-report-debug]', {
-      teamId: selectedTeam?.id || null,
-      teamName: selectedTeam?.name || '',
-      monthReference: selectedReportMonthKey,
-      month: currentMonth.getMonth() + 1,
-      year: currentMonth.getFullYear(),
-      attendanceRows: teamCalendarEntries.length,
-      componentsCount: filteredTeamPayrollComponents.length,
-      recordId: currentTeamReportRecord?.id || null,
-      snapshotId: currentTeamReportRecord?.report_snapshot_json?.snapshot_id || null,
-    });
-    console.info('[team-report-source]', {
-      reportRecordId: currentTeamReportRecord?.id || null,
-      snapshotId: currentTeamReportRecord?.report_snapshot_json?.snapshot_id || null,
-      usingSnapshot: false,
-    });
-    console.info('[team-report-calendar]', {
-      attendanceRows: teamCalendarEntries.length,
-      attendanceMonth: selectedReportMonthKey,
-      attendanceTeamId: selectedTeam?.id || null,
-    });
-    console.info('[team-report-summary]', {
-      totalHours: teamHeadcountTotals.totalHours,
-      equivalentDays: teamHeadcountTotals.equivalentDays,
-      grossCompensation: teamGrossCompensation,
-    });
-  }, [
-    currentMonth,
-    currentTeamReportRecord?.id,
-    currentTeamReportRecord?.report_snapshot_json?.snapshot_id,
-    filteredTeamPayrollComponents.length,
-    selectedReportMonthKey,
-    selectedTeam?.id,
-    selectedTeam?.name,
-    teamCalendarEntries,
-    teamGrossCompensation,
-    teamHeadcountTotals.equivalentDays,
-    teamHeadcountTotals.totalHours,
-  ]);
   const currentTeamEconomicSnapshot = buildTeamReportSnapshot({
     teamTransportEnabled,
     teamTransportDescription,
@@ -8361,6 +8321,9 @@ function EmployeePrintArea({
   teamGiftEnabled,
   teamGiftDescription,
   teamGiftTotal,
+  teamPreviousCreditTotal = 0,
+  teamPreviousDebtTotal = 0,
+  teamPreviousBalanceNote = '',
   nMacchineMeseNum,
   prezzoPerMacchinaNum,
   totaleTrasporto,
