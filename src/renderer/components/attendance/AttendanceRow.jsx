@@ -10,7 +10,21 @@ function getAttendanceEmployeeDisplayName(employee) {
   return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
 }
 
+function getRowHoverStyle() {
+  return {
+    background: '#fff3b0',
+  };
+}
+
+function getActiveHoverStyle() {
+  return {
+    background: '#fff3b0',
+    boxShadow: 'inset 0 0 0 2px #d6a700',
+  };
+}
+
 function AttendanceRow({
+  rowKey,
   employee,
   teamMember,
   team,
@@ -19,6 +33,8 @@ function AttendanceRow({
   onToggleTeamExpanded,
   teamMismatchCount,
   isSelected,
+  isHoveredRow,
+  hoveredDateStr,
   cells,
   totalHoursLabel,
   summaryLabel,
@@ -46,6 +62,7 @@ function AttendanceRow({
   handleOvertimeValueBlur,
   onCellSingleClick,
   onCellDoubleClick,
+  onHoverCell,
   canMoveUp,
   canMoveDown,
   moveVisibleEmployeeRow,
@@ -64,9 +81,10 @@ function AttendanceRow({
       clearTimeout(clickTimeoutRef.current);
     }
   }, []);
+  const rowHoverStyle = isHoveredRow ? getRowHoverStyle() : null;
   return (
     <tr className={`${employee.is_headcount_team_row ? 'attendance-team-parent-row' : ''} ${isTeamChildRow ? 'attendance-team-child-row' : ''} ${teamMismatchCount ? 'attendance-team-row--mismatch' : ''}`}>
-      <td style={tdStyleLeftCurrent}>
+      <td style={{ ...tdStyleLeftCurrent, ...(rowHoverStyle || {}) }}>
         <div className={`attendance-left-cell ${isTeamChildRow ? 'attendance-left-cell--team-child' : ''}`}>
           <input
             type="checkbox"
@@ -148,16 +166,43 @@ function AttendanceRow({
         const mismatchTitle = cell.teamMismatch
           ? `Dichiarati ${cell.teamMismatch.declared} presenti, compilati ${cell.teamMismatch.filled} componenti`
           : '';
+        const isHoveredColumn = hoveredDateStr === cell.dateStr;
+        const isActiveHover = isHoveredRow && isHoveredColumn;
+        const terminationHoverStyle = cell.isAfterEmploymentEnd
+          ? {
+              background: '#ece7bf',
+              borderColor: '#d0d7de',
+              color: '#8b949e',
+            }
+          : null;
+        const cellHoverStyle = isActiveHover
+          ? {
+              ...(cell.isAfterEmploymentEnd ? terminationHoverStyle : getActiveHoverStyle()),
+              boxShadow: 'inset 0 0 0 2px #d6a700',
+            }
+          : isHoveredColumn
+          ? (cell.isAfterEmploymentEnd ? terminationHoverStyle : getRowHoverStyle())
+          : isHoveredRow
+          ? (cell.isAfterEmploymentEnd ? terminationHoverStyle : getRowHoverStyle())
+          : null;
+        const tdHoverStyle = cellHoverStyle;
 
         return (
           <td
             key={cell.dateStr}
+            className={`attendance-cell${isHoveredRow ? ' is-hovered-row' : ''}${isHoveredColumn ? ' is-hovered-column' : ''}${isActiveHover ? ' is-hovered-cell' : ''}${cell.isAfterEmploymentEnd ? ' attendance-cell--terminated' : ''}`}
             style={{
               ...tdStyleCenterCurrent,
               ...getCalendarCellStyle(cell.dayInfo),
+              ...(cell.isAfterEmploymentEnd ? {
+                background: '#f1f3f5',
+                  borderColor: '#d0d7de',
+                  color: '#8b949e',
+                } : {}),
+              ...(tdHoverStyle || {}),
               ...(cell.dateStr === todayKey ? todayCellStyle : {}),
             }}
-            title={cell.dayInfo?.holidayLabel || undefined}
+            title={cell.employmentTerminationTitle || cell.dayInfo?.holidayLabel || undefined}
           >
             <button
               type="button"
@@ -180,8 +225,21 @@ function AttendanceRow({
                 }
                 onCellDoubleClick(Number(employee.id), cell.dateStr);
               }}
-              title={mismatchTitle || `${cell.dateStr} • Click: inserisci/rimuovi giornata • Doppio click: dettagli`}
-              style={{ cursor: isWriteBlocked ? 'default' : 'pointer' }}
+              onMouseEnter={() => onHoverCell(rowKey, cell.dateStr)}
+              title={cell.employmentTerminationTitle || mismatchTitle || `${cell.dateStr} • Click: inserisci/rimuovi giornata • Doppio click: dettagli`}
+              style={{
+                cursor: isWriteBlocked ? 'default' : 'pointer',
+                ...(cell.isAfterEmploymentEnd ? {
+                  background: '#f1f3f5',
+                  borderColor: '#d0d7de',
+                  color: '#8b949e',
+                  boxShadow: 'inset 0 0 0 1px rgba(208, 215, 222, 0.75)',
+                } : {}),
+                ...(cellHoverStyle || {}),
+                ...(isActiveHover ? {
+                  outline: 'none',
+                } : {}),
+              }}
               disabled={isWriteBlocked}
               aria-label={`Modifica presenza del ${cell.dateStr} per ${getAttendanceEmployeeDisplayName(employee)}`}
             >
@@ -198,8 +256,8 @@ function AttendanceRow({
         );
       })}
 
-      <td style={tdStyleRightHoursCurrent}>{totalHoursLabel}</td>
-      <td style={tdStyleRightSummaryCurrent} title={summaryTitle || summaryLabel}>{summaryLabel}</td>
+      <td style={{ ...tdStyleRightHoursCurrent, ...(rowHoverStyle || {}) }}>{totalHoursLabel}</td>
+      <td style={{ ...tdStyleRightSummaryCurrent, ...(rowHoverStyle || {}) }} title={summaryTitle || summaryLabel}>{summaryLabel}</td>
     </tr>
   );
 }
@@ -220,6 +278,8 @@ const CELL_FIELDS = [
   'overtimeInputValue',
   'mainInputTone',
   'overtimeHasValue',
+  'isAfterEmploymentEnd',
+  'employmentTerminationTitle',
   'teamMismatch',
 ];
 
@@ -259,6 +319,7 @@ function __eqNow() {
 }
 
 function arePropsEqualImpl(prev, next) {
+  if (prev.rowKey !== next.rowKey) return false;
   if (prev.employee !== next.employee) return false;
   if (prev.teamMember !== next.teamMember) return false;
   if (prev.team !== next.team) return false;
@@ -267,6 +328,8 @@ function arePropsEqualImpl(prev, next) {
   if (prev.onToggleTeamExpanded !== next.onToggleTeamExpanded) return false;
   if (prev.teamMismatchCount !== next.teamMismatchCount) return false;
   if (prev.isSelected !== next.isSelected) return false;
+  if (prev.isHoveredRow !== next.isHoveredRow) return false;
+  if (prev.hoveredDateStr !== next.hoveredDateStr) return false;
   if (prev.totalHoursLabel !== next.totalHoursLabel) return false;
   if (prev.summaryLabel !== next.summaryLabel) return false;
   if (prev.summaryTitle !== next.summaryTitle) return false;
@@ -281,6 +344,7 @@ function arePropsEqualImpl(prev, next) {
   if (prev.tdStyleRightSummaryCurrent !== next.tdStyleRightSummaryCurrent) return false;
   if (prev.onCellSingleClick !== next.onCellSingleClick) return false;
   if (prev.onCellDoubleClick !== next.onCellDoubleClick) return false;
+  if (prev.onHoverCell !== next.onHoverCell) return false;
   if (prev.canMoveUp !== next.canMoveUp) return false;
   if (prev.canMoveDown !== next.canMoveDown) return false;
   if (prev.moveVisibleEmployeeRow !== next.moveVisibleEmployeeRow) return false;

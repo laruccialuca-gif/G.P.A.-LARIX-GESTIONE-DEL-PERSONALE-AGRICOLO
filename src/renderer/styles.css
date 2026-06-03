@@ -1677,6 +1677,33 @@ textarea {
   justify-content: flex-end;
 }
 
+.attendance-toolbar-extra-filters {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.attendance-former-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.attendance-former-toggle input {
+  margin: 0;
+}
+
 .attendance-month-nav {
   width: 36px;
   min-width: 36px;
@@ -2197,14 +2224,77 @@ textarea {
   border: 1px solid rgba(148, 163, 184, 0.4);
   border-radius: 6px;
   cursor: pointer;
-  transition: background 100ms, border-color 100ms, box-shadow 100ms;
   padding: 0 4px;
   color: #111827;
+  outline: none;
+  box-shadow: none;
+  transition: none !important;
+  animation: none !important;
+}
+
+.attendance-cell,
+.attendance-cell * {
+  transition: none !important;
+  animation: none !important;
+}
+
+.attendance-cell.is-hovered-row,
+.attendance-cell.is-hovered-column {
+  background: #fff3b0 !important;
+}
+
+.attendance-cell.is-hovered-cell {
+  outline: none !important;
+  border-color: #d0d7de !important;
+  box-shadow: inset 0 0 0 2px #d6a700 !important;
+}
+
+.attendance-cell.is-hovered-cell.attendance-cell--terminated {
+  background: #ece7bf !important;
+}
+
+.attendance-cell:focus,
+.attendance-cell:focus-visible,
+.attendance-cell input:focus,
+.attendance-cell input:focus-visible,
+.attendance-cell button:focus,
+.attendance-cell button:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 .attendance-compact-cell:hover:not(:disabled) {
-  background: rgba(37, 99, 235, 0.06);
-  border-color: rgba(37, 99, 235, 0.34);
+  background: transparent;
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+.attendance-compact-cell:focus,
+.attendance-compact-cell:focus-visible,
+.attendance-team-expand-button:focus,
+.attendance-team-expand-button:focus-visible,
+.attendance-row-order-actions button:focus,
+.attendance-row-order-actions button:focus-visible,
+.attendance-hours-input:focus,
+.attendance-hours-input:focus-visible,
+.attendance-compact-overtime-input:focus,
+.attendance-compact-overtime-input:focus-visible,
+.attendance-marker-button:focus,
+.attendance-marker-button:focus-visible,
+.attendance-marker-select:focus,
+.attendance-marker-select:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.attendance-compact-cell,
+.attendance-team-expand-button,
+.attendance-row-order-actions button,
+.attendance-hours-input,
+.attendance-compact-overtime-input,
+.attendance-marker-button,
+.attendance-marker-select {
+  transition: none !important;
+  animation: none !important;
 }
 
 .attendance-compact-cell--filled {
@@ -5414,6 +5504,16 @@ textarea {
   .attendance-toolbar-filter-slot {
     width: 100%;
     justify-content: stretch;
+  }
+
+  .attendance-toolbar-extra-filters {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .attendance-former-toggle {
+    width: 100%;
+    justify-content: center;
   }
 
   .attendance-filter-trigger {

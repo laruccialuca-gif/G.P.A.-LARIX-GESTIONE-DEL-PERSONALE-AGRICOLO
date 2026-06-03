@@ -360,11 +360,127 @@ function getAttendanceEmployeeDisplayName(employee) {
   return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
 }
 
-function countActiveTeamMembers(team, year) {
+function getMonthRangeKeys(monthDate) {
+  const year = monthDate.getFullYear();
+  const monthIndex = monthDate.getMonth();
+  return {
+    startKey: formatLocalDate(new Date(year, monthIndex, 1)),
+    endKey: formatLocalDate(new Date(year, monthIndex + 1, 0)),
+  };
+}
+
+function normalizeComparableDateKey(value) {
+  if (!value) return '';
+  const parsed = parseDateValue(value);
+  return parsed ? formatLocalDate(parsed) : '';
+}
+
+function getEmployeeEmploymentRanges(employee) {
+  const periods = Array.isArray(employee?.employment_periods)
+    ? employee.employment_periods.filter((period) => period && (period.hire_date_from || period.hire_date_to))
+    : [];
+
+  if (periods.length > 0) {
+    return periods.map((period) => ({
+      start: period.hire_date_from || null,
+      end: period.hire_date_to || null,
+    }));
+  }
+
+  const fallbackStart = employee?.hire_date_from || employee?.hire_date || null;
+  const fallbackEnd = employee?.hire_date_to || employee?.early_termination_date || null;
+  if (!fallbackStart && !fallbackEnd) {
+    return [];
+  }
+
+  return [{ start: fallbackStart, end: fallbackEnd }];
+}
+
+function employeeHasEmploymentWindow(employee) {
+  return getEmployeeEmploymentRanges(employee).length > 0;
+}
+
+function employeeHasEmploymentInMonth(employee, monthDate) {
+  const ranges = getEmployeeEmploymentRanges(employee);
+  if (!ranges.length) {
+    return false;
+  }
+
+  const { startKey: monthStartKey, endKey: monthEndKey } = getMonthRangeKeys(monthDate);
+  return ranges.some((range) => {
+    const startKey = normalizeComparableDateKey(range.start) || monthStartKey;
+    const endKey = normalizeComparableDateKey(range.end) || monthEndKey;
+    return startKey <= monthEndKey && endKey >= monthStartKey;
+  });
+}
+
+function getEmployeeEffectiveEndDate(employee, monthDate) {
+  const earlyTerminationKey = normalizeComparableDateKey(employee?.early_termination_date);
+  if (earlyTerminationKey) {
+    return earlyTerminationKey;
+  }
+
+  const directEndKey =
+    normalizeComparableDateKey(employee?.contract_end_date) ||
+    normalizeComparableDateKey(employee?.hire_date_to);
+  if (directEndKey) {
+    return directEndKey;
+  }
+
+  const ranges = getEmployeeEmploymentRanges(employee);
+  if (!ranges.length) {
+    return '';
+  }
+
+  const { startKey: monthStartKey, endKey: monthEndKey } = getMonthRangeKeys(monthDate);
+  const overlappingRanges = ranges.filter((range) => {
+    const startKey = normalizeComparableDateKey(range.start) || monthStartKey;
+    const endKey = normalizeComparableDateKey(range.end) || monthEndKey;
+    return startKey <= monthEndKey && endKey >= monthStartKey;
+  });
+
+  const candidateRanges = overlappingRanges.length ? overlappingRanges : ranges;
+  const endKeys = candidateRanges
+    .map((range) => normalizeComparableDateKey(range.end))
+    .filter(Boolean)
+    .sort();
+
+  return endKeys[endKeys.length - 1] || '';
+}
+
+function shouldIncludeAttendanceEmployee(employee, {
+  selectedYear,
+  currentMonth,
+  showFormerEmployees,
+  attendanceEmployeeIdsSet,
+}) {
+  if (!employee) {
+    return false;
+  }
+
+  const employeeId = Number(employee.id);
+  const hasSavedAttendance = Number.isFinite(employeeId) && attendanceEmployeeIdsSet.has(employeeId);
+  const isCurrentlyActive =
+    employee.status === 'attivo' &&
+    !employee.is_deleted &&
+    employeeIsActiveInYear(employee, selectedYear);
+  const hasEmploymentWindow = employeeHasEmploymentWindow(employee);
+  const overlapsSelectedMonth = employeeHasEmploymentInMonth(employee, currentMonth);
+  const activeVisibleInMonth =
+    isCurrentlyActive &&
+    (!hasEmploymentWindow || overlapsSelectedMonth || hasSavedAttendance);
+
+  if (!showFormerEmployees) {
+    return activeVisibleInMonth;
+  }
+
+  return activeVisibleInMonth || overlapsSelectedMonth || hasSavedAttendance;
+}
+
+function countActiveTeamMembers(team, visibleEmployeeIdsSet) {
   return (team?.members || []).filter((member) =>
     member.employee &&
-    !member.employee.is_deleted &&
-    employeeIsActiveInYear(member.employee, year)
+    visibleEmployeeIdsSet.has(Number(member.employee.id))
   ).length;
 }
 
@@ -384,24 +500,23 @@ function buildHeadcountTeamRow(team) {
     teamMember: null,
     team,
     headcountMode: true,
-    activeMemberCount: countActiveTeamMembers(team, new Date().getFullYear()),
+    activeMemberCount: countActiveTeamMembers(team, new Set()),
   };
 }
 
-function buildTeamRows(team, year) {
+function buildTeamRows(team, visibleEmployeeIdsSet) {
   if (!team) return [];
   if (isTeamHeadcountMode(team)) {
     return [{
       ...buildHeadcountTeamRow(team),
-      activeMemberCount: countActiveTeamMembers(team, year),
+      activeMemberCount: countActiveTeamMembers(team, visibleEmployeeIdsSet),
     }];
   }
 
   return (team?.members || [])
     .filter((member) =>
       member.employee &&
-      !member.employee.is_deleted &&
-      employeeIsActiveInYear(member.employee, year)
+      visibleEmployeeIdsSet.has(Number(member.employee.id))
     )
     .map((member) => ({
       employee: member.employee,
@@ -409,12 +524,11 @@ function buildTeamRows(team, year) {
     }));
 }
 
-function buildTeamChildRows(team, year) {
+function buildTeamChildRows(team, visibleEmployeeIdsSet) {
   return (team?.members || [])
     .filter((member) =>
       member.employee &&
-      !member.employee.is_deleted &&
-      employeeIsActiveInYear(member.employee, year)
+      visibleEmployeeIdsSet.has(Number(member.employee.id))
     )
     .map((member) => ({
       employee: member.employee,
@@ -426,14 +540,13 @@ function buildTeamChildRows(team, year) {
     }));
 }
 
-function buildTeamMemberEmployeeIdsSet(teams = [], year) {
+function buildTeamMemberEmployeeIdsSet(teams = [], visibleEmployeeIdsSet) {
   const employeeIds = new Set();
   for (const team of teams || []) {
     for (const member of team?.members || []) {
       if (
         member.employee &&
-        !member.employee.is_deleted &&
-        employeeIsActiveInYear(member.employee, year)
+        visibleEmployeeIdsSet.has(Number(member.employee.id))
       ) {
         employeeIds.add(Number(member.employee.id));
       }
@@ -793,6 +906,7 @@ export default function AttendancePage() {
   const [attendance, setAttendance] = useState([]);
   const [settings, setSettings] = useState(null);
   const [selectedEntity, setSelectedEntity] = useState('all');
+  const [showFormerEmployees, setShowFormerEmployees] = useState(false);
   const [pendingChanges, setPendingChanges] = useState({});
   const [inputDrafts, setInputDrafts] = useState({});
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([]);
@@ -910,7 +1024,9 @@ export default function AttendancePage() {
     });
     try {
       const employeesStartedAt = getPerfNow();
-      const employeeData = await window.api.employees.listBasicForAttendance();
+      const employeeData = await window.api.employees.listBasicForAttendance({
+        includeDeleted: true,
+      });
       logAttendancePerf('page:load-employees:end', {
         count: Array.isArray(employeeData) ? employeeData.length : 0,
         duration_ms: Math.round(getPerfNow() - employeesStartedAt),
@@ -1241,14 +1357,35 @@ export default function AttendancePage() {
     };
   }, []);
 
+  const attendanceEmployeeIdsSet = useMemo(() => {
+    const ids = new Set();
+    for (const item of attendance) {
+      const employeeId = Number(item?.employee_id);
+      if (Number.isFinite(employeeId) && !isTeamHeadcountRowId(employeeId)) {
+        ids.add(employeeId);
+      }
+    }
+    return ids;
+  }, [attendance]);
+
+  const visibleEmployeeIdsSet = useMemo(() => {
+    const ids = new Set();
+    for (const employee of employees) {
+      if (shouldIncludeAttendanceEmployee(employee, {
+        selectedYear,
+        currentMonth,
+        showFormerEmployees,
+        attendanceEmployeeIdsSet,
+      })) {
+        ids.add(Number(employee.id));
+      }
+    }
+    return ids;
+  }, [attendanceEmployeeIdsSet, currentMonth, employees, selectedYear, showFormerEmployees]);
+
   const activeEmployees = useMemo(
-    () => employees
-      .filter((employee) =>
-        employee.status === 'attivo' &&
-        !employee.is_deleted &&
-        employeeIsActiveInYear(employee, selectedYear)
-      ),
-    [employees, selectedYear]
+    () => employees.filter((employee) => visibleEmployeeIdsSet.has(Number(employee.id))),
+    [employees, visibleEmployeeIdsSet]
   );
   const attendanceSettings = useMemo(() => getAttendanceSettings(settings), [settings]);
   const resolvedQuickClickValue = useMemo(
@@ -1274,20 +1411,20 @@ export default function AttendancePage() {
 
   const selectedMeta = useMemo(() => parseSelection(selectedEntity), [selectedEntity]);
   const visibleTeams = useMemo(
-    () => teams.filter((team) => buildTeamRows(team, selectedYear).length > 0),
-    [teams, selectedYear]
+    () => teams.filter((team) => buildTeamRows(team, visibleEmployeeIdsSet).length > 0),
+    [teams, visibleEmployeeIdsSet]
   );
   const groupedEmployeeIds = useMemo(
-    () => buildTeamMemberEmployeeIdsSet(visibleTeams, selectedYear),
-    [visibleTeams, selectedYear]
+    () => buildTeamMemberEmployeeIdsSet(visibleTeams, visibleEmployeeIdsSet),
+    [visibleTeams, visibleEmployeeIdsSet]
   );
   const employeesWithoutTeam = useMemo(
     () => activeEmployees.filter((employee) => !groupedEmployeeIds.has(Number(employee.id))),
     [activeEmployees, groupedEmployeeIds]
   );
   const visibleTeamCounts = useMemo(
-    () => new Map(visibleTeams.map((team) => [Number(team.id), buildTeamRows(team, selectedYear).length])),
-    [visibleTeams, selectedYear]
+    () => new Map(visibleTeams.map((team) => [Number(team.id), buildTeamRows(team, visibleEmployeeIdsSet).length])),
+    [visibleTeams, visibleEmployeeIdsSet]
   );
   const selectedTeam = useMemo(
     () => selectedMeta.type === 'team'
@@ -1320,7 +1457,7 @@ export default function AttendancePage() {
       const employee = activeEmployees.find((item) => Number(item.id) === selectedMeta.id);
       rows = employee ? [{ employee, teamMember: null }] : [];
     } else if (selectedMeta.type === 'team') {
-      rows = buildTeamRows(selectedTeam, selectedYear);
+      rows = buildTeamRows(selectedTeam, visibleEmployeeIdsSet);
       const headcountRow = rows.find(row => isTeamHeadcountRowId(Number(row.employee.id)));
       if (headcountRow) {
         console.log('[attendance-debug] headcount-row-created', {
@@ -1347,8 +1484,7 @@ export default function AttendancePage() {
         for (const member of team.members || []) {
           if (
             member.employee &&
-            !member.employee.is_deleted &&
-            employeeIsActiveInYear(member.employee, selectedYear)
+            visibleEmployeeIdsSet.has(Number(member.employee.id))
           ) {
             employeesInHeadcountTeams.add(Number(member.employee.id));
           }
@@ -1371,6 +1507,7 @@ export default function AttendancePage() {
       for (const team of headcountTeams) {
         rowsBeforeSorting.push({
           ...buildHeadcountTeamRow(team),
+          activeMemberCount: countActiveTeamMembers(team, visibleEmployeeIdsSet),
           originalIndex: Infinity,
         });
       }
@@ -1411,7 +1548,7 @@ export default function AttendancePage() {
     });
 
     return rows;
-  }, [activeEmployees, employeesWithoutTeam, selectedEntity, selectedMeta, selectedTeam, selectedYear]);
+  }, [activeEmployees, employeesWithoutTeam, selectedEntity, selectedMeta, selectedTeam, visibleEmployeeIdsSet]);
 
   const employeeFilterSet = useMemo(
     () => new Set(employeeFilterIds.map((id) => Number(id))),
@@ -1463,12 +1600,12 @@ export default function AttendancePage() {
     for (const row of rows) {
       expandedRows.push(row);
       if (row.headcountMode && row.team?.id && expandedTeamIdSet.has(Number(row.team.id))) {
-        expandedRows.push(...buildTeamChildRows(row.team, selectedYear));
+        expandedRows.push(...buildTeamChildRows(row.team, visibleEmployeeIdsSet));
       }
     }
 
     return expandedRows;
-  }, [employeeDisplayOrder, employeeFilterSet, entityRows, expandedTeamIdSet, selectedYear]);
+  }, [employeeDisplayOrder, employeeFilterSet, entityRows, expandedTeamIdSet, visibleEmployeeIdsSet]);
 
   const filterAvailableEmployees = useMemo(
     () => entityRows.map(({ employee }) => employee),
@@ -2017,6 +2154,7 @@ export default function AttendancePage() {
           isTeamChildRow: !!isTeamChildRow,
           parentTeamId: parentTeamId || null,
           parentHeadcountRowId: parentHeadcountRowId || null,
+          employmentEndDate: headcountMode ? '' : getEmployeeEffectiveEndDate(employee, currentMonth),
           effectiveAttendance,
           totals,
         };
@@ -2040,7 +2178,7 @@ export default function AttendancePage() {
 
       return rows;
     },
-    [attendanceByEmployeeId, attendanceSettings.baseHours, dayKeys, displayRows, pendingChangesByEmployeeId, selectedMeta.type]
+    [attendanceByEmployeeId, attendanceSettings.baseHours, currentMonth, dayKeys, displayRows, pendingChangesByEmployeeId, selectedMeta.type]
   );
 
   const dailySubtotals = useMemo(() => {
@@ -3380,7 +3518,7 @@ export default function AttendancePage() {
   const allEmployeesCount = activeEmployees.length;
   const ungroupedEmployeesCount = employeesWithoutTeam.length;
   const selectedTeamUsesHeadcountMode = selectedMeta.type === 'team' && isTeamHeadcountMode(selectedTeam);
-  const selectedTeamActiveMemberCount = selectedTeam ? countActiveTeamMembers(selectedTeam, selectedYear) : 0;
+  const selectedTeamActiveMemberCount = selectedTeam ? countActiveTeamMembers(selectedTeam, visibleEmployeeIdsSet) : 0;
 
   return (
     <div className="attendance-page">
@@ -3586,13 +3724,24 @@ export default function AttendancePage() {
           monthString={monthString}
           parseDateValue={parseDateValue}
           filterSlot={
-            filterAvailableEmployees.length > 1 ? (
-              <AttendanceEmployeeFilter
-                availableEmployees={filterAvailableEmployees}
-                selectedIds={employeeFilterIds}
-                onChange={setEmployeeFilterIds}
-              />
-            ) : null
+            <div className="attendance-toolbar-extra-filters">
+              <label className="attendance-former-toggle">
+                <input
+                  type="checkbox"
+                  checked={showFormerEmployees}
+                  onChange={(event) => setShowFormerEmployees(event.target.checked)}
+                />
+                <span>Mostra cessati/scaduti</span>
+              </label>
+
+              {filterAvailableEmployees.length > 1 ? (
+                <AttendanceEmployeeFilter
+                  availableEmployees={filterAvailableEmployees}
+                  selectedIds={employeeFilterIds}
+                  onChange={setEmployeeFilterIds}
+                />
+              ) : null}
+            </div>
           }
         />
       </div>

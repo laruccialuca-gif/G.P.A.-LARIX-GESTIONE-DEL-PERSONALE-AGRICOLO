@@ -45,6 +45,19 @@ function __nowMs() {
   return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 }
 
+function getRowHoverStyle() {
+  return {
+    background: '#fff3b0',
+  };
+}
+
+function getActiveHoverStyle() {
+  return {
+    background: '#fff3b0',
+    boxShadow: 'inset 0 0 0 2px #d6a700',
+  };
+}
+
 function AttendanceTable(props) {
   const __propsRef = React.useRef(null);
   const __renderCountRef = React.useRef(0);
@@ -132,10 +145,20 @@ function AttendanceTable(props) {
   onCellDoubleClick,
   } = props;
   const isTeamHeadcountView = selectedMeta.type === 'team' && attendanceRowsData.some((row) => row.headcountMode);
+  const [hoveredRowKey, setHoveredRowKey] = React.useState(null);
+  const [hoveredDateStr, setHoveredDateStr] = React.useState('');
   const expandedTeamIdSet = React.useMemo(
     () => new Set((expandedTeamIds || []).map((id) => Number(id))),
     [expandedTeamIds]
   );
+  const handleCellHover = React.useCallback((rowKey, dateStr) => {
+    setHoveredRowKey((current) => (current === rowKey ? current : rowKey));
+    setHoveredDateStr((current) => (current === dateStr ? current : dateStr));
+  }, []);
+  const clearHoveredCell = React.useCallback(() => {
+    setHoveredRowKey(null);
+    setHoveredDateStr('');
+  }, []);
   countAttendanceDiag('AttendanceTable render');
   console.count('[attendance-diag] AttendanceTable render');
   resetEqStats();
@@ -178,7 +201,13 @@ function AttendanceTable(props) {
         <strong>{label}</strong>
       </td>
       {subtotal.byDay.map((value, index) => (
-        <td key={dayKeys[index]} style={tdStyleCenterCurrent}>
+        <td
+          key={dayKeys[index]}
+          style={{
+            ...tdStyleCenterCurrent,
+            ...(hoveredDateStr === dayKeys[index] ? getRowHoverStyle() : {}),
+          }}
+        >
           {formatAttendanceSubtotalValue(value)}
         </td>
       ))}
@@ -218,7 +247,10 @@ function AttendanceTable(props) {
   }, [attendanceRowsData, dayKeys]);
 
   return (
-    <div className={`attendance-table-region ${isCompactLayout ? 'attendance-table-region--compact' : ''}`}>
+    <div
+      className={`attendance-table-region ${isCompactLayout ? 'attendance-table-region--compact' : ''}`}
+      onMouseLeave={clearHoveredCell}
+    >
       <div
         className="attendance-horizontal-scrollbar"
         ref={horizontalScrollbarRef}
@@ -256,6 +288,7 @@ function AttendanceTable(props) {
                 style={{
                   ...thStyleCenterCurrent,
                   ...getCalendarHeaderStyle(dayInfoMap[formatDate(day)]),
+                  ...(hoveredDateStr === formatDate(day) ? getRowHoverStyle() : {}),
                   ...(formatDate(day) === todayKey ? todayHeaderStyle : {}),
                 }}
                 title={dayInfoMap[formatDate(day)]?.holidayLabel || undefined}
@@ -339,12 +372,18 @@ function AttendanceTable(props) {
                 const overtimeInputValue = getDisplayedInputValue(inputDrafts, employeeId, dateStr, 'overtime', att?.overtime_hours ? String(att.overtime_hours).replace('.', ',') : '');
                 const mainInputTone = getAttendanceHoursTone(mainInputValue, attendanceSettings);
                 const overtimeHasValue = String(overtimeInputValue || '').trim() !== '';
+                const employmentEndDate = rowData.employmentEndDate || '';
+                const isAfterEmploymentEnd = !!employmentEndDate && dateStr > employmentEndDate;
+                const employmentTerminationTitle = isAfterEmploymentEnd
+                  ? `Rapporto terminato il ${new Date(`${employmentEndDate}T00:00:00`).toLocaleDateString('it-IT')}`
+                  : '';
                 return {
                   dateStr, att, dayInfo,
                   isSpecial, specialOpt, markerMeta, isMainType,
                   markerMenuKey, overtimeEditorKey,
                   isEditingMarker, isEditingCompactOvertime,
                   mainInputValue, overtimeInputValue, mainInputTone, overtimeHasValue,
+                  isAfterEmploymentEnd, employmentTerminationTitle,
                   teamMismatch: teamMismatchByDate[dateStr] || null,
                 };
               });
@@ -365,6 +404,7 @@ function AttendanceTable(props) {
               items.push(
                 <AttendanceRow
                   key={rowKey}
+                  rowKey={rowKey}
                   employee={employee}
                   teamMember={teamMember}
                   team={rowData.team}
@@ -373,6 +413,8 @@ function AttendanceTable(props) {
                   onToggleTeamExpanded={isHCTeam ? toggleExpandedTeam : null}
                   teamMismatchCount={teamMismatchCount}
                   isSelected={isSelected}
+                  isHoveredRow={hoveredRowKey === rowKey}
+                  hoveredDateStr={hoveredDateStr}
                   cells={cells}
                   totalHoursLabel={totalHoursLabel}
                   summaryLabel={summaryLabel}
@@ -400,6 +442,7 @@ function AttendanceTable(props) {
                   handleOvertimeValueBlur={handleOvertimeValueBlur}
                   onCellSingleClick={onCellSingleClick}
                   onCellDoubleClick={onCellDoubleClick}
+                  onHoverCell={handleCellHover}
                   canMoveUp={!isHCTeam && !isTeamChildRow && movableRowIndex > 0}
                   canMoveDown={!isHCTeam && !isTeamChildRow && movableRowIndex >= 0 && movableRowIndex < movableRows.length - 1}
                   moveVisibleEmployeeRow={moveVisibleEmployeeRow}
