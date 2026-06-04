@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { formatHoursValue } from '../../utils/attendanceSummary';
+import { formatAttendanceEmployeeDisplayName } from '../../utils/attendanceEmployeeNames';
 import {
   fileMonthLabel,
   formatDate,
@@ -10,14 +11,6 @@ import {
   formatCompactWorkedSummary,
   resolveMarkerImageSrc,
 } from '../../utils/attendancePrintUtils';
-
-function getAttendanceEmployeeDisplayName(employee) {
-  if (!employee) return '';
-  if (employee.full_name) {
-    return String(employee.full_name).trim();
-  }
-  return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
-}
 
 function formatHeadcountPresenceSummary(value) {
   const safeValue = Number(value || 0);
@@ -510,7 +503,7 @@ const AttendancePrintAreaPaginated = React.forwardRef(function AttendancePrintAr
                           verticalAlign: 'middle',
                         }}
                       >
-                        <strong>{getAttendanceEmployeeDisplayName(employee)}</strong>
+                        <strong>{formatAttendanceEmployeeDisplayName(employee)}</strong>
                         {employee.role ? <div style={attendancePrintEmployeeMetaStyle}>{employee.role}</div> : null}
                         {teamMember?.manage_by_days ? (
                           <div style={attendancePrintEmployeeMetaStyle}>Gestione a giornate</div>

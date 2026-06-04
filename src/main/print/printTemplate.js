@@ -1,12 +1,49 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+function getAppBasePath() {
+  try {
+    const { app } = require('electron');
+    if (app && typeof app.getAppPath === 'function') {
+      return app.getAppPath();
+    }
+  } catch {
+    // electron app not available in plain node contexts
+  }
+
+  return path.resolve(__dirname, '../..');
+}
+
+function resolveRendererTemplatePath(fileName) {
+  const candidates = [
+    path.resolve(__dirname, '../../renderer/printTemplates', fileName),
+    path.resolve(getAppBasePath(), 'src/renderer/printTemplates', fileName),
+    path.resolve(process.cwd(), 'src/renderer/printTemplates', fileName),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  const error = new Error(
+    `${fileName} not found in:\n${candidates.join('\n')}`
+  );
+  error.code = 'ENOENT';
+  throw error;
+}
+
 function getTeamReportTemplatePath() {
-  return path.resolve(__dirname, '../../renderer/printTemplates/TeamReportTemplate.html');
+  return resolveRendererTemplatePath('TeamReportTemplate.html');
 }
 
 function getEmployeeReportTemplatePath() {
-  return path.resolve(__dirname, '../../renderer/printTemplates/EmployeeReportTemplate.html');
+  return resolveRendererTemplatePath('EmployeeReportTemplate.html');
+}
+
+function getEmployeeReportCssPath() {
+  return resolveRendererTemplatePath('employee-report.css');
 }
 
 function serializeForInlineScript(value) {
@@ -29,7 +66,7 @@ function renderTeamReportHtml(data) {
 
 function renderEmployeeReportHtml(data) {
   const templatePath = getEmployeeReportTemplatePath();
-  const cssPath = path.resolve(__dirname, '../../renderer/printTemplates/employee-report.css');
+  const cssPath = getEmployeeReportCssPath();
   const template = fs.readFileSync(templatePath, 'utf8');
   const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, 'utf8') : '';
   const injectedDataScript = `<script>window.REPORT_DATA=${serializeForInlineScript(data)};</script>`;
@@ -89,6 +126,7 @@ async function renderToPDF(templatePath, data, options = {}) {
 
 module.exports = {
   getEmployeeReportTemplatePath,
+  getEmployeeReportCssPath,
   getTeamReportTemplatePath,
   renderEmployeeReportHtml,
   renderTeamReportHtml,

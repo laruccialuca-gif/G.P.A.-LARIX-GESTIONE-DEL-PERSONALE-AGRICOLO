@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const documentService = require('./documentService');
 const { getAppVariant, getRuntimeContext, getVariantConfig } = require('./runtimeContext');
 const { buildTeamReportData } = require('./print/buildTeamReportData');
 const { buildEmployeeReportData } = require('./print/buildEmployeeReportData');
@@ -2205,20 +2206,6 @@ function buildTeamTemplateRenderResult(payload = {}) {
   console.info('[team-template-ipc] teamName=%s', payload?.teamName || '');
   console.info('[team-print-template] using-new-template=true');
   const data = buildTeamReportData(payload);
-  console.info('[team-print-template] data-built', {
-    teamId: data?.team?.id || null,
-    team: data?.team?.name || '',
-    monthReference: payload?.monthReference || '',
-    month: data?.team?.monthLabel || '',
-    totalHours: data?.team?.totalHours || 0,
-    equivalentDays: data?.team?.equivalentDays || 0,
-    finalBalance: data?.economics?.finalBalance || 0,
-  });
-  console.info('[team-report-source]', {
-    reportRecordId: payload?.recordId || null,
-    snapshotId: payload?.snapshotId || null,
-    usingSnapshot: false,
-  });
   const html = renderTeamReportHtml(data);
   return { data, html };
 }
@@ -2946,6 +2933,12 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle('employees:openDocumentById', async (_, documentId) =>
     employeeRepo.openEmployeeDocumentById(documentId)
+  );
+  ipcMain.handle('employees:openDocumentsFolder', async (_, employeeId) =>
+    documentService.openEmployeeDocumentsDirectory(employeeId)
+  );
+  ipcMain.handle('employees:openDocumentsArchive', async () =>
+    documentService.openDocumentsArchiveDirectory()
   );
   ipcMain.handle('employees:deleteHireDocument', async (_, employeeId) => {
     requireWritableLicense('La modifica dei dipendenti');
@@ -3757,6 +3750,10 @@ app.whenReady().then(async () => {
     const __t0 = Date.now();
     requireWritableLicense("L'inserimento di nuove presenze");
     const __tLicense = Date.now();
+    console.info('[attendance-save-debug][main] bulkUpsert-received', {
+      entries: Array.isArray(payload) ? payload.length : 0,
+      sample: Array.isArray(payload) && payload.length ? payload[0] : null,
+    });
     const result = attendanceRepo.bulkUpsertAttendance(payload);
     const __tTx = Date.now();
     try { authService.audit('attendance:bulkUpsert', 'attendance', null, { count: payload?.length }); } catch {}
@@ -3771,6 +3768,10 @@ app.whenReady().then(async () => {
       totalMs: __tAudit - __t0,
     };
     console.info('[attendance-perf][main] attendance:bulkUpsert', __perf);
+    console.info('[attendance-save-debug][main] bulkUpsert-result', {
+      result,
+      perf: __perf,
+    });
     return { ...(result || {}), __perf };
   });
   ipcMain.handle('attendance:teamBulkUpsert', async (_, payload) => {

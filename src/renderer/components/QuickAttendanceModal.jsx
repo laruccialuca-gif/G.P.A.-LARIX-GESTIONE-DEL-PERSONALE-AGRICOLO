@@ -1,4 +1,5 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { compareAttendanceEmployees, formatAttendanceEmployeeDisplayName } from '../utils/attendanceEmployeeNames';
 
 function formatMarkerOptionLabel(marker) {
   return [marker?.symbol, marker?.text || marker?.value].filter(Boolean).join(' ');
@@ -20,17 +21,11 @@ function formatDefaultPresenceValue(attendanceSettings) {
 }
 
 function sortRows(rows = []) {
-  return [...rows].sort((left, right) =>
-    `${left.employee.last_name || ''} ${left.employee.first_name || ''}`.localeCompare(
-      `${right.employee.last_name || ''} ${right.employee.first_name || ''}`,
-      'it',
-      { sensitivity: 'base' }
-    )
-  );
+  return [...rows].sort((left, right) => compareAttendanceEmployees(left.employee, right.employee));
 }
 
 function getRowDisplayName(row) {
-  return `${row.employee.last_name || ''} ${row.employee.first_name || ''}`.trim();
+  return formatAttendanceEmployeeDisplayName(row.employee);
 }
 
 function getRowTeamLabel(row) {

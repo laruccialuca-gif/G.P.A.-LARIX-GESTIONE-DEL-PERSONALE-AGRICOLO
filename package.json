@@ -51,6 +51,7 @@
     "files": [
       "dist/**/*",
       "src/main/**/*",
+      "src/renderer/printTemplates/**/*",
       "package.json"
     ],
     "asar": true,

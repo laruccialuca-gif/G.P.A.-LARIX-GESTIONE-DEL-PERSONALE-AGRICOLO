@@ -254,7 +254,7 @@ function toComponentItem(item, index) {
     indexLabel: String(index + 1).padStart(2, '0'),
     label: String(item.label || item.name || item.employeeName || `Componente ${index + 1}`),
     selectedDays,
-    selectedDaysLabel: selectedDays.length ? selectedDays.join(', ') : '-',
+    selectedDaysLabel: selectedDays.length ? selectedDays.join(',') : '-',
     days,
     daysLabel: days > 0 ? formatDecimal(days, 2) : '—',
     amount,
@@ -474,8 +474,18 @@ function buildTeamReportData(input = {}) {
               sign: '-',
             }]
           : []),
+        ...(advancesTotal > 0
+          ? [{
+              title: 'Acconti squadra',
+              sub: Array.isArray(source.advances) && source.advances.length
+                ? `${source.advances.length} voce${source.advances.length > 1 ? 'i' : ''} registrata${source.advances.length > 1 ? 'e' : ''}`
+                : 'Acconti registrati nel mese',
+              amountLabel: `- ${formatCurrency(advancesTotal)}`,
+              sign: '-',
+            }]
+          : []),
         {
-          title: 'Acconti e buste',
+          title: 'Buste paga componenti',
           sub: `${componentItems.length} componenti · vedi tabella`,
           amountLabel: `− ${formatCurrency(payrollComponentsTotal)}`,
           sign: '-',

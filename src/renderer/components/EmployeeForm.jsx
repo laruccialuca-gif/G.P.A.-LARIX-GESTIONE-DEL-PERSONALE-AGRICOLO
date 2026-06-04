@@ -642,6 +642,32 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
       visibleAttachmentCount,
       groupedAttachmentCount
     );
+    console.info('[employee-debug] medical', {
+      employeeId: Number(employee.id),
+      required: !!form.medical_visit_required,
+      done: !!form.medical_visit_done,
+      date: form.medical_visit_date || null,
+      expiry: form.medical_visit_expiry || null,
+      document: !!employeeDocumentsSummary.medical_visit_document,
+    });
+    console.info('[employee-debug] training', {
+      employeeId: Number(employee.id),
+      required: !!form.art37_required,
+      done: !!form.art37_done,
+      date: form.art37_date || null,
+      expiry: form.art37_expiry || null,
+      document: !!employeeDocumentsSummary.art37_document,
+    });
+    console.info('[employee-debug] attachments', {
+      employeeId: Number(employee.id),
+      visibleAttachmentCount,
+      groupedAttachmentCount,
+      otherDocuments: Array.isArray(employeeDocumentsSummary.other_documents) ? employeeDocumentsSummary.other_documents.length : 0,
+      medical: !!employeeDocumentsSummary.medical_visit_document,
+      training: !!employeeDocumentsSummary.art37_document,
+      dpi: !!employeeDocumentsSummary.dpi_delivery_document,
+      legacyHire: !!employeeDocumentsSummary.legacy_hire_document,
+    });
   }, [open, employee?.id, visibleAttachmentCount, groupedAttachmentCount, allEmployeeDocuments.length, employeeDocumentsSummary]);
   const latestDpiAssignment = useMemo(() => {
     if (!dpiAssignments.length) return null;
@@ -1401,12 +1427,38 @@ export default function EmployeeForm({ open, onClose, onSubmit, employee, openPe
                         Allegati già caricati per visita medica, formazione, DPI e altre categorie.
                       </div>
                     </div>
-                    <span
-                      className="soft-chip"
-                      style={{ background: 'rgba(15, 118, 110, 0.12)', color: '#115e59' }}
-                    >
-                      {allEmployeeDocuments.length} allegati
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <span
+                        className="soft-chip"
+                        style={{ background: 'rgba(15, 118, 110, 0.12)', color: '#115e59' }}
+                      >
+                        {allEmployeeDocuments.length} allegati
+                      </span>
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        onClick={() =>
+                          handleOpenDocument(
+                            () => window.api.employees.openDocumentsFolder(employee.id),
+                            'Errore apertura cartella documenti'
+                          )
+                        }
+                      >
+                        📂 Apri cartella documenti
+                      </button>
+                      <button
+                        type="button"
+                        className="button-secondary"
+                        onClick={() =>
+                          handleOpenDocument(
+                            () => window.api.employees.openDocumentsArchive(),
+                            'Errore apertura archivio documenti'
+                          )
+                        }
+                      >
+                        📁 Apri archivio documenti
+                      </button>
+                    </div>
                   </div>
 
                   <div style={{ display: 'grid', gap: 8 }}>

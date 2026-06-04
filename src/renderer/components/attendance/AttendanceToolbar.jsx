@@ -1,12 +1,5 @@
 import React from 'react';
-
-function getAttendanceEmployeeDisplayName(employee) {
-  if (!employee) return '';
-  if (employee.full_name) {
-    return String(employee.full_name).trim();
-  }
-  return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
-}
+import { compareAttendanceEmployees, formatAttendanceEmployeeDisplayName } from '../../utils/attendanceEmployeeNames';
 
 function AttendanceToolbar({
   currentMonth,
@@ -29,13 +22,7 @@ function AttendanceToolbar({
       activeEmployees
         .map((employee, originalIndex) => ({ employee, originalIndex }))
         .sort((a, b) => {
-          const nameA = getAttendanceEmployeeDisplayName(a.employee);
-          const nameB = getAttendanceEmployeeDisplayName(b.employee);
-          const byName = String(nameA || '').localeCompare(
-            String(nameB || ''),
-            'it',
-            { sensitivity: 'base' }
-          );
+          const byName = compareAttendanceEmployees(a.employee, b.employee);
           return byName || a.originalIndex - b.originalIndex;
         })
         .map(({ employee }) => employee),
@@ -105,7 +92,7 @@ function AttendanceToolbar({
           <optgroup label="Dipendenti">
             {sortedEmployeeOptions.map((employee) => (
               <option key={`employee-${employee.id}`} value={`employee:${employee.id}`}>
-                {getAttendanceEmployeeDisplayName(employee)}
+                {formatAttendanceEmployeeDisplayName(employee)}
               </option>
             ))}
           </optgroup>

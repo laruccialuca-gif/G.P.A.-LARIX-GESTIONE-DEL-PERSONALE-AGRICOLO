@@ -705,8 +705,34 @@ function getEmployeeById(id, options = {}) {
       LIMIT 1
     `)}
   `).get(id);
-
-  return attachEmployeeRelations(row ? [row] : [])[0] || null;
+  const result = attachEmployeeRelations(row ? [row] : [])[0] || null;
+  if (result) {
+    console.info('[employee-debug] medical', {
+      source: 'getById',
+      employeeId: Number(result.id),
+      required: !!result.medical_visit_required,
+      done: !!result.medical_visit_done,
+      date: result.medical_visit_date || null,
+      expiry: result.medical_visit_expiry || null,
+    });
+    console.info('[employee-debug] training', {
+      source: 'getById',
+      employeeId: Number(result.id),
+      required: !!result.art37_required,
+      done: !!result.art37_done,
+      date: result.art37_date || null,
+      expiry: result.art37_expiry || null,
+    });
+    console.info('[employee-debug] attachments', {
+      source: 'getById',
+      employeeId: Number(result.id),
+      hire: !!result.hire_document,
+      art37: !!result.art37_document,
+      medical: !!result.medical_visit_document,
+      dpi: !!result.dpi_delivery_document,
+    });
+  }
+  return result;
 }
 
 function getEmployeeDocumentsSummary(employeeId) {
@@ -830,7 +856,7 @@ function getEmployeeDocumentsSummary(employeeId) {
     );
   }
 
-  return {
+  const result = {
     employee_id: normalizedEmployeeId,
     employee_label: `${employee.last_name || ''} ${employee.first_name || ''}`.trim(),
     hire_document: byCategory.get(DOCUMENT_CATEGORIES.hire) || null,
@@ -841,6 +867,18 @@ function getEmployeeDocumentsSummary(employeeId) {
     other_documents: otherDocuments,
     employment_periods: employmentPeriods,
   };
+  console.info('[employee-debug] attachments', {
+    source: 'getDocumentsSummary',
+    employeeId: normalizedEmployeeId,
+    hire: !!result.hire_document,
+    legacyHire: !!result.legacy_hire_document,
+    art37: !!result.art37_document,
+    medical: !!result.medical_visit_document,
+    dpi: !!result.dpi_delivery_document,
+    otherCount: Array.isArray(result.other_documents) ? result.other_documents.length : 0,
+    periodCount: Array.isArray(result.employment_periods) ? result.employment_periods.length : 0,
+  });
+  return result;
 }
 
 function setCurrentPeriodsInactive(employeeId) {

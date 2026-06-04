@@ -1,13 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { compareAttendanceEmployees, formatAttendanceEmployeeDisplayName } from '../../utils/attendanceEmployeeNames';
 
 function sortEmployees(employees = []) {
-  return [...employees].sort((a, b) =>
-    `${a.last_name} ${a.first_name}`.localeCompare(
-      `${b.last_name} ${b.first_name}`,
-      'it',
-      { sensitivity: 'base' }
-    )
-  );
+  return [...employees].sort((a, b) => compareAttendanceEmployees(a, b));
 }
 
 function getEmployeeTeamNames(employee = {}) {
@@ -53,7 +48,7 @@ export default function AttendanceEmployeeFilter({ availableEmployees, selectedI
 
     const lower = searchText.toLowerCase();
     return sortedEmployees.filter((employee) =>
-      `${employee.last_name} ${employee.first_name}`.toLowerCase().includes(lower) ||
+      formatAttendanceEmployeeDisplayName(employee).toLowerCase().includes(lower) ||
       `${employee.first_name} ${employee.last_name}`.toLowerCase().includes(lower) ||
       getEmployeeTeamNames(employee).some((teamName) => teamName.toLowerCase().includes(lower))
     );
@@ -223,7 +218,7 @@ export default function AttendanceEmployeeFilter({ availableEmployees, selectedI
                     />
                     <span className="attendance-filter-modal__name-wrap">
                       <span className="attendance-filter-modal__name">
-                        {employee.last_name} {employee.first_name}
+                        {formatAttendanceEmployeeDisplayName(employee)}
                       </span>
                       {teamNames.length > 0 ? (
                         <span className="attendance-filter-modal__meta">

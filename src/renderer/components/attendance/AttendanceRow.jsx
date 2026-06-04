@@ -1,14 +1,7 @@
 import React from 'react';
 import { getCalendarCellStyle } from '../../utils/attendanceTableUtils';
 import { countAttendanceDiag, recordAttendanceTiming } from '../../utils/attendanceDiagnostics';
-
-function getAttendanceEmployeeDisplayName(employee) {
-  if (!employee) return '';
-  if (employee.full_name) {
-    return String(employee.full_name).trim();
-  }
-  return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
-}
+import { formatAttendanceEmployeeDisplayName } from '../../utils/attendanceEmployeeNames';
 
 function getRowHoverStyle() {
   return {
@@ -90,7 +83,7 @@ function AttendanceRow({
             type="checkbox"
             checked={isSelected}
             onChange={(event) => toggleEmployeeSelection(employee.id, event.target.checked)}
-            aria-label={`Seleziona ${getAttendanceEmployeeDisplayName(employee)}`}
+            aria-label={`Seleziona ${formatAttendanceEmployeeDisplayName(employee)}`}
           />
           {employee.is_headcount_team_row ? (
             <button
@@ -100,7 +93,7 @@ function AttendanceRow({
                 event.stopPropagation();
                 onToggleTeamExpanded?.(team?.id || employee.team_id);
               }}
-              aria-label={`${isTeamExpanded ? 'Chiudi' : 'Apri'} componenti ${getAttendanceEmployeeDisplayName(employee)}`}
+              aria-label={`${isTeamExpanded ? 'Chiudi' : 'Apri'} componenti ${formatAttendanceEmployeeDisplayName(employee)}`}
               title={`${isTeamExpanded ? 'Chiudi' : 'Apri'} componenti squadra`}
             >
               {isTeamExpanded ? '▾' : '▸'}
@@ -109,7 +102,7 @@ function AttendanceRow({
             <span className="attendance-team-child-indent" aria-hidden="true" />
           ) : null}
           <div>
-            <div className="attendance-employee-name">{getAttendanceEmployeeDisplayName(employee)}</div>
+            <div className="attendance-employee-name">{formatAttendanceEmployeeDisplayName(employee)}</div>
             <div style={{ fontSize: isCompactLayout ? 9 : 10, color: '#6b7280' }}>
               {employee.role || ''}
               {teamMember?.manage_by_days ? ' - gestione a giornate' : ''}
@@ -127,7 +120,7 @@ function AttendanceRow({
                 type="button"
                 onClick={() => moveVisibleEmployeeRow(Number(employee.id), -1)}
                 disabled={!canMoveUp}
-                aria-label={`Sposta su ${getAttendanceEmployeeDisplayName(employee)}`}
+                aria-label={`Sposta su ${formatAttendanceEmployeeDisplayName(employee)}`}
                 title="Sposta su"
               >
                 ↑
@@ -136,7 +129,7 @@ function AttendanceRow({
                 type="button"
                 onClick={() => moveVisibleEmployeeRow(Number(employee.id), 1)}
                 disabled={!canMoveDown}
-                aria-label={`Sposta giu ${getAttendanceEmployeeDisplayName(employee)}`}
+                aria-label={`Sposta giu ${formatAttendanceEmployeeDisplayName(employee)}`}
                 title="Sposta giu"
               >
                 ↓
@@ -241,7 +234,7 @@ function AttendanceRow({
                 } : {}),
               }}
               disabled={isWriteBlocked}
-              aria-label={`Modifica presenza del ${cell.dateStr} per ${getAttendanceEmployeeDisplayName(employee)}`}
+              aria-label={`Modifica presenza del ${cell.dateStr} per ${formatAttendanceEmployeeDisplayName(employee)}`}
             >
               <span className="attendance-compact-cell__value">{displayedCellValue}</span>
               {overtimeBadgeLabel ? (

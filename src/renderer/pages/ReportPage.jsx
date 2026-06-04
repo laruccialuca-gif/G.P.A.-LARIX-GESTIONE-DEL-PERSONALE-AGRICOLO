@@ -573,6 +573,7 @@ function createEmptyTeamAdvance() {
     date: '',
     notes: '',
     include_in_report: true,
+    includeInReport: true,
     source_type: 'report',
     employer_key: '',
   };
@@ -789,6 +790,19 @@ function isMeaningfulTeamAdvance(advance) {
   return Number(advance?.amount || 0) > 0 || String(advance?.date || '').trim() !== '' || String(advance?.notes || '').trim() !== '';
 }
 
+function validateTeamAdvanceDraft(advance) {
+  if (!advance) {
+    return 'Acconto squadra non valido.';
+  }
+  if (!(Number(advance.amount || 0) > 0)) {
+    return "Inserisci un importo acconto valido.";
+  }
+  if (!String(advance.date || '').trim()) {
+    return "Inserisci la data dell'acconto.";
+  }
+  return '';
+}
+
 function isMeaningfulTeamPayrollComponent(component) {
   const selectedDays = normalizeTeamPayrollSelectedDays(
     component?.selected_payroll_days ?? component?.selected_payroll_days_json
@@ -873,7 +887,7 @@ function buildTeamReportSnapshot({
         date: advance.date || '',
         amount: Number(advance.amount || 0),
         notes: advance.notes || '',
-        include_in_report: advance.include_in_report !== false,
+        include_in_report: advance.include_in_report !== false && advance.includeInReport !== false,
         source_type: advance.source_type || 'report',
       })),
     components: (Array.isArray(teamPayrollComponents) ? teamPayrollComponents : [])
@@ -3039,6 +3053,7 @@ export default function ReportPage() {
               date: row.advance_date || '',
               notes: row.notes || '',
               include_in_report: row.include_in_report !== false,
+              includeInReport: row.include_in_report !== false,
               source_type: row.source_type || 'report',
               employer_key: row.employer_key || '',
             }))
@@ -4120,14 +4135,15 @@ export default function ReportPage() {
       const rows = await window.api.teamPayroll.listAdvances(selectedTeam.id, selectedReportMonthKey, {
         include_in_report: true,
       });
-      const nextRows = Array.isArray(rows) && rows.length
-        ? rows.map((row) => ({
+        const nextRows = Array.isArray(rows) && rows.length
+          ? rows.map((row) => ({
             id: row.id,
             client_key: createLocalDraftKey(`team-advance-${row.id}`),
             amount: row.amount === null || row.amount === undefined ? '' : String(row.amount),
             date: row.advance_date || '',
             notes: row.notes || '',
             include_in_report: row.include_in_report !== false,
+            includeInReport: row.include_in_report !== false,
             source_type: row.source_type || 'report',
             employer_key: row.employer_key || '',
           }))
@@ -4142,6 +4158,11 @@ export default function ReportPage() {
   async function saveTeamAdvance(index) {
     const advance = teamAdvances[index];
     if (!selectedTeam?.id || !advance) return;
+    const validationError = validateTeamAdvanceDraft(advance);
+    if (validationError) {
+      alert(validationError);
+      return;
+    }
 
     const payload = {
       team_id: selectedTeam.id,
@@ -4170,6 +4191,7 @@ export default function ReportPage() {
                 date: saved.advance_date || '',
                 notes: saved.notes || '',
                 include_in_report: saved.include_in_report !== false,
+                includeInReport: saved.include_in_report !== false,
                 source_type: saved.source_type || 'report',
                 employer_key: saved.employer_key || '',
               }
@@ -4413,6 +4435,14 @@ export default function ReportPage() {
     try {
       setTeamSaveState('saving');
       const meaningfulAdvances = teamAdvances.filter(isMeaningfulTeamAdvance);
+      for (let index = 0; index < meaningfulAdvances.length; index += 1) {
+        const validationError = validateTeamAdvanceDraft(meaningfulAdvances[index]);
+        if (validationError) {
+          alert(`Acconto squadra ${index + 1}: ${validationError}`);
+          setTeamSaveState('idle');
+          return null;
+        }
+      }
       const savedAdvanceRows = [];
       for (const advance of meaningfulAdvances) {
         const payload = {
@@ -4497,6 +4527,7 @@ export default function ReportPage() {
             date: row.advance_date || '',
             notes: row.notes || '',
             include_in_report: row.include_in_report !== false,
+            includeInReport: row.include_in_report !== false,
             source_type: row.source_type || 'report',
             employer_key: row.employer_key || '',
           }))
@@ -5249,6 +5280,14 @@ export default function ReportPage() {
       previousBalanceType: teamTemplateSource.previousBalanceType || '',
       previousBalanceAmount: teamTemplateSource.previousBalanceAmount || 0,
       previousBalanceNote: teamTemplateSource.previousBalanceNote || '',
+      advancesTotal: teamTemplateSource.advancesTotal || 0,
+      advances: Array.isArray(teamTemplateSource.advances)
+        ? teamTemplateSource.advances.map((advance) => ({
+            date: advance.date || advance.advance_date || '',
+            amount: advance.amount || 0,
+            notes: advance.notes || '',
+          }))
+        : [],
       payrollComponentsTotal: teamTemplateSource.payrollComponentsTotal || 0,
       payrollComponents: Array.isArray(teamTemplateSource.payrollComponents)
         ? teamTemplateSource.payrollComponents.map((component) => ({
@@ -8562,7 +8601,7 @@ function EmployeePrintArea({
     : 'Saldo teorico del mese';
   const tariffWarning = isTeamReport && !hasTeamRate ? 'Tariffa squadra non impostata' : '';
   const creditSectionLabel = isTeamReport ? 'Compenso squadra' : "Crediti dell'operaio";
-  const debitSectionLabel = isTeamReport ? 'Acconti e buste componenti' : "Debiti / Trattenute dell'operaio";
+  const debitSectionLabel = isTeamReport ? 'Acconti squadra e buste componenti' : "Debiti / Trattenute dell'operaio";
   const creditRows = isTeamReport ? teamCreditRows : employeeCreditRows;
   const debitRows = isTeamReport ? teamDebitRows : employeeDebitRows;
   const totalCredits = isTeamReport ? (teamGrossCompensation + teamTransportTotal + teamGiftTotal) : employeeTotalCredits;
@@ -8734,7 +8773,7 @@ function EmployeePrintArea({
               </div>
             ))}
             {debitRows.length > 1 ? <div style={rp2DeductionBoxStyle}>
-              <span>{isTeamReport ? 'Totale acconti e buste componenti' : 'Totale debiti / trattenute'}</span>
+              <span>{isTeamReport ? 'Totale acconti squadra e buste componenti' : 'Totale debiti / trattenute'}</span>
               <span>- {formatCurrency(totalDebits)}</span>
             </div> : null}
           </div>

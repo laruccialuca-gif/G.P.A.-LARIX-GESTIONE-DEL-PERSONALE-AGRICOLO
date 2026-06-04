@@ -46,41 +46,44 @@
 
       .page {
         width: 210mm;
-        height: 295.5mm;
+        min-height: 295.5mm;
+        height: auto;
         margin: 0 auto;
         background: var(--page);
-        padding: 7.5mm 8.5mm 6mm;
+        padding: 5.8mm 6.6mm 4.4mm;
         display: flex;
         flex-direction: column;
-        gap: 3mm;
-        overflow: hidden;
+        gap: 2.1mm;
+        overflow: visible;
+        page-break-after: auto;
+        break-after: auto;
       }
 
       .header {
         display: grid;
         grid-template-columns: 1fr auto auto;
         align-items: end;
-        gap: 6mm;
-        padding-bottom: 2.2mm;
+        gap: 4.2mm;
+        padding-bottom: 1.5mm;
         border-bottom: 1px solid var(--line);
       }
 
       .brand {
-        font-size: 14pt;
+        font-size: 12.6pt;
         font-weight: 500;
         letter-spacing: 0.04em;
         text-transform: lowercase;
       }
 
       .title .t1 {
-        font-size: 15.5pt;
+        font-size: 14.2pt;
         line-height: 1.05;
         font-weight: 500;
       }
 
       .title .t2 {
-        margin-top: 1mm;
-        font-size: 7.2pt;
+        margin-top: 0.6mm;
+        font-size: 6.6pt;
         color: var(--ink-3);
         letter-spacing: 0.04em;
       }
@@ -90,30 +93,30 @@
       }
 
       .meta > div:first-child {
-        font-size: 6.5pt;
+        font-size: 6pt;
         text-transform: uppercase;
         letter-spacing: 0.15em;
         color: var(--ink-3);
       }
 
       .period {
-        margin-top: 0.8mm;
-        font-size: 9pt;
+        margin-top: 0.45mm;
+        font-size: 8.2pt;
         font-weight: 600;
       }
 
       .kpis {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 3mm;
+        gap: 2.1mm;
       }
 
       .kpi {
         background: var(--panel);
         border: 1px solid var(--line);
         border-radius: 3mm;
-        padding: 2.4mm;
-        min-height: 24mm;
+        padding: 1.7mm 2mm;
+        min-height: 19.5mm;
       }
 
       .kpi.accent {
@@ -122,7 +125,7 @@
       }
 
       .kpi .label {
-        font-size: 6.4pt;
+        font-size: 5.8pt;
         text-transform: uppercase;
         letter-spacing: 0.14em;
         color: var(--ink-3);
@@ -133,22 +136,22 @@
       }
 
       .kpi .value {
-        margin-top: 0.9mm;
-        font-size: 14pt;
+        margin-top: 0.55mm;
+        font-size: 12.4pt;
         line-height: 1.05;
         font-weight: 600;
       }
 
       .kpi .value .unit {
-        font-size: 8pt;
+        font-size: 7.1pt;
         font-weight: 500;
-        margin-left: 0.8mm;
+        margin-left: 0.5mm;
       }
 
       .kpi .note {
-        margin-top: 1.1mm;
-        font-size: 6.1pt;
-        line-height: 1.28;
+        margin-top: 0.55mm;
+        font-size: 5.5pt;
+        line-height: 1.18;
         color: var(--ink-3);
       }
 
@@ -160,13 +163,13 @@
         display: flex;
         justify-content: space-between;
         align-items: baseline;
-        padding-bottom: 1.1mm;
+        padding-bottom: 0.7mm;
         border-bottom: 1px solid var(--line);
-        margin-bottom: 1.1mm;
+        margin-bottom: 0.75mm;
       }
 
       .sec-head h2 {
-        font-size: 7pt;
+        font-size: 6.5pt;
         text-transform: uppercase;
         letter-spacing: 0.18em;
         font-weight: 700;
@@ -174,7 +177,7 @@
       }
 
       .sec-head .desc {
-        font-size: 6.8pt;
+        font-size: 6.1pt;
         color: var(--ink-3);
       }
 
@@ -182,26 +185,26 @@
         background: var(--panel);
         border: 1px solid var(--line);
         border-radius: 3mm;
-        padding: 2.4mm;
+        padding: 1.7mm 1.9mm;
         display: flex;
         flex-direction: column;
       }
 
       .cal-grid {
         display: grid;
-        grid-template-columns: 7mm repeat(7, 1fr);
-        grid-auto-rows: minmax(0, 16.2mm);
-        gap: 1mm;
+        grid-template-columns: 6mm repeat(7, 1fr);
+        grid-auto-rows: minmax(0, 13.1mm);
+        gap: 0.75mm;
       }
 
       .cal-head {
-        font-size: 6.2pt;
+        font-size: 5.6pt;
         text-transform: uppercase;
         letter-spacing: 0.08em;
         color: var(--ink-3);
         text-align: center;
         font-weight: 500;
-        min-height: 4mm;
+        min-height: 3.2mm;
       }
 
       .cal-head.wkn {
@@ -209,7 +212,7 @@
       }
 
       .wk-label {
-        font-size: 6.2pt;
+        font-size: 5.6pt;
         color: var(--ink-3);
         display: flex;
         align-items: center;
@@ -220,10 +223,10 @@
         background: var(--empty);
         border: 1px solid var(--line-2);
         border-radius: 1.5mm;
-        padding: 1mm 1.2mm;
+        padding: 0.62mm 0.85mm 0.62mm 1.35mm;
         display: flex;
         flex-direction: column;
-        gap: 0.2mm;
+        gap: 0.1mm;
         position: relative;
         min-height: 0;
         overflow: hidden;
@@ -235,7 +238,7 @@
       }
 
       .day .dnum {
-        font-size: 6.9pt;
+        font-size: 6pt;
         color: var(--ink-2);
         letter-spacing: 0.03em;
         font-weight: 500;
@@ -247,27 +250,30 @@
       }
 
       .day.has-work .crew {
-        font-size: 7.5pt;
+        font-size: 6.7pt;
         font-weight: 700;
         color: var(--ink);
         font-style: italic;
+        line-height: 1.02;
       }
 
       .day.has-work .eq {
-        font-size: 5.4pt;
+        font-size: 4.8pt;
         color: var(--ink-2);
+        line-height: 1.02;
       }
 
       .day.has-work .hrs {
         margin-top: auto;
-        font-size: 6pt;
+        font-size: 5.2pt;
         color: var(--ink-2);
+        line-height: 1.02;
       }
 
       .day.has-work .hrs strong {
         color: var(--ink);
         font-weight: 700;
-        font-size: 7pt;
+        font-size: 6.2pt;
       }
 
       .day.rest {
@@ -277,7 +283,7 @@
 
       .day.rest .lbl {
         margin: auto;
-        font-size: 5.8pt;
+        font-size: 5.1pt;
         text-transform: uppercase;
         letter-spacing: 0.15em;
         color: var(--ink-3);
@@ -285,7 +291,7 @@
 
       .day.empty .lbl {
         margin: auto;
-        font-size: 9pt;
+        font-size: 7.6pt;
         color: #cfcfcf;
       }
 
@@ -312,11 +318,11 @@
       .legend {
         display: flex;
         flex-wrap: wrap;
-        gap: 4mm;
-        padding-top: 1.5mm;
-        margin-top: 1.5mm;
+        gap: 2.4mm;
+        padding-top: 1mm;
+        margin-top: 1mm;
         border-top: 1px dashed var(--line);
-        font-size: 5.9pt;
+        font-size: 5.3pt;
         color: var(--ink-2);
         align-items: center;
       }
@@ -324,12 +330,12 @@
       .legend .item {
         display: flex;
         align-items: center;
-        gap: 1.5mm;
+        gap: 1mm;
       }
 
       .legend .sw {
-        width: 8px;
-        height: 8px;
+        width: 7px;
+        height: 7px;
         border-radius: 2px;
         background: #fff;
         border: 1px solid var(--line);
@@ -365,8 +371,9 @@
 
       .two-col {
         display: grid;
-        grid-template-columns: 1.05fr 0.95fr;
-        gap: 3mm;
+        grid-template-columns: 0.72fr 1.28fr;
+        gap: 2.2mm;
+        align-items: start;
       }
 
       .col {
@@ -385,8 +392,8 @@
       .row {
         display: grid;
         grid-template-columns: 1fr auto;
-        gap: 4mm;
-        padding: 1.9mm 2.5mm;
+        gap: 2.8mm;
+        padding: 1.15mm 1.7mm;
         align-items: center;
         border-bottom: 1px solid var(--line-2);
       }
@@ -397,17 +404,19 @@
 
       .row .lhs .title {
         font-weight: 600;
-        font-size: 7.6pt;
+        font-size: 6.6pt;
+        line-height: 1.06;
       }
 
       .row .lhs .sub {
-        font-size: 6.1pt;
+        font-size: 5.25pt;
         color: var(--ink-3);
-        margin-top: 0.2mm;
+        margin-top: 0.1mm;
+        line-height: 1.08;
       }
 
       .row .amt {
-        font-size: 9.3pt;
+        font-size: 8.1pt;
         font-weight: 500;
         white-space: nowrap;
       }
@@ -423,7 +432,7 @@
       }
 
       .row.total .lhs .title {
-        font-size: 8.5pt;
+        font-size: 7.7pt;
         color: #ffffff;
       }
 
@@ -432,7 +441,7 @@
       }
 
       .row.total .amt {
-        font-size: 13pt;
+        font-size: 11.4pt;
         font-weight: 700;
         color: #ffffff;
       }
@@ -453,21 +462,22 @@
 
       th,
       td {
-        padding: 1.05mm 2.2mm;
+        padding: 0.56mm 1.2mm;
         text-align: left;
-        font-size: 6.7pt;
+        font-size: 5.9pt;
+        line-height: 1.03;
       }
 
       thead th {
         background: #f0f0f0;
         color: var(--ink-3);
-        font-size: 5.9pt;
+        font-size: 5.15pt;
         text-transform: uppercase;
         letter-spacing: 0.12em;
         font-weight: 600;
         border-bottom: 1px solid var(--line);
-        padding-top: 1.6mm;
-        padding-bottom: 1.6mm;
+        padding-top: 0.9mm;
+        padding-bottom: 0.9mm;
       }
 
       th.num,
@@ -486,13 +496,64 @@
 
       tbody td .nm {
         font-weight: 500;
+        line-height: 1.02;
+        white-space: nowrap;
+        font-size: 5.8pt;
       }
 
       tbody td .ix {
         display: inline-block;
-        width: 6mm;
+        width: 4.5mm;
         color: var(--ink-3);
-        font-size: 6.1pt;
+        font-size: 5.2pt;
+      }
+
+      .components-table {
+        table-layout: fixed;
+      }
+
+      .components-table .col-component {
+        width: 32%;
+      }
+
+      .components-table .col-dates {
+        width: 40%;
+      }
+
+      .components-table .col-days {
+        width: 10%;
+      }
+
+      .components-table .col-amount {
+        width: 18%;
+      }
+
+      .components-table td.component-cell {
+        padding-right: 0.7mm;
+      }
+
+      .components-table td.dates-cell,
+      .components-table th.dates-head {
+        white-space: normal;
+      }
+
+      .components-table td.dates-cell {
+        font-size: 5.65pt;
+        line-height: 1.01;
+        word-break: keep-all;
+        overflow-wrap: anywhere;
+      }
+
+      .components-table td.days-cell,
+      .components-table td.amount-cell,
+      .components-table th.days-head,
+      .components-table th.amount-head {
+        white-space: nowrap;
+      }
+
+      .components-table tbody tr {
+        page-break-inside: avoid;
+        break-inside: avoid;
       }
 
       tbody tr.totalrow {
@@ -502,22 +563,22 @@
 
       tbody tr.totalrow td {
         font-weight: 700;
-        padding-top: 1.6mm;
-        padding-bottom: 1.6mm;
+        padding-top: 1mm;
+        padding-bottom: 1mm;
       }
 
       tbody tr.totalrow td.num {
         color: var(--ink);
-        font-size: 8pt;
+        font-size: 7.1pt;
       }
 
       .footnote {
-        font-size: 5.8pt;
+        font-size: 5.2pt;
         color: var(--ink-3);
         display: flex;
         justify-content: space-between;
         letter-spacing: 0.04em;
-        padding-top: 1.1mm;
+        padding-top: 0.7mm;
         border-top: 1px solid var(--line);
         margin-top: auto;
       }
@@ -633,10 +694,10 @@
         var rows = (componenti.items || []).map(function(item) {
           return [
             '<tr>',
-            '<td><span class="ix">', esc(item.indexLabel), '</span><span class="nm">', esc(item.label), '</span></td>',
-            '<td>', esc(item.selectedDaysLabel || '-'), '</td>',
-            '<td class="num">', esc(item.daysLabel), '</td>',
-            '<td class="num">', esc(item.amountLabel), '</td>',
+            '<td class="component-cell"><span class="ix">', esc(item.indexLabel), '</span><span class="nm">', esc(item.label), '</span></td>',
+            '<td class="dates-cell">', esc(item.selectedDaysLabel || '-'), '</td>',
+            '<td class="num days-cell">', esc(item.daysLabel), '</td>',
+            '<td class="num amount-cell">', esc(item.amountLabel), '</td>',
             '</tr>',
           ].join('');
         }).join('');
@@ -644,8 +705,9 @@
         return [
           '<div class="sec-head"><h2>Acconti e buste componenti</h2><div class="desc">', esc(componenti.summaryLabel || ''), '</div></div>',
           '<div class="table-wrap">',
-          '<table>',
-          '<thead><tr><th style="width:48%">Componente</th><th style="width:24%">Date busta</th><th class="num">Gg</th><th class="num">Importo</th></tr></thead>',
+          '<table class="components-table">',
+          '<colgroup><col class="col-component"><col class="col-dates"><col class="col-days"><col class="col-amount"></colgroup>',
+          '<thead><tr><th>Componente</th><th class="dates-head">Date busta</th><th class="num days-head">Gg</th><th class="num amount-head">Importo</th></tr></thead>',
           '<tbody>',
           rows,
           '<tr class="totalrow"><td colspan="2">Totale</td><td class="num">', esc(componenti.totalDaysLabel), '</td><td class="num">', esc(componenti.totalAmountLabel), '</td></tr>',

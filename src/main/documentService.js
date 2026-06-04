@@ -43,6 +43,10 @@ function getDocumentsRoot() {
   return getDocumentsDir();
 }
 
+function getEmployeeDocumentsDirectory(employeeId) {
+  return path.join(getDocumentsRoot(), 'employees', String(Number(employeeId)));
+}
+
 function getAbsolutePath(relativePath) {
   return path.join(getDocumentsRoot(), relativePath);
 }
@@ -170,9 +174,52 @@ function openStoredDocument(relativePath) {
   };
 }
 
+async function openEmployeeDocumentsDirectory(employeeId) {
+  const normalizedEmployeeId = Number(employeeId);
+  if (!Number.isInteger(normalizedEmployeeId) || normalizedEmployeeId <= 0) {
+    return {
+      success: false,
+      message: 'Dipendente non valido.',
+    };
+  }
+
+  const employeeDir = getEmployeeDocumentsDirectory(normalizedEmployeeId);
+  if (!fs.existsSync(employeeDir)) {
+    return {
+      success: false,
+      message: 'Nessuna cartella documenti presente per questo dipendente.',
+    };
+  }
+
+  const result = await shell.openPath(employeeDir);
+  return {
+    success: !result,
+    message: result || null,
+  };
+}
+
+async function openDocumentsArchiveDirectory() {
+  const documentsRoot = getDocumentsRoot();
+  if (!fs.existsSync(documentsRoot)) {
+    return {
+      success: false,
+      message: 'Nessuna cartella documenti disponibile.',
+    };
+  }
+
+  const result = await shell.openPath(documentsRoot);
+  return {
+    success: !result,
+    message: result || null,
+  };
+}
+
 module.exports = {
   describeStoredFile,
+  getEmployeeDocumentsDirectory,
   getAbsolutePath,
+  openDocumentsArchiveDirectory,
+  openEmployeeDocumentsDirectory,
   openStoredDocument,
   removeStoredFile,
   sanitizeSegment,

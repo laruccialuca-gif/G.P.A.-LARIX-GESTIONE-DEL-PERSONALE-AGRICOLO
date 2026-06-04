@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { parseMainInputValue } from '../../utils/attendanceTableUtils';
+import { formatAttendanceEmployeeDisplayName } from '../../utils/attendanceEmployeeNames';
 
 export default function AttendanceCellEditorModal({
   open,
@@ -193,7 +194,7 @@ export default function AttendanceCellEditorModal({
     <div style={modalStyle} onClick={onClose}>
       <div style={dialogStyle} onClick={(e) => e.stopPropagation()} onKeyDown={handleKeyDown}>
         <div style={headerStyle}>
-          {employee.first_name} {employee.last_name} · {date}
+          {formatAttendanceEmployeeDisplayName(employee)} · {date}
         </div>
 
         <div style={fieldStyle}>

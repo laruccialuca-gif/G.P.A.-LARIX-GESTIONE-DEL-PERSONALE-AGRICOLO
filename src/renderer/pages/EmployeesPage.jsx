@@ -945,13 +945,51 @@ export default function EmployeesPage() {
     if (!target) return;
 
     employeeOpenPerfRef.current = performance.now();
-    setEditing(target);
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current);
-      next.delete('employee');
-      return next;
-    }, { replace: true });
+    void openEmployeeEditor(target.id, { clearQueryParam: true });
   }, [requestedEmployeeId, employees, setSearchParams]);
+
+  async function openEmployeeEditor(employeeId, { clearQueryParam = false } = {}) {
+    try {
+      const fullEmployee = await window.api.employees.getById(Number(employeeId), { includeDeleted: true });
+      if (!fullEmployee) {
+        alert('Scheda dipendente non trovata.');
+        return;
+      }
+      console.info('[employee-debug] medical', {
+        employeeId: Number(fullEmployee.id),
+        required: !!fullEmployee.medical_visit_required,
+        done: !!fullEmployee.medical_visit_done,
+        date: fullEmployee.medical_visit_date || null,
+        expiry: fullEmployee.medical_visit_expiry || null,
+      });
+      console.info('[employee-debug] training', {
+        employeeId: Number(fullEmployee.id),
+        required: !!fullEmployee.art37_required,
+        done: !!fullEmployee.art37_done,
+        date: fullEmployee.art37_date || null,
+        expiry: fullEmployee.art37_expiry || null,
+      });
+      console.info('[employee-debug] attachments', {
+        employeeId: Number(fullEmployee.id),
+        hire: !!fullEmployee.hire_document,
+        art37: !!fullEmployee.art37_document,
+        medical: !!fullEmployee.medical_visit_document,
+        dpi: !!fullEmployee.dpi_delivery_document,
+        otherCount: Array.isArray(fullEmployee.other_documents) ? fullEmployee.other_documents.length : 0,
+      });
+      setEditing(fullEmployee);
+      if (clearQueryParam) {
+        setSearchParams((current) => {
+          const next = new URLSearchParams(current);
+          next.delete('employee');
+          return next;
+        }, { replace: true });
+      }
+    } catch (error) {
+      console.error(error);
+      alert(error?.message || 'Errore apertura scheda dipendente.');
+    }
+  }
 
   async function handleCreate(data) {
     const startedAt = performance.now();
@@ -1877,7 +1915,7 @@ export default function EmployeesPage() {
                     employee={employee}
                     onClick={(target) => {
                       employeeOpenPerfRef.current = performance.now();
-                      setEditing(target);
+                      void openEmployeeEditor(target.id);
                     }}
                     onArchive={handleArchive}
                     selectionEnabled={!isWriteBlocked}

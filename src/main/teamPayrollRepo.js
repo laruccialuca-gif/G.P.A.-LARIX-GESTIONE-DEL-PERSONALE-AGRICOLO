@@ -29,8 +29,14 @@ function normalizeBooleanFlag(value) {
 
 function normalizePayload(payload = {}) {
   const teamId = Number(payload.team_id || payload.teamId || 0);
-  const month = normalizeMonth(payload.month);
-  const advanceDate = normalizeDate(payload.advance_date || payload.advanceDate);
+  const month = normalizeMonth(payload.month || payload.month_reference || payload.monthReference);
+  const advanceDate = normalizeDate(
+    payload.advance_date ||
+    payload.advanceDate ||
+    payload.date ||
+    payload.payment_date ||
+    payload.paymentDate
+  );
   const amount = normalizeAmount(payload.amount);
   const employerKey = String(payload.employer_key || payload.employerKey || '').trim().toUpperCase() || null;
   const notes = String(payload.notes || '').trim();
@@ -136,7 +142,9 @@ function mapTeamAdvance(row) {
     id: Number(row.id),
     team_id: Number(row.team_id),
     month: row.month,
+    month_reference: row.month,
     advance_date: row.advance_date,
+    date: row.advance_date,
     amount: Number(row.amount || 0),
     employer_key: row.employer_key || '',
     notes: row.notes || '',
@@ -389,8 +397,14 @@ function updateTeamAdvance(id, payload) {
     ...existing,
     ...payload,
     team_id: payload.team_id || payload.teamId || existing.team_id,
-    month: payload.month || existing.month,
-    advance_date: payload.advance_date || payload.advanceDate || existing.advance_date,
+    month: payload.month || payload.month_reference || payload.monthReference || existing.month,
+    advance_date:
+      payload.advance_date ||
+      payload.advanceDate ||
+      payload.date ||
+      payload.payment_date ||
+      payload.paymentDate ||
+      existing.advance_date,
     employer_key: payload.employer_key || payload.employerKey || existing.employer_key,
     include_in_report: payload.include_in_report ?? payload.includeInReport ?? existing.include_in_report,
     source_type: payload.source_type || payload.sourceType || existing.source_type,

@@ -21,7 +21,6 @@ function listAttendanceByMonth(monthOrYear, maybeMonth) {
     FROM attendance a
     JOIN employees e ON e.id = a.employee_id
     WHERE a.date BETWEEN ? AND ?
-      AND e.is_deleted = 0
     ORDER BY a.date ASC, e.last_name, e.first_name
   `).all(from, to);
 }

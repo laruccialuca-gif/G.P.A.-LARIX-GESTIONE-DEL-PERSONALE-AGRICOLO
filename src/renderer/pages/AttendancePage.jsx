@@ -25,6 +25,7 @@ import { dispatchRouteReady } from '../utils/navigationPerf';
 import AttendanceToolbar from '../components/attendance/AttendanceToolbar';
 import AttendanceTable from '../components/attendance/AttendanceTable';
 import AttendanceEmployeeFilter from '../components/attendance/AttendanceEmployeeFilter';
+import { compareAttendanceEmployees, formatAttendanceEmployeeDisplayName } from '../utils/attendanceEmployeeNames';
 import {
   parseMainInputValue,
   formatDecimalPreview,
@@ -352,14 +353,6 @@ function calculateHeadcountTotals(records = [], standardHours) {
   };
 }
 
-function getAttendanceEmployeeDisplayName(employee) {
-  if (!employee) return '';
-  if (employee.full_name) {
-    return String(employee.full_name).trim();
-  }
-  return `${employee.first_name || ''} ${employee.last_name || ''}`.trim();
-}
-
 function getMonthRangeKeys(monthDate) {
   const year = monthDate.getFullYear();
   const monthIndex = monthDate.getMonth();
@@ -518,6 +511,7 @@ function buildTeamRows(team, visibleEmployeeIdsSet) {
       member.employee &&
       visibleEmployeeIdsSet.has(Number(member.employee.id))
     )
+    .sort((left, right) => compareAttendanceEmployees(left.employee, right.employee))
     .map((member) => ({
       employee: member.employee,
       teamMember: member,
@@ -530,6 +524,7 @@ function buildTeamChildRows(team, visibleEmployeeIdsSet) {
       member.employee &&
       visibleEmployeeIdsSet.has(Number(member.employee.id))
     )
+    .sort((left, right) => compareAttendanceEmployees(left.employee, right.employee))
     .map((member) => ({
       employee: member.employee,
       teamMember: member,
@@ -1526,9 +1521,7 @@ export default function AttendancePage() {
       // Ordinare alfabeticamente
       rows = rowsBeforeSorting
         .sort((a, b) => {
-          const nameA = getAttendanceEmployeeDisplayName(a.employee);
-          const nameB = getAttendanceEmployeeDisplayName(b.employee);
-          const compareResult = String(nameA || '').localeCompare(String(nameB || ''), 'it', { sensitivity: 'base' });
+          const compareResult = compareAttendanceEmployees(a.employee, b.employee);
           return compareResult !== 0 ? compareResult : a.originalIndex - b.originalIndex;
         })
         .map(({ originalIndex, ...row }) => row);
@@ -2321,6 +2314,13 @@ export default function AttendancePage() {
       const mergedEntry = normalizeAttendanceEntry({ ...baseEntry, ...patch });
 
       if (debugMeta) {
+        console.info('[attendance-save-debug] cell-modified', {
+          employee_id: employeeId,
+          date,
+          source: debugMeta.source || null,
+          field: debugMeta.field || null,
+          patch,
+        });
         console.info('[attendance-debug] cell-update', {
           employee_id: employeeId,
           date_key: date,
@@ -2825,6 +2825,16 @@ export default function AttendancePage() {
     }
 
     __buildPayloadMs = getPerfNow() - __payloadT0;
+    console.info('[attendance-save-debug] save-start', {
+      month: currentMonthKey,
+      entries: entries.length,
+      employee_entries: employeePayload.length,
+      team_entries: teamPayload.length,
+    });
+    console.info('[attendance-save-debug] payload', {
+      employeePayload,
+      teamPayload,
+    });
     console.info('[attendance-perf] flushPendingChanges:payload-built', {
       entries: entries.length,
       employeeEntries: employeePayload.length,
@@ -2847,6 +2857,10 @@ export default function AttendancePage() {
         ms: Math.round(__ipcCallMs),
         mainPerf: employeeResult?.__perf || null,
         teamPerf: teamResult?.__perf || null,
+      });
+      console.info('[attendance-save-debug] save-result', {
+        employeeResult,
+        teamResult,
       });
       diagEnd(ipcDiagToken, { entries: entries.length });
 
@@ -2931,6 +2945,7 @@ export default function AttendancePage() {
       });
       scheduleSavedBadge();
     } catch (err) {
+      console.error('[attendance-save-debug] save-error', err);
       const isLicenseBlock =
         err?.code === 'LICENSE_READ_ONLY' ||
         String(err?.message || '').includes('sola lettura');
@@ -3384,7 +3399,7 @@ export default function AttendancePage() {
         : selectedMeta.type === 'no_team'
         ? 'Senza squadra'
         : selectedMeta.type === 'employee' && displayRows[0]?.employee
-        ? `${displayRows[0].employee.first_name} ${displayRows[0].employee.last_name}`
+        ? formatAttendanceEmployeeDisplayName(displayRows[0].employee)
         : 'mensili';
     const selectionSuffix = mode === 'selected' && selectedEmployeeIds.length > 0 ? 'selezionati' : 'tutti';
     return sanitizeFileName(`Presenze - ${scopeLabel} - ${monthKey} - ${selectionSuffix}.pdf`);
