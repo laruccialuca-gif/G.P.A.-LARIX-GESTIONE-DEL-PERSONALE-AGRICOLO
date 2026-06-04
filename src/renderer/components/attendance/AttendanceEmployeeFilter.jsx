@@ -75,13 +75,6 @@ export default function AttendanceEmployeeFilter({ availableEmployees, selectedI
       .sort((left, right) => left.teamName.localeCompare(right.teamName, 'it', { sensitivity: 'base' }));
   }, [filteredEmployees]);
 
-  useEffect(() => {
-    console.log('[attendance-filter] availableEmployees', sortedEmployees.length);
-    console.log('[attendance-filter] filteredEmployees', filteredEmployees.length);
-    console.log('[attendance-filter] teamGroups', teamGroups.length);
-    console.log('[attendance-filter] showModal', showModal);
-  }, [filteredEmployees.length, showModal, sortedEmployees.length, teamGroups.length]);
-
   function handleOpen() {
     if (typeof onOpen === 'function') {
       onOpen();

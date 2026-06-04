@@ -115,38 +115,6 @@ function buildHistoryEmployeeTemplateSource(record, attendanceRows = []) {
   const paymentSummary = getRecordPaymentSummary(record, snapshot);
   const installmentsTotal = getCurrentInstallmentsTotal(record, snapshot);
   const currentInstallmentsTotal = Number((snapshot.current_installments_total ?? installmentsTotal) || 0);
-  // [TEMP DEBUG rate/debiti — PERPARIM CARA / 2026-04 soltanto] -------------
-  try {
-    const firstNameUp = String(record?.employee?.first_name || '').toUpperCase();
-    const lastNameUp = String(record?.employee?.last_name || '').toUpperCase();
-    const matchesPerparim = firstNameUp.includes('PERPARIM') || lastNameUp.includes('CARA');
-    const matchesMonth = String(record?.month || '') === '2026-04';
-    if (matchesPerparim && matchesMonth) {
-      const restoPrec = Number(record.resto_precedente || snapshot.resto_precedente || 0);
-      console.info('[rate-debiti-trace] Storico-modal PERPARIM-CARA 2026-04', {
-        employee_id: record?.employee_id || null,
-        employee_name: `${record?.employee?.first_name || ''} ${record?.employee?.last_name || ''}`.trim(),
-        payroll_record_id: record?.id || null,
-        month: record?.month || '',
-        record_resto_precedente_raw: record?.resto_precedente ?? null,
-        snapshot_resto_precedente: snapshot?.resto_precedente ?? null,
-        record_live_installments_total: record?.live_installments_total ?? null,
-        record_live_installments_count: record?.live_installments_count ?? null,
-        record_snapshot_installments_total: record?.snapshot_installments_total ?? null,
-        record_installments_snapshot_mismatch: record?.installments_snapshot_mismatch ?? null,
-        snapshot_current_installments_total: snapshot?.current_installments_total ?? null,
-        snapshot_debt_plans: snapshot?.debt_plans ?? null,
-        installmentsTotal_helper: installmentsTotal,
-        currentInstallmentsTotal_used: currentInstallmentsTotal,
-        restoPrecedenteNum_used: restoPrec,
-        compenso_rate_importo_calcolato:
-          currentInstallmentsTotal + Math.abs(Math.min(restoPrec, 0)),
-      });
-    }
-  } catch (_) {
-    // ignore
-  }
-  // [/TEMP DEBUG] -----------------------------------------------------------
   const rawSelectedDays =
     snapshot.selected_payroll_days ??
     snapshot.selected_payroll_days_json ??

@@ -315,7 +315,20 @@ async function createSplashWindow({ version, productName, iconPath, log }) {
 }
 
 async function updateSplashWindowStatus(splashWindow, { message, step, percent }) {
+  // Difese contro stato distrutto / render frame in transizione.
+  // Su Electron recenti `executeJavaScript` può lanciare
+  //   "Render frame was disposed before WebFrameMain could be accessed"
+  // se la splash sta venendo distrutta in parallelo. Tutte queste varianti
+  // sono rumore non bloccante: silenziare e continuare l'avvio.
   if (!splashWindow || splashWindow.isDestroyed()) return;
+  const webContents = splashWindow.webContents;
+  if (!webContents || webContents.isDestroyed()) return;
+  try {
+    if (!webContents.mainFrame) return;
+  } catch (_) {
+    return;
+  }
+
   const safeMessage = JSON.stringify(String(message || 'Caricamento gestionale...'));
   const safeStep = JSON.stringify(String(step || 'Avvio servizi'));
   const normalizedPercent = Number.isFinite(Number(percent)) ? Math.max(0, Math.min(100, Math.round(Number(percent)))) : null;
@@ -333,9 +346,26 @@ async function updateSplashWindowStatus(splashWindow, { message, step, percent }
       if (progressBarNode && ${normalizedPercent === null ? 'false' : 'true'}) progressBarNode.style.width = '${normalizedPercent}%';
     })();
   `;
+
+  // Ricontrolla subito prima della chiamata: il flusso fra il check sopra
+  // e l'invio del messaggio IPC è asincrono e la finestra può chiudersi nel mezzo.
+  if (splashWindow.isDestroyed() || webContents.isDestroyed()) return;
+
   try {
-    await splashWindow.webContents.executeJavaScript(script, true);
-  } catch {}
+    await webContents.executeJavaScript(script, true);
+  } catch (error) {
+    const text = String((error && (error.message || error.toString())) || '');
+    if (
+      text.includes('Render frame was disposed') ||
+      text.includes('WebFrameMain') ||
+      text.includes('Object has been destroyed')
+    ) {
+      // Splash chiusa/distrutta durante l'aggiornamento: warning non bloccante.
+      return;
+    }
+    // Errore inatteso: non interrompere l'avvio, ma lasciane traccia.
+    try { console.warn('[splash] updateSplashWindowStatus failed:', text); } catch (_) { /* ignore */ }
+  }
 }
 
 function closeSplashWindow(splashWindow) {

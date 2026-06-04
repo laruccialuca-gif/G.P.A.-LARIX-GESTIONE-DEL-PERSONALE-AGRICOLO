@@ -1513,6 +1513,10 @@ export default function ReportPage() {
     () => filterSelectedPayrollDaysByRange(selectedPayrollDays, employeePayrollRange, currentMonth),
     [currentMonth, employeePayrollRange, selectedPayrollDays]
   );
+  const validSelectedPayrollDaysKey = useMemo(
+    () => validSelectedPayrollDays.join(','),
+    [validSelectedPayrollDays]
+  );
   const payrollDaysMismatch =
     validSelectedPayrollDays.length > 0 &&
     String(giornateBustaPaga || '').trim() !== '' &&
@@ -4723,69 +4727,6 @@ export default function ReportPage() {
   const currentInstallmentTotal = currentInstallments.reduce((sum, installment) => sum + installment.amount, 0);
   const restoPrecedenteNum = parseFloat(restoPrecedente) || 0;
 
-  // [TEMP DEBUG rate/debiti — PERPARIM CARA / 2026-04 soltanto] -------------
-  useEffect(() => {
-    const firstNameUp = String(employee?.first_name || '').toUpperCase();
-    const lastNameUp = String(employee?.last_name || '').toUpperCase();
-    const matchesPerparim = firstNameUp.includes('PERPARIM') || lastNameUp.includes('CARA');
-    const matchesMonth = monthString(currentMonth) === '2026-04';
-    if (!matchesPerparim || !matchesMonth) {
-      return;
-    }
-    let snapshot = null;
-    try {
-      const raw = currentPayrollRecord?.report_snapshot_json;
-      snapshot = typeof raw === 'string' ? JSON.parse(raw) : raw || null;
-    } catch (_) {
-      snapshot = null;
-    }
-    const rateImportoFormula =
-      currentInstallmentTotal + Math.abs(Math.min(restoPrecedenteNum, 0));
-    console.info('[rate-debiti-trace] ReportPage-live PERPARIM-CARA 2026-04', {
-      employee_id: employee?.id || null,
-      employee_name: `${employee?.first_name || ''} ${employee?.last_name || ''}`.trim(),
-      payroll_record_id: currentPayrollRecord?.id || null,
-      month: monthString(currentMonth),
-      snapshot_current_installments_total: snapshot?.current_installments_total ?? null,
-      snapshot_debt_plans: snapshot?.debt_plans ?? null,
-      record_resto_precedente_raw: currentPayrollRecord?.resto_precedente ?? null,
-      restoPrecedenteNum_live: restoPrecedenteNum,
-      currentInstallmentTotal_live: currentInstallmentTotal,
-      compenso_rate_importo_calcolato: rateImportoFormula,
-      currentInstallments_live_summed: currentInstallments.map((item) => ({
-        id: item.id ?? null,
-        plan_id: item.plan_id ?? null,
-        planLabel: item.planLabel ?? null,
-        amount: item.amount,
-        target_month: item.target_month,
-        is_paid: item.is_paid ?? null,
-        paid_record_id: item.paid_record_id ?? null,
-      })),
-      debtPlans_state: debtPlans.map((plan) => ({
-        id: plan.id ?? null,
-        label: plan.label ?? null,
-        status: plan.status ?? null,
-        total_amount: plan.total_amount ?? null,
-        installments: (plan.installments || []).map((item) => ({
-          id: item.id ?? null,
-          target_month: item.target_month ?? null,
-          amount: item.amount ?? null,
-          is_paid: item.is_paid ?? null,
-          paid_record_id: item.paid_record_id ?? null,
-        })),
-      })),
-    });
-  }, [
-    employee?.id,
-    employee?.first_name,
-    employee?.last_name,
-    currentMonth,
-    currentPayrollRecord?.id,
-    currentInstallmentTotal,
-    restoPrecedenteNum,
-  ]);
-  // [/TEMP DEBUG] -----------------------------------------------------------
-
   const emptyPreviewAttendanceSummary = useMemo(
     () => createEmptyAttendanceSummary(attendanceBaseHours),
     [attendanceBaseHours]
@@ -5814,6 +5755,7 @@ export default function ReportPage() {
     if (!employee?.id) {
       return '';
     }
+    const payrollDaysVisibilityKey = showSelectedPayrollDaysInReport ? 'show' : 'hide';
     const lastModifiedAt =
       currentPayrollRecord?.updated_at ||
       currentPayrollRecord?.processed_at ||
@@ -5826,6 +5768,8 @@ export default function ReportPage() {
       selectedYear,
       currentPayrollRecord?.id || 0,
       lastModifiedAt,
+      payrollDaysVisibilityKey,
+      validSelectedPayrollDaysKey,
     ].join('::');
   }, [
     currentPayrollRecord?.archived_at,
@@ -5834,8 +5778,10 @@ export default function ReportPage() {
     currentPayrollRecord?.processed_at,
     currentPayrollRecord?.updated_at,
     employee?.id,
+    showSelectedPayrollDaysInReport,
     selectedReportMonthKey,
     selectedYear,
+    validSelectedPayrollDaysKey,
   ]);
   latestEmployeeTemplateSourceRef.current = employeeTemplateSource;
 
@@ -5863,12 +5809,35 @@ export default function ReportPage() {
     lastEmployeeTemplatePreviewKeyRef.current = employeeTemplatePreviewRequestKey;
 
     let cancelled = false;
-    if (!employeeTemplatePreviewLoading) {
-      setEmployeeTemplatePreviewHtml('');
-    }
+    // Pulisci l'anteprima alla NUOVA richiesta. Prima usavamo
+    // "clear only if !loading" — con un IPC in volo (toggle veloce dello
+    // switch "Mostra date busta") l'iframe restava con l'HTML stantio e
+    // l'utente vedeva "anteprima non carica".
+    setEmployeeTemplatePreviewHtml('');
     setEmployeeTemplatePreviewError('');
     setEmployeeTemplatePreviewStatus('loading');
     setEmployeeTemplatePreviewLoading(true);
+
+    try {
+      const matchesAnna =
+        /(^|\s)ANNA\b/i.test(String(employee?.first_name || '')) &&
+        /SACCO/i.test(String(employee?.last_name || ''));
+      const matchesMaggio2026 = selectedReportMonthKey === '2026-05';
+      if (matchesAnna && matchesMaggio2026) {
+        const src = latestEmployeeTemplateSourceRef.current;
+        console.info('[payroll-dates-preview-debug] effect-fired', {
+          employee_id: employee?.id || null,
+          employee_name: `${employee?.first_name || ''} ${employee?.last_name || ''}`.trim(),
+          month: selectedReportMonthKey,
+          show_payroll_dates: showSelectedPayrollDaysInReport,
+          validSelectedPayrollDays,
+          requestKey: employeeTemplatePreviewRequestKey,
+          payload_bustaPaga: src?.compenso?.bustaPaga || null,
+        });
+      }
+    } catch (_) {
+      // ignore
+    }
 
     if (employeeTemplatePreviewTimeoutRef.current) {
       clearTimeout(employeeTemplatePreviewTimeoutRef.current);
@@ -5876,15 +5845,32 @@ export default function ReportPage() {
 
     employeeTemplatePreviewTimeoutRef.current = setTimeout(async () => {
       employeeTemplatePreviewInFlightKeyRef.current = employeeTemplatePreviewRequestKey;
+      const matchesAnna =
+        /(^|\s)ANNA\b/i.test(String(employee?.first_name || '')) &&
+        /SACCO/i.test(String(employee?.last_name || ''));
+      const matchesMaggio2026 = selectedReportMonthKey === '2026-05';
+      const traceAnna = matchesAnna && matchesMaggio2026;
       try {
         const source = latestEmployeeTemplateSourceRef.current;
         const result = await window.api.employeeReport.previewTemplate(source);
         if (cancelled) {
+          if (traceAnna) {
+            try { console.info('[payroll-dates-preview-debug] cancelled-after-ipc'); } catch (_) {}
+          }
           return;
         }
         setEmployeeTemplatePreviewHtml((current) => (current === (result?.html || '') ? current : (result?.html || '')));
         setEmployeeTemplatePreviewError('');
         setEmployeeTemplatePreviewStatus('ready');
+        if (traceAnna) {
+          try {
+            console.info('[payroll-dates-preview-debug] ipc-ready', {
+              htmlLength: (result?.html || '').length,
+              show_payroll_dates: showSelectedPayrollDaysInReport,
+              requestKey: employeeTemplatePreviewRequestKey,
+            });
+          } catch (_) {}
+        }
       } catch (error) {
         if (cancelled) {
           return;
@@ -5893,6 +5879,14 @@ export default function ReportPage() {
         setEmployeeTemplatePreviewHtml('');
         setEmployeeTemplatePreviewError(error?.message || 'Template dipendente non disponibile');
         setEmployeeTemplatePreviewStatus('error');
+        if (traceAnna) {
+          try {
+            console.warn('[payroll-dates-preview-debug] ipc-error', {
+              message: String(error?.message || error || 'unknown'),
+              show_payroll_dates: showSelectedPayrollDaysInReport,
+            });
+          } catch (_) {}
+        }
       } finally {
         if (!cancelled) {
           employeeTemplatePreviewInFlightKeyRef.current = '';
@@ -5908,56 +5902,13 @@ export default function ReportPage() {
         employeeTemplatePreviewTimeoutRef.current = null;
       }
     };
+    // NB: `employeeTemplatePreviewLoading` NON è in deps: il suo setter è
+    // chiamato dentro l'effetto stesso e includerlo provocava re-render
+    // a catena. Bastano la chiave di richiesta + employee + modo.
   }, [
     employee?.id,
-    employeeTemplatePreviewLoading,
     employeeTemplatePreviewRequestKey,
     isEmployeeMode,
-  ]);
-
-  useEffect(() => {
-    if (!employee) {
-      return;
-    }
-
-    const employeeName = getReportEmployeeDisplayName(employee).toUpperCase();
-    console.info(
-      `[report-calc-debug] employee=${employeeName} month=${currentMonthKey}`
-    );
-    console.info('[report-calc-debug] dailyRate=', dailyPay);
-    console.info('[report-calc-debug] overtimeRate=', overtimeHourlyRate);
-    console.info('[report-calc-debug] standardDayHours=', standardHours);
-    console.info('[report-calc-debug] attendanceBaseHours=', attendanceBaseHours);
-    console.info('[report-calc-debug] regularHourlyRate=', regularHourlyRate);
-    console.info('[report-calc-debug] totalHours=', employeeTotals.totalHours);
-    console.info('[report-calc-debug] regularHours=', employeeTotals.totalRegularHours);
-    console.info('[report-calc-debug] overtimeHours=', employeeTotals.totalOvertimeHours);
-    console.info('[report-calc-debug] computedDays=', workedDays);
-    console.info('[report-calc-debug] baseAmount=', totalRegularPay);
-    console.info('[report-calc-debug] overtimeAmount=', totalOvertimePay);
-    console.info('[report-calc-debug] previousCredit=', Math.max(restoPrecedenteNum, 0));
-    console.info('[report-calc-debug] previousDebt=', Math.abs(Math.min(restoPrecedenteNum, 0)));
-    console.info('[report-calc-debug] calculatedPay=', totalCalculatedPay);
-    console.info('[report-calc-debug] finalAmount=', compensationMonthAmount);
-    console.info('[report-calc-debug] finalBalance=', differenzaFinale);
-  }, [
-    attendanceBaseHours,
-    compensationMonthAmount,
-    currentMonthKey,
-    dailyPay,
-    differenzaFinale,
-    employee,
-    employeeTotals.totalHours,
-    employeeTotals.totalOvertimeHours,
-    employeeTotals.totalRegularHours,
-    overtimeHourlyRate,
-    regularHourlyRate,
-    restoPrecedenteNum,
-    standardHours,
-    totalCalculatedPay,
-    totalOvertimePay,
-    totalRegularPay,
-    workedDays,
   ]);
 
   useEffect(() => {

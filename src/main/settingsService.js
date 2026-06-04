@@ -437,7 +437,6 @@ function readSettings() {
   try {
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     const settings = normalizeSettings(raw);
-    console.info('[settings-debug] loaded report settings =', settings.report);
     writeSettings(settings);
     return settings;
   } catch {
@@ -477,10 +476,8 @@ function requireAdmin() {
 function saveSettings(partialSettings = {}) {
   requireAdmin();
   const current = readSettings();
-  console.info('[settings-debug] before save report settings =', partialSettings.report || current.report);
   const next = normalizeSettings(deepMerge(current, partialSettings));
   writeSettings(next);
-  console.info('[settings-debug] after save report settings =', next.report);
   return next;
 }
 

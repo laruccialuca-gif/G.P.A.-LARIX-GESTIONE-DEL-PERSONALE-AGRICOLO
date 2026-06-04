@@ -600,7 +600,6 @@ export default function SettingsPage() {
       const [settingsData, backupData, licenseData, usersData] = await Promise.all(requests);
 
       const normalizedSettings = normalizeSettingsPayload(settingsData || {});
-      console.info('[settings-debug] loaded report settings =', normalizedSettings.report);
       setSettings(normalizedSettings);
       setBackups(backupData || []);
       setLicenseStatus(licenseData || null);
@@ -954,7 +953,6 @@ export default function SettingsPage() {
   async function handleSaveSettings() {
     setSaving(true);
     try {
-      console.info('[settings-debug] before save report settings =', settings.report);
       const payload = {
         company: settings.company,
         employers: {
@@ -972,11 +970,9 @@ export default function SettingsPage() {
         software: settings.software,
         licensing: settings.licensing,
       };
-      console.info('[settings-debug] payload before save =', payload.report);
       const saved = await window.api.settings.save(payload);
       const freshSettings = await window.api.settings.get();
       const normalizedSettings = normalizeSettingsPayload(freshSettings || saved || {});
-      console.info('[settings-debug] after save report settings =', normalizedSettings.report);
       setSettings(normalizedSettings);
       setLicenseStatus(await window.api.license.getStatus());
       alert('Impostazioni salvate.');

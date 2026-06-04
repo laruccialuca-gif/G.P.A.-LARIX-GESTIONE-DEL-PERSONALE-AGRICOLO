@@ -62,6 +62,14 @@ function formatDailyRate(value) {
   return formatCurrency(amount);
 }
 
+function splitTeamNames(value) {
+  return String(value || '')
+    .split(/•|â€¢|\|/)
+    .flatMap((item) => String(item || '').split(/[;,]/))
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+}
+
 export default function PaymentPreviewPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -79,43 +87,47 @@ export default function PaymentPreviewPage() {
     () => buildMonthKey(selectedYear, selectedMonth),
     [selectedMonth, selectedYear]
   );
+  const requestedMonth = String(searchParams.get('month') || '').trim();
+  const requestedTeam = String(searchParams.get('team') || '').trim();
+  const requestedEmployer = String(searchParams.get('employer') || '').trim();
+  const requestedEmployee = String(searchParams.get('employee') || '').trim();
 
+  // Sync da URL (deep-link) verso lo stato locale.
+  // BUG STORICO: questo effetto aveva `selectedTeam`/`selectedEmployer`/`selectedEmployeeIds`
+  // nelle deps; quando l'utente sceglieva una squadra dal select, l'effetto si ri-eseguiva
+  // e riapplicava il valore del query-param (''), azzerando la scelta.
+  // Le deps ora includono SOLO i `requested*` che provengono dall'URL.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const requestedMonth = String(searchParams.get('month') || '').trim();
-    const requestedTeam = String(searchParams.get('team') || '').trim();
-    const requestedEmployer = String(searchParams.get('employer') || '').trim();
-    const requestedEmployee = String(searchParams.get('employee') || '').trim();
-
     if (/^\d{4}-\d{2}$/.test(requestedMonth)) {
       const nextYear = Number(requestedMonth.slice(0, 4));
       const nextMonth = Number(requestedMonth.slice(5, 7));
-      if (nextYear && nextYear !== selectedYear) {
+      if (nextYear) {
         setSelectedYear(nextYear);
       }
-      if (nextMonth && nextMonth !== selectedMonth) {
+      if (nextMonth) {
         setSelectedMonth(nextMonth);
       }
     }
 
-    const nextTeam = requestedTeam || '';
-    if (nextTeam !== selectedTeam) {
-      setSelectedTeam(nextTeam);
+    if (requestedTeam) {
+      setSelectedTeam(requestedTeam);
     }
 
-    const nextEmployer = requestedEmployer || '';
-    if (nextEmployer !== selectedEmployer) {
-      setSelectedEmployer(nextEmployer);
+    if (requestedEmployer) {
+      setSelectedEmployer(requestedEmployer);
     }
 
-    const nextEmployeeIds = requestedEmployee
-      ? requestedEmployee.split(',').map((value) => Number(value)).filter(Number.isFinite)
-      : [];
-    const currentEmployeeIdsKey = selectedEmployeeIds.join(',');
-    const nextEmployeeIdsKey = nextEmployeeIds.join(',');
-    if (currentEmployeeIdsKey !== nextEmployeeIdsKey) {
-      setSelectedEmployeeIds(nextEmployeeIds);
+    if (requestedEmployee) {
+      const nextEmployeeIds = requestedEmployee
+        .split(',')
+        .map((value) => Number(value))
+        .filter(Number.isFinite);
+      if (nextEmployeeIds.length) {
+        setSelectedEmployeeIds(nextEmployeeIds);
+      }
     }
-  }, [searchParams, selectedEmployeeIds, selectedEmployer, selectedMonth, selectedTeam, selectedYear, setSelectedYear]);
+  }, [requestedEmployee, requestedEmployer, requestedMonth, requestedTeam]);
 
   useEffect(() => {
     let cancelled = false;
@@ -123,13 +135,10 @@ export default function PaymentPreviewPage() {
     async function loadPreview() {
       setLoading(true);
       try {
-        console.info('[payment-preview] renderer-request month=%s', monthKey);
         const result = await window.api.payroll.getPaymentPreviewByMonth({ month: monthKey });
         if (cancelled) return;
-        console.info('[payment-preview] renderer-result rows=%d', Array.isArray(result?.rows) ? result.rows.length : 0);
         setPreviewData(result || { rows: [], settings: { standard_day_hours: 7 } });
       } catch (error) {
-        console.error('[payment-preview] load failed', error);
         if (!cancelled) {
           setPreviewData({ rows: [], settings: { standard_day_hours: 7 } });
           window.alert(`Errore caricamento preview pagamenti: ${error?.message || error}`);
@@ -161,7 +170,7 @@ export default function PaymentPreviewPage() {
 
   const rowsFilteredByContext = useMemo(() => {
     return rows.filter((row) => {
-      if (selectedTeam && String(row.team_name || '') !== selectedTeam) {
+      if (selectedTeam && !splitTeamNames(row.team_name).includes(selectedTeam)) {
         return false;
       }
       if (selectedEmployer && String(row.datore || '').toUpperCase() !== selectedEmployer) {
@@ -178,10 +187,7 @@ export default function PaymentPreviewPage() {
       if (!Number.isFinite(employeeId) || byEmployeeId.has(employeeId)) {
         return;
       }
-      const teamNames = String(row.team_name || '')
-        .split('•')
-        .map((item) => item.trim())
-        .filter(Boolean);
+      const teamNames = splitTeamNames(row.team_name);
       byEmployeeId.set(employeeId, {
         id: employeeId,
         first_name: row.first_name || '',
@@ -219,12 +225,10 @@ export default function PaymentPreviewPage() {
     [selectedEmployeeIds]
   );
 
-  const teamOptions = useMemo(
-    () => [...new Set(rows.map((row) => String(row.team_name || '').trim()).filter(Boolean))].sort((a, b) =>
-      a.localeCompare(b, 'it', { sensitivity: 'base' })
-    ),
-    [rows]
-  );
+  const teamOptions = useMemo(() => {
+    const flattenedTeams = rows.flatMap((row) => splitTeamNames(row.team_name));
+    return [...new Set(flattenedTeams)].sort((a, b) => a.localeCompare(b, 'it', { sensitivity: 'base' }));
+  }, [rows]);
 
   const filteredRows = useMemo(() => {
     return rowsFilteredByNonEmployeeFilters.filter((row) => {
@@ -234,12 +238,6 @@ export default function PaymentPreviewPage() {
       return true;
     });
   }, [rowsFilteredByNonEmployeeFilters, selectedEmployeeIdsSet]);
-
-  useEffect(() => {
-    console.log('[preview] employees', rows.length);
-    console.log('[preview] filteredRows', filteredRows.length);
-    console.log('[preview] selectableEmployees', employeesForSelector.length);
-  }, [rows.length, filteredRows.length, employeesForSelector.length]);
 
   useEffect(() => {
     if (!selectedEmployeeIdsSet.size) {
@@ -815,16 +813,6 @@ export default function PaymentPreviewPage() {
     }
   }
 
-  function handleOpenEmployeeSelector() {
-    console.log('[payment-preview-selector]', {
-      rows: rows.length,
-      filteredRows: filteredRows.length,
-      employeesForSelector: employeesForSelector.length,
-      sampleRow: rows[0] || null,
-      sampleEmployee: employeesForSelector[0] || null,
-    });
-  }
-
   return (
     <div className="page">
       <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -876,7 +864,6 @@ export default function PaymentPreviewPage() {
                 availableEmployees={employeeOptions}
                 selectedIds={selectedEmployeeIds}
                 onChange={setSelectedEmployeeIds}
-                onOpen={handleOpenEmployeeSelector}
               />
             </div>
 
